@@ -1,0 +1,6 @@
+/bin/
+# A stray `go build` with no -o lands here.
+/devtun
+/dist/
+coverage.out
+.DS_Store

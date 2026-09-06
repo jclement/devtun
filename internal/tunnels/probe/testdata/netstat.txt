@@ -1,0 +1,8 @@
+Active Internet connections (only servers)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name
+tcp        0      0 127.0.0.1:3000          0.0.0.0:*               LISTEN      14523/node
+tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN      901/sshd
+tcp        0      0 127.0.0.1:5432          0.0.0.0:*               LISTEN      -
+tcp6       0      0 :::22                   :::*                    LISTEN      901/sshd
+tcp6       0      0 ::1:8080                :::*                    LISTEN      2201/java
+udp        0      0 0.0.0.0:68              0.0.0.0:*                           700/dhclient

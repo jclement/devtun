@@ -1,0 +1,7 @@
+/proc/1/fd/:
+lrwx------ 1 root root 64 Aug 17 12:00 3 -> socket:[12345]
+lrwx------ 1 root root 64 Aug 17 12:00 4 -> socket:[12346]
+
+/proc/14523/fd/:
+lrwx------ 1 dev dev 64 Aug 17 12:01 20 -> socket:[445566]
+lrwx------ 1 dev dev 64 Aug 17 12:01 21 -> socket:[778899]

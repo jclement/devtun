@@ -1,0 +1,41 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - bodyclose
+    - noctx
+  settings:
+    misspell:
+      # No locale. UK spelling is the house style for *prose*, but misspell
+      # cannot tell prose from an identifier, and with locale: UK it flags
+      # `Serialize`, `sanitize` and — worst — `favorite`, which is 1Password's
+      # own field name. Renaming that would break the API we are speaking.
+      ignore-rules:
+        - serialize
+        - localize
+        - sanitize
+        - normalize
+    errcheck:
+      exclude-functions:
+        # Writing a log line or a prompt is best-effort by nature: the only
+        # place to report a failed write to stderr is stderr.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Writer).Write
+  exclusions:
+    rules:
+      # A test that reaches a local test server has no context to plumb and
+      # nothing to cancel; noctx is about production request paths.
+      - path: (_test\.go|/e2e/)
+        linters: [noctx, errcheck, bodyclose]
+
+formatters:
+  enable:
+    - gofmt

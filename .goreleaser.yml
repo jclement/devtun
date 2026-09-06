@@ -1,0 +1,65 @@
+version: 2
+project_name: devtun
+
+before:
+  hooks: [go mod tidy]
+
+builds:
+  - id: devtun
+    main: ./cmd/devtun
+    binary: devtun
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/jclement/devtun/internal/buildinfo.version={{.Version}}
+      - -X github.com/jclement/devtun/internal/buildinfo.commit={{.ShortCommit}}
+      - -X github.com/jclement/devtun/internal/buildinfo.buildDate={{.Date}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64, arm]
+    goarm: ["7"]
+    ignore:
+      # No dev box is a Windows-on-ARM box, and nobody runs the workstation
+      # half there either.
+      - goos: windows
+        goarch: arm
+      - goos: darwin
+        goarch: arm
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [README.md, LICENSE]
+
+checksum:
+  name_template: checksums.txt
+
+# The helper binary is fetched by the workstation and executed on a dev box, so
+# the release is signed rather than merely checksummed.
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --output-certificate=${certificate}
+      - --output-signature=${signature}
+      - ${artifact}
+      - --yes
+    artifacts: checksum
+    output: true
+
+brews:
+  - repository:
+      owner: jclement
+      name: homebrew-tap
+    homepage: https://github.com/jclement/devtun
+    description: Make a remote dev box feel local — ports, secrets and browser, over one SSH connection
+    license: MIT
+    test: system "#{bin}/devtun --version"
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ['^docs:', '^test:', '^chore:', Merge pull request]

@@ -1,0 +1,69 @@
+[tools]
+# The `go` directive in go.mod is deliberately one release behind this
+# toolchain. golangci-lint refuses to load its config when it was built with an
+# older Go than the target — an error that names a version mismatch and looks
+# nothing like a lint failure — and nothing here needs 1.27 language features.
+go = "1.27"
+goreleaser = "latest"
+golangci-lint = "latest"
+
+[env]
+# Every artifact is static and cross-compilable; the shim in particular has to
+# run on a dev box whose libc we know nothing about.
+CGO_ENABLED = "0"
+
+[tasks.setup]
+description = "Zero to runnable: fetch dependencies and build once"
+run = ["go mod download", "go build -o bin/devtun ./cmd/devtun"]
+
+[tasks.build]
+description = "Build the devtun binary into ./bin"
+run = "go build -o bin/devtun ./cmd/devtun"
+
+[tasks."build:all"]
+description = "Cross-build the shim for every remote platform into ./dist"
+run = "./scripts/build-all.sh"
+
+[tasks.dev]
+description = "Build, then attach to a host — or a throwaway Docker dev box if none is given"
+run = "./scripts/dev.sh"
+
+[tasks.test]
+description = "Run the unit and integration tests"
+run = "go test -race ./..."
+
+[tasks.cover]
+description = "Run tests and open the coverage report"
+run = """
+go test -race -covermode=atomic -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out | tail -1
+go tool cover -html=coverage.out
+"""
+
+[tasks.e2e]
+description = "Run the Docker-backed end-to-end suite (needs docker)"
+run = "go test -tags e2e -count=1 -timeout 20m ./e2e/..."
+
+[tasks.lint]
+description = "Vet, lint and check formatting. Never mutates."
+run = """
+test -z "$(gofmt -l . | grep -v '^bin/')" || { echo 'these files need gofmt:'; gofmt -l . | grep -v '^bin/'; exit 1; }
+go vet ./...
+golangci-lint run
+"""
+
+[tasks.fmt]
+description = "Format all Go source"
+run = "gofmt -w ."
+
+[tasks.check]
+description = "Everything CI runs — the gate before calling work done"
+depends = ["lint", "test"]
+
+[tasks.snapshot]
+description = "Build release artifacts locally without publishing"
+run = "goreleaser release --snapshot --clean"
+
+[tasks.release]
+description = "Bump the version, tag, and push — which triggers the release workflow"
+run = "./scripts/release.sh"
