@@ -36,6 +36,14 @@ type box struct {
 	keyPath string
 	devtun  string
 	helper  string
+	// stubBin holds the workstation-side commands devtun looks for. The suite
+	// supplies its own rather than borrowing the developer's, so it tests
+	// devtun and not whatever happens to be installed: a CI runner has no `op`
+	// and no agent, and without these four tests silently became assertions
+	// about somebody's laptop.
+	stubBin string
+	// agentSock is a real ssh-agent started for this test.
+	agentSock string
 }
 
 // start builds the image, generates a throwaway key, and boots the box.
@@ -68,7 +76,9 @@ func start(t *testing.T) *box {
 
 	b := &box{
 		t: t, port: port, keyPath: keyPath,
-		devtun: build(t, root, runtime.GOOS, runtime.GOARCH),
+		stubBin:   stubTools(t),
+		agentSock: startAgent(t, keyPath),
+		devtun:    build(t, root, runtime.GOOS, runtime.GOARCH),
 		// The helper that gets uploaded has to be built for the container, not
 		// for this laptop. Without it devtun reports, correctly, that it has no
 		// binary for that platform — which is a real message a user can hit,
@@ -145,6 +155,10 @@ func (b *box) runDevtun(ctx context.Context, extra ...string) *stream {
 	cmd.Env = append(os.Environ(),
 		"XDG_CONFIG_HOME="+b.t.TempDir(),
 		"DEVTUN_E2E=1",
+		// The stubs come first so devtun finds them rather than a real `op`
+		// that may or may not be installed and signed in.
+		"PATH="+b.stubBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"SSH_AUTH_SOCK="+b.agentSock,
 	)
 	return newStream(b.t, cmd)
 }
@@ -168,6 +182,107 @@ func (b *box) killConnections(t *testing.T) {
 	}
 	t.Fatalf("no SSH session matched any of %v on the box, so nothing was disconnected; "+
 		"check what sshd calls its per-connection processes here", patterns)
+}
+
+// stubTools builds a directory of the workstation-side commands devtun probes
+// for, and returns it for prepending to PATH.
+//
+// Only `op --version` needs to succeed: it is what the 1Password service's
+// Probe runs to prove the CLI works before anything remote is wired up. No
+// test here approves a secret, so the stub never has to produce one — and it
+// refuses loudly if asked, since a stub that silently returned something would
+// make a passing test meaningless.
+func stubTools(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/sh
+case "$1" in
+  --version) echo "2.30.0"; exit 0 ;;
+esac
+echo "op stub: refusing to produce a secret for: $*" >&2
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(dir, "op"), []byte(script), 0o755); err != nil {
+		t.Fatalf("writing the op stub: %v", err)
+	}
+	return dir
+}
+
+// startAgent runs a real ssh-agent holding one real key, and returns its
+// socket.
+//
+// A real agent rather than a fake one because the point of these tests is that
+// a real `ssh` client on the box can talk, through devtun, to a real agent
+// here. Faking either end would leave the interesting seam untested.
+func startAgent(t *testing.T, keyPath string) string {
+	t.Helper()
+	if _, err := exec.LookPath("ssh-agent"); err != nil {
+		t.Skip("ssh-agent is not available")
+	}
+
+	// The socket goes in a short path: a unix socket path is capped near 104
+	// characters, and a t.TempDir() under a long test name can exceed it.
+	dir, err := os.MkdirTemp("", "devtun-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "s")
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	cmd := exec.Command("ssh-agent", "-D", "-a", sock)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting ssh-agent: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(sock); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ssh-agent never created its socket")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	add := exec.Command("ssh-add", keyPath)
+	add.Env = append(os.Environ(), "SSH_AUTH_SOCK="+sock)
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("ssh-add: %v\n%s", err, out)
+	}
+	return sock
+}
+
+// agentSocketPath finds where devtun published the agent socket on the box. It
+// may be in the runtime directory or under the home directory, and which one
+// depends on the container rather than on devtun.
+func (b *box) agentSocketPath(t *testing.T, s *stream) string {
+	t.Helper()
+	for _, candidate := range []string{"$HOME/.devtun/devtun-agent.sock", "/run/user/1000/devtun-agent.sock"} {
+		if out, err := b.ssh("test -S " + candidate + " && echo present"); err == nil && strings.Contains(out, "present") {
+			return candidate
+		}
+	}
+	t.Fatalf("devtun published no agent socket on the box\n%s", s.transcript())
+	return ""
+}
+
+// keyFingerprint is the SHA256 fingerprint of the key the harness generated,
+// which is what ssh-add -l prints.
+func (b *box) keyFingerprint(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("ssh-keygen", "-lf", b.keyPath+".pub").Output()
+	if err != nil {
+		t.Fatalf("ssh-keygen -lf: %v", err)
+	}
+	for _, field := range strings.Fields(string(out)) {
+		if strings.HasPrefix(field, "SHA256:") {
+			return field
+		}
+	}
+	t.Fatalf("no fingerprint in %q", out)
+	return ""
 }
 
 func requireDocker(t *testing.T) {
