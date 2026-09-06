@@ -117,6 +117,20 @@ func (f *Fetcher) Binary(ctx context.Context, goos, goarch string) (string, erro
 	return cached, write(cached, binary)
 }
 
+// tag is the git tag the release lives under.
+//
+// This is not the same string as the version, and the difference is a 404. The
+// build is stamped by goreleaser with {{.Version}}, which has no leading "v" —
+// but the tag does, and the download path is built from the tag. The asset
+// *filenames* use the bare version, so both spellings are needed and neither
+// can be dropped.
+func (f *Fetcher) tag() string {
+	if strings.HasPrefix(f.Version, "v") {
+		return f.Version
+	}
+	return "v" + f.Version
+}
+
 // assetName is what goreleaser called the archive for a platform.
 func (f *Fetcher) assetName(goos, goarch string) string {
 	ext := "tar.gz"
@@ -156,7 +170,7 @@ func (f *Fetcher) download(ctx context.Context, name string) ([]byte, error) {
 	if base == "" {
 		base = "https://github.com"
 	}
-	url := fmt.Sprintf("%s/%s/releases/download/%s/%s", strings.TrimSuffix(base, "/"), f.Slug, f.Version, name)
+	url := fmt.Sprintf("%s/%s/releases/download/%s/%s", strings.TrimSuffix(base, "/"), f.Slug, f.tag(), name)
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

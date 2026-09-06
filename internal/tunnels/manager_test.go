@@ -932,3 +932,30 @@ func TestGloballyHiddenPortsAreCounted(t *testing.T) {
 		t.Errorf("want the globally hidden port counted, got %d", got)
 	}
 }
+
+// Sync iterates a map, so without sorting the same box prints a different
+// summary every run — and a list you cannot scan for the port you care about
+// is a list you read twice.
+func TestTheSummaryListsPortsInOrder(t *testing.T) {
+	mgr, _, c := newTestManager(t, DefaultPolicy())
+
+	snap := probe.Snapshot{}
+	for _, port := range []int{37973, 5432, 3000, 5173, 8080} {
+		snap[port] = probe.Service{Port: port, Proc: "x", Binds: []probe.Bind{{Proto: "tcp", Addr: "127.0.0.1"}}}
+	}
+	mgr.Sync(snap)
+
+	var summary string
+	for _, e := range c.all() {
+		if e.Kind == "opened-many" {
+			summary = e.Text
+		}
+	}
+	if summary == "" {
+		t.Fatal("no summary was emitted")
+	}
+	want := "3000 5173 5432 8080 37973"
+	if !strings.Contains(summary, want) {
+		t.Errorf("want the ports in order (%s), got %q", want, summary)
+	}
+}

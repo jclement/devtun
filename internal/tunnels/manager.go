@@ -787,16 +787,27 @@ func (m *Manager) summarise(events []event.Event) (event.Event, bool) {
 		return event.Event{}, false
 	}
 
-	var opened, remapped []string
+	var ports []int
+	var remapped []string
 	for _, e := range events {
 		if e.Kind != "opened" {
 			return event.Event{}, false // a mixed burst is not a first scan
 		}
 		remote, local := portsOf(e)
-		opened = append(opened, remote)
+		ports = append(ports, remote)
 		if remote != local {
-			remapped = append(remapped, remote+"→"+local)
+			remapped = append(remapped, fmt.Sprintf("%d→%d", remote, local))
 		}
+	}
+	// Sorted, because Sync iterates a map: without this the same box prints a
+	// different line every run, and a list you cannot scan for the port you
+	// care about is a list you read twice.
+	sort.Ints(ports)
+	sort.Strings(remapped)
+
+	opened := make([]string, len(ports))
+	for i, port := range ports {
+		opened[i] = strconv.Itoa(port)
 	}
 	if len(opened) < summariseFrom {
 		return event.Event{}, false
@@ -824,7 +835,7 @@ func (m *Manager) summarise(events []event.Event) (event.Event, bool) {
 const summariseFrom = 4
 
 // portsOf pulls the remote and local ports out of an opened event's fields.
-func portsOf(e event.Event) (remote, local string) {
+func portsOf(e event.Event) (remote, local int) {
 	for i := 0; i+1 < len(e.Fields); i += 2 {
 		key, _ := e.Fields[i].(string)
 		value, ok := e.Fields[i+1].(int)
@@ -833,9 +844,9 @@ func portsOf(e event.Event) (remote, local string) {
 		}
 		switch key {
 		case "remote":
-			remote = strconv.Itoa(value)
+			remote = value
 		case "local":
-			local = strconv.Itoa(value)
+			local = value
 		}
 	}
 	return remote, local

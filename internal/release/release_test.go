@@ -183,3 +183,32 @@ func TestExtractIgnoresPathsInMemberNames(t *testing.T) {
 		t.Errorf("extract returned %q", got)
 	}
 }
+
+// The version and the tag are not the same string, and the difference is a
+// 404: goreleaser stamps {{.Version}}, which has no leading "v", while the
+// download path is built from the tag, which does. The asset filenames use the
+// bare version, so both spellings are needed.
+func TestTheDownloadPathUsesTheTagAndTheFilenameUsesTheVersion(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	for _, version := range []string{"0.1.1", "v0.1.1"} {
+		paths = nil
+		f := &Fetcher{Slug: "jclement/devtun", Version: version, CacheDir: t.TempDir(), BaseURL: server.URL}
+		_, _ = f.Binary(context.Background(), "linux", "amd64")
+
+		if len(paths) == 0 {
+			t.Fatalf("version %q: nothing was requested", version)
+		}
+		if !strings.Contains(paths[0], "/download/v0.1.1/") {
+			t.Errorf("version %q asked for %q, want the tag v0.1.1 in the path", version, paths[0])
+		}
+		if got := f.assetName("linux", "amd64"); got != "devtun_0.1.1_linux_amd64.tar.gz" {
+			t.Errorf("version %q built the filename %q, want the bare version", version, got)
+		}
+	}
+}
