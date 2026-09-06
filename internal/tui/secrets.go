@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jclement/devtun/internal/authz"
+	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/ui"
 )
 
@@ -26,6 +27,11 @@ type secretRow struct {
 	// source is which broker this row belongs to, since the tab shows more
 	// than one and `r` has to revoke through the right door.
 	source secretSource
+	// global marks a rule that came from the top-level config. It is shown so
+	// the tab answers "what is deciding", and it cannot be revoked here: devtun
+	// did not write it, and quietly editing a file the user hand-wrote would be
+	// a worse surprise than saying no.
+	global bool
 }
 
 // reloadSecrets pulls the live grants and the host's persistent rules.
@@ -64,6 +70,17 @@ func (m *Model) reloadSecrets() {
 				continue
 			}
 			rows = append(rows, secretRow{rule: r, index: i, source: src})
+		}
+	}
+	// The global rules last, because they are the least likely to be what you
+	// came to change — but present, because a tab that shows only half of what
+	// is deciding will send somebody hunting for a rule that is right there.
+	for _, src := range m.d.secrets {
+		for _, r := range src.ctrl.GlobalRules() {
+			if !matches(src.title + " " + r.Host + " " + r.Subject + " " + r.Note) {
+				continue
+			}
+			rows = append(rows, secretRow{rule: r, source: src, global: true})
 		}
 	}
 	m.secretRows = rows
@@ -106,6 +123,11 @@ func (m *Model) secretLine(r secretRow, selected bool) string {
 	if r.rule.Note != "" {
 		line += ui.Muted.Render("  · " + r.rule.Note)
 	}
+	if r.global {
+		// Say where it came from, so its being unrevocable here makes sense
+		// before somebody presses `r` and finds out.
+		line += ui.Muted.Render("  · from your config")
+	}
 
 	line = clampWidth(line, m.inner())
 	if selected {
@@ -115,6 +137,15 @@ func (m *Model) secretLine(r secretRow, selected bool) string {
 		return ui.Selected.Reverse(true).Render(ansi.Strip(line))
 	}
 	return line
+}
+
+// globalConfigHint names the file a global rule lives in, so the refusal to
+// revoke it says where to go instead of merely saying no.
+func globalConfigHint() string {
+	if dir, err := hostcfg.Dir(); err == nil {
+		return dir + "/config.yaml"
+	}
+	return "your devtun config.yaml"
 }
 
 // grantLine renders a live allowance, with how long it has left.
@@ -135,7 +166,13 @@ func (m *Model) grantLine(g authz.Grant, selected bool) string {
 		subject = ui.Danger.Render("anything from " + g.Host)
 	}
 
-	line := " " + ui.Warn.Render(pad("grant", 6)) + "  " + ui.Muted.Render(pad(g.Host, 14)) + "  " + subject
+	// A refusal is live state too, and reading it as a grant would invert what
+	// it says. The word and the colour both change.
+	label, style := "grant", ui.Warn
+	if g.Action == authz.ActionDeny {
+		label, style = "refuse", ui.Error
+	}
+	line := " " + style.Render(pad(label, 6)) + "  " + ui.Muted.Render(pad(g.Host, 14)) + "  " + subject
 	line += "  " + left
 
 	line = clampWidth(line, m.inner())
@@ -171,6 +208,12 @@ func (m *Model) revokeSelected() tea.Cmd {
 	// A grant and a rule are revoked through different doors: one lives in
 	// memory and is addressed by what it covers, the other is a line in a file
 	// addressed by position. `r` should not make the user care which.
+	if row.global {
+		return m.showToast(toastMsg{
+			text: "that rule is in your config file, not devtun's — edit " + globalConfigHint(),
+			bad:  true,
+		})
+	}
 	if row.isGrant {
 		if !row.source.ctrl.RevokeGrant(row.grant.Host, row.grant.Subject) {
 			return m.showToast(toastMsg{text: "that grant has already lapsed", bad: true})

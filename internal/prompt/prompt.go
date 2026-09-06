@@ -41,6 +41,22 @@ const (
 	// the session — the broadest thing on the menu, and the one to reach for
 	// only while actively working on that box.
 	ChoiceAllowHostSession
+	// ChoiceRefuseSession refuses this subject for the rest of the session.
+	//
+	// It closes an asymmetry that had been in the menu since opproxy: you
+	// could say "allow always" and get a rule, but the only way to stop being
+	// asked about something you kept declining was to approve it. A security
+	// prompt that makes "yes" the only way to make itself go away is teaching
+	// the wrong reflex.
+	ChoiceRefuseSession
+	// ChoiceRefuseAlways writes a persistent deny rule — "never".
+	//
+	// It is deliberately harder to undo than an approval: a deny beats every
+	// allow, including one clicked through later, so the way back is the
+	// config file. An approval given by mistake costs one secret; a refusal
+	// given by mistake costs a moment's confusion, and the two should not be
+	// equally easy to reverse by accident.
+	ChoiceRefuseAlways
 )
 
 // String renders the choice for logs.
@@ -58,13 +74,30 @@ func (c Choice) String() string {
 		return "allow host temporarily"
 	case ChoiceAllowHostSession:
 		return "allow host this session"
+	case ChoiceRefuseSession:
+		return "refuse this session"
+	case ChoiceRefuseAlways:
+		return "refuse always"
 	default:
 		return "deny"
 	}
 }
 
 // Allows reports whether the choice permits the request to proceed.
-func (c Choice) Allows() bool { return c != ChoiceDeny }
+func (c Choice) Allows() bool {
+	switch c {
+	case ChoiceDeny, ChoiceRefuseSession, ChoiceRefuseAlways:
+		return false
+	default:
+		return true
+	}
+}
+
+// Refuses reports a choice that should be remembered as a refusal rather than
+// merely acted on once.
+func (c Choice) Refuses() bool {
+	return c == ChoiceRefuseSession || c == ChoiceRefuseAlways
+}
 
 // Request is everything the human needs to make the decision.
 type Request struct {
@@ -225,13 +258,15 @@ func MenuFor(request Request) []MenuItem {
 	// actually happen.
 	this := "this " + request.SubjectNoun() + request.ScopeSuffix()
 	return []MenuItem{
-		{"Allow once", ChoiceAllowOnce},
-		{fmt.Sprintf("Allow %s for %s", this, ttl), ChoiceAllowSecretTTL},
-		{fmt.Sprintf("Allow %s for this session", this), ChoiceAllowSecretSession},
-		{fmt.Sprintf("Allow %s always", this), ChoiceAllowSecretAlways},
-		{fmt.Sprintf("Allow anything from %s for %s", request.Host, ttl), ChoiceAllowHostTTL},
-		{fmt.Sprintf("Allow anything from %s this session", request.Host), ChoiceAllowHostSession},
-		{"Deny", ChoiceDeny},
+		{"Yes, once", ChoiceAllowOnce},
+		{fmt.Sprintf("Yes, %s — %s", this, ttl), ChoiceAllowSecretTTL},
+		{fmt.Sprintf("Yes, %s — this session", this), ChoiceAllowSecretSession},
+		{fmt.Sprintf("Yes, %s — always (writes a rule)", this), ChoiceAllowSecretAlways},
+		{fmt.Sprintf("Yes to anything from %s — %s", request.Host, ttl), ChoiceAllowHostTTL},
+		{fmt.Sprintf("Yes to anything from %s — this session", request.Host), ChoiceAllowHostSession},
+		{"No", ChoiceDeny},
+		{"No, and stop asking this session", ChoiceRefuseSession},
+		{fmt.Sprintf("Never, %s (writes a deny rule)", this), ChoiceRefuseAlways},
 	}
 }
 

@@ -41,6 +41,7 @@ type tunnelCtrl interface {
 // secretsCtrl is the slice of the 1Password broker the Secrets tab drives.
 type secretsCtrl interface {
 	Rules() []authz.Rule
+	GlobalRules() []authz.Rule
 	Revoke(index int) error
 	Grants() []authz.Grant
 	RevokeGrant(host, subject string) bool

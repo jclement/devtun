@@ -241,6 +241,11 @@ func (s *Service) Rules() []authz.Rule { return s.store.Rules() }
 // Revoke removes the host rule at index, as numbered by Rules.
 func (s *Service) Revoke(index int) error { return s.store.Revoke(index) }
 
+// GlobalRules are the rules from the top-level config: visible so a person can
+// see everything that is deciding, and not removable here because devtun did
+// not write them.
+func (s *Service) GlobalRules() []authz.Rule { return s.store.GlobalRules() }
+
 // Grants lists the allowances a prompt created and that have not yet lapsed —
 // the access currently open in the user's name, as opposed to the rules on
 // disk. Forget() drops all of them at once; this is what makes it possible to

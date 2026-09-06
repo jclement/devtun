@@ -296,3 +296,77 @@ func TestExpiredGrantsAreNotListed(t *testing.T) {
 		t.Errorf("an expired grant should not be listed: %+v", got)
 	}
 }
+
+// "Never" was the gap: you could say "allow always" and get a rule, but the
+// only way to stop being asked about something you kept declining was to
+// approve it. A security prompt whose only escape is "yes" teaches the wrong
+// reflex.
+func TestRefusalsAreRecordableAndBeatAllows(t *testing.T) {
+	store := NewStore(Config{Rules: []Rule{
+		{Host: "bedev", Subject: "op://Work/**", Action: ActionAllow},
+	}})
+
+	// A standing allow rule covers this subject.
+	if got := store.Decide("bedev", "op://Work/CI"); got.Action != ActionAllow {
+		t.Fatalf("precondition: want allow, got %v", got.Action)
+	}
+
+	// Answering "no, stop asking" must win, even against a persistent allow.
+	// The most recent and most specific thing the user said was no.
+	store.RefuseSession("bedev", "op://Work/CI")
+	got := store.Decide("bedev", "op://Work/CI")
+	if got.Action != ActionDeny {
+		t.Errorf("a session refusal should beat a standing allow rule, got %v (%s)", got.Action, got.Reason)
+	}
+	// And it must not spill onto its siblings.
+	if got := store.Decide("bedev", "op://Work/Other"); got.Action != ActionAllow {
+		t.Errorf("the refusal should cover only its own subject, got %v", got.Action)
+	}
+}
+
+func TestRefuseSessionIsListedAndRevocable(t *testing.T) {
+	store := NewStore(Config{})
+	store.RefuseSession("bedev", "op://Private/Root")
+
+	grants := store.Grants()
+	if len(grants) != 1 || grants[0].Action != ActionDeny {
+		t.Fatalf("a refusal should be listed as live state: %+v", grants)
+	}
+
+	if !store.RevokeGrant("bedev", "op://Private/Root") {
+		t.Fatal("a listed refusal should be revocable")
+	}
+	if got := store.Decide("bedev", "op://Private/Root"); got.Action != ActionAsk {
+		t.Errorf("after revoking, the question should be asked again, got %v", got.Action)
+	}
+}
+
+// A temporary refusal must lapse like a temporary approval does.
+func TestSessionRefusalOutlivesNothingItShouldNot(t *testing.T) {
+	store := NewStore(Config{})
+	store.RefuseSession("bedev", "op://X/Y")
+
+	if got := store.Decide("other", "op://X/Y"); got.Action != ActionAsk {
+		t.Errorf("a refusal is per host, got %v for a different host", got.Action)
+	}
+}
+
+// Deny wins at every level, so a permanent refusal cannot be clicked away.
+func TestRefusePermanentCannotBeUndoneByAGrant(t *testing.T) {
+	store := NewStore(Config{})
+	store.AdoptHostRules(nil, nopSaver{})
+
+	if err := store.RefusePermanent("bedev", "op://Private/Root", "never"); err != nil {
+		t.Fatalf("RefusePermanent: %v", err)
+	}
+	// Somebody clicks through an approval afterwards.
+	store.GrantSession("bedev", "op://Private/Root")
+
+	if got := store.Decide("bedev", "op://Private/Root"); got.Action != ActionDeny {
+		t.Errorf("a written refusal must beat a later approval, got %v (%s)", got.Action, got.Reason)
+	}
+}
+
+type nopSaver struct{}
+
+func (nopSaver) SaveRules([]Rule) error { return nil }

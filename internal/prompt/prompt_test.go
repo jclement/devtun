@@ -139,7 +139,7 @@ func TestMenuNamesTheSubjectAndItsScope(t *testing.T) {
 	}
 	joined := strings.Join(labels, "\n")
 
-	if !strings.Contains(joined, "this key for github.com for 5m0s") {
+	if !strings.Contains(joined, "this key for github.com — 5m0s") {
 		t.Errorf("the menu should name the key and its destination:\n%s", joined)
 	}
 	if strings.Contains(joined, "this secret") {
@@ -167,8 +167,21 @@ func TestPreferredIndexMovesTheCursorNotTheOptions(t *testing.T) {
 	if menu[0].Choice != ChoiceAllowOnce {
 		t.Error("the options must stay in narrowest-first order")
 	}
-	if menu[len(menu)-1].Choice != ChoiceDeny {
-		t.Error("deny must stay last")
+	// Every approval comes before every refusal, so nothing that grants access
+	// can be reached by overshooting downward. Deny is no longer literally last
+	// — "no, this session" and "never" follow it — but no allow may be.
+	seenRefusal := false
+	for _, item := range menu {
+		if !item.Choice.Allows() {
+			seenRefusal = true
+			continue
+		}
+		if seenRefusal {
+			t.Errorf("%q grants access but sits below a refusal", item.Label)
+		}
+	}
+	if menu[len(menu)-1].Choice.Allows() {
+		t.Error("the last option must never be one that grants access")
 	}
 
 	// An unset preference is the zero Choice, which is Deny — and resolving

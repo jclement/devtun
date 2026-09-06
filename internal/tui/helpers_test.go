@@ -180,6 +180,7 @@ func oneSource(s *stubSecrets) []secretSource {
 
 type stubSecrets struct {
 	rules     []authz.Rule
+	global    []authz.Rule
 	live      []authz.Grant
 	grants    int
 	cached    int
@@ -195,6 +196,8 @@ func (s *stubSecrets) Revoke(i int) error {
 	s.rules = append(s.rules[:i], s.rules[i+1:]...)
 	return nil
 }
+
+func (s *stubSecrets) GlobalRules() []authz.Rule { return s.global }
 
 func (s *stubSecrets) Grants() []authz.Grant { return s.live }
 

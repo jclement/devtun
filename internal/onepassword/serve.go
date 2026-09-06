@@ -275,42 +275,18 @@ func (s *Service) authorize(ctx context.Context, l *link, subject string, argv [
 		}
 		return false, err.Error(), time.Time{}
 	}
-	if !choice.Allows() {
+	// A refusal is recorded too, now that the menu can express "stop asking"
+	// and "never". Only a plain No leaves no trace.
+	outcome := authz.Record(s.store, l.host, subject, choice, config.DefaultTTL)
+	if outcome.Err != nil {
+		l.failed(subject, "could not save the rule: "+outcome.Err.Error())
+	} else if outcome.Note != "" {
+		l.event("saved", event.Info, outcome.Note)
+	}
+	if !outcome.Allowed {
 		return false, "refused at the prompt", time.Time{}
 	}
-
-	return true, "approved: " + choice.String(), s.recordGrant(l, choice, subject, config)
-}
-
-// recordGrant turns the human's answer into policy, and returns when that
-// answer lapses — the zero time when it does not lapse on its own. A failure to
-// persist an "always" rule is reported but does not undo the approval: the user
-// said yes, and the worst case is being asked again.
-func (s *Service) recordGrant(l *link, choice prompt.Choice, subject string, config authz.Config) time.Time {
-	ttl := config.DefaultTTL
-	switch choice {
-	case prompt.ChoiceAllowOnce:
-		// Nothing is recorded, so nothing derived from it may be kept either.
-		return time.Now()
-	case prompt.ChoiceAllowSecretTTL:
-		s.store.GrantTemporary(l.host, subject, ttl)
-		return time.Now().Add(ttl)
-	case prompt.ChoiceAllowHostTTL:
-		s.store.GrantTemporary(l.host, authz.HostWildcard, ttl)
-		return time.Now().Add(ttl)
-	case prompt.ChoiceAllowSecretSession:
-		s.store.GrantSession(l.host, subject)
-	case prompt.ChoiceAllowHostSession:
-		s.store.GrantSession(l.host, authz.HostWildcard)
-	case prompt.ChoiceAllowSecretAlways:
-		note := "approved interactively on " + time.Now().Format("2006-01-02")
-		if err := s.store.GrantPermanent(l.host, subject, note); err != nil {
-			l.failed(subject, "could not save the rule: "+err.Error())
-			break
-		}
-		l.event("saved", event.Info, fmt.Sprintf("saved a rule allowing %s from %s", subject, l.host))
-	}
-	return time.Time{}
+	return true, "approved: " + choice.String(), outcome.Until
 }
 
 // trimSecret drops the newline `op read` prints after a value. Callers are

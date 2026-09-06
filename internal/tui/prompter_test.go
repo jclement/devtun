@@ -131,12 +131,21 @@ func TestAskBuildsItsOptionsFromMenuFor(t *testing.T) {
 			t.Errorf("option %d is %+v, want %+v", i, msg.options[i], want[i])
 		}
 	}
-	// Narrowest first, deny last.
+	// Narrowest first, and nothing that grants access below a refusal — so
+	// overshooting downward can never land on an approval.
 	if msg.options[0].Choice != prompt.ChoiceAllowOnce {
 		t.Errorf("the first option is %v, want allow once", msg.options[0].Choice)
 	}
-	if last := msg.options[len(msg.options)-1].Choice; last != prompt.ChoiceDeny {
-		t.Errorf("the last option is %v, want deny", last)
+	if last := msg.options[len(msg.options)-1].Choice; last.Allows() {
+		t.Errorf("the last option is %v, which grants access", last)
+	}
+	seenRefusal := false
+	for _, item := range msg.options {
+		if !item.Choice.Allows() {
+			seenRefusal = true
+		} else if seenRefusal {
+			t.Errorf("%q grants access but sits below a refusal", item.Label)
+		}
 	}
 
 	msg.reply <- prompt.ChoiceAllowOnce
@@ -166,7 +175,7 @@ func TestApprovalModalShowsTheRequestAndDeniesOnEscape(t *testing.T) {
 		"op read op://Personal/Docker/PAT",
 		"jeff@bedev", "deploy.sh", "pid 4242", "~/projects/api",
 		"caller details come from the remote box and are not verified",
-		"Allow once", "Deny",
+		"Yes, once", "No",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("the approval modal is missing %q:\n%s", want, view)
@@ -217,7 +226,7 @@ func TestApprovalIsWithdrawnWhenTheAskerGivesUp(t *testing.T) {
 	if m.approval != nil {
 		t.Error("the abandoned modal is still on screen")
 	}
-	if strings.Contains(plainView(m), "Allow once") {
+	if strings.Contains(plainView(m), "Yes, once") {
 		t.Errorf("the abandoned modal is still drawn:\n%s", plainView(m))
 	}
 }

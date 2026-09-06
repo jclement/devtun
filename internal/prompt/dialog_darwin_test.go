@@ -42,11 +42,20 @@ func TestDialogOptionsMatchTheTerminalMenu(t *testing.T) {
 	if len(labels) != len(choices) {
 		t.Fatalf("%d labels for %d choices", len(labels), len(choices))
 	}
-	menu := MenuFor(request)
-	if len(labels) != len(menu)-1 {
-		t.Fatalf("dialog offers %d options, want the %d in the menu minus Deny", len(labels), len(menu))
+	// Compare against the menu with Deny filtered out, rather than by slicing
+	// off the last item: Deny is no longer last now that the menu has
+	// refusals after it, and a positional assumption here would silently stop
+	// checking anything.
+	var want []MenuItem
+	for _, item := range MenuFor(request) {
+		if item.Choice != ChoiceDeny {
+			want = append(want, item)
+		}
 	}
-	for i, item := range menu[:len(menu)-1] {
+	if len(labels) != len(want) {
+		t.Fatalf("dialog offers %d options, want the %d in the menu minus Deny", len(labels), len(want))
+	}
+	for i, item := range want {
 		if labels[i] != item.Label || choices[i] != item.Choice {
 			t.Errorf("option %d = %q/%v, want %q/%v", i, labels[i], choices[i], item.Label, item.Choice)
 		}

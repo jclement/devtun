@@ -241,6 +241,38 @@ Deny beats allow, and persistent beats live — evaluated across the global and
 per-host rule sets as one list. A rule written to block something cannot be
 undone by clicking through a prompt later, or the policy file would be advisory.
 
+**7a. A prompt can refuse as well as approve, and refusals are policy too.**
+The menu inherited from opproxy could say "allow always" and write a rule, but
+the only way to stop being asked about something you kept declining was to
+approve it. A security prompt whose only way to make itself go away is "yes" is
+teaching the wrong reflex, and it is the reflex an attacker relies on.
+
+So a grant carries an action. *No, and stop asking* is a session-scoped refusal;
+*Never* writes a deny rule. Both are live state the Secrets tab lists and can
+revoke — a refusal is as much "what is currently deciding" as an approval, and
+showing only the approvals would answer "what is open" while silently omitting
+"what is shut".
+
+The precedence needed restating for this. It is **deny over allow at every
+level, and among decisions of the same sense, persistent over live.** The tidier
+"persistent beats live" alone would let a standing allow rule override a session
+refusal, which is wrong: if I have a rule allowing a whole vault and then answer
+"no, stop asking" for one secret in it, the most recent and most specific thing
+I said was no, and a policy that kept allowing it would be answering a question
+I did not ask.
+
+The two directions are deliberately not equally easy to undo. An approval given
+by mistake costs one secret; a refusal given by mistake costs a moment's
+confusion. So "always" and "never" are both rules, but only a refusal is immune
+to being clicked away afterwards.
+
+**7b. Turning an answer into policy lives in `authz`, not in each broker.**
+`Record` is the step between "the human chose something" and "the store knows",
+and it existed twice as near-copies until adding refusals would have made it
+three times. The two brokers disagree about what a subject *is* and agree
+completely about what "yes, for five minutes" should do — which is the shape of
+something that belongs in one place.
+
 **8. The zero value of every decision is "no".** `prompt.ChoiceDeny` is the zero
 `Choice`, so a prompt that times out, is interrupted, fails to render, or has
 nobody to render to all end the same way — not by convention but by the type's

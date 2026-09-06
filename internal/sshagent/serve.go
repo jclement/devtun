@@ -174,45 +174,19 @@ func (s *Service) authorize(ctx context.Context, l *link, subject string, dest d
 		}
 		return false, err.Error()
 	}
-	if !choice.Allows() {
+	// Refusals are recorded too: "no, stop asking this session" is the answer
+	// that makes this service usable during a rebase you have decided not to
+	// sign for, and "never" is how you shut a destination for good.
+	outcome := authz.Record(s.store, l.host, subject, choice, config.DefaultTTL)
+	if outcome.Err != nil {
+		l.failed(subject, "could not save the rule: "+outcome.Err.Error())
+	} else if outcome.Note != "" {
+		l.event("saved", event.Info, outcome.Note)
+	}
+	if !outcome.Allowed {
 		return false, "refused at the prompt"
 	}
-
-	s.recordGrant(l, choice, subject, config)
 	return true, "approved: " + choice.String()
-}
-
-// recordGrant turns the human's answer into policy.
-//
-// The granularity is what decides whether this service survives contact with
-// real work: `git push` signs several times over, and a grant narrower than
-// (this key, this destination, this session) means a prompt every time — which
-// is how a security feature gets switched off within the hour. That option is
-// prompt.ChoiceAllowSecretSession, and the subject it grants on is the key and
-// the destination together.
-//
-// A failure to persist an "always" rule is reported but does not undo the
-// approval: the user said yes, and the worst case is being asked again.
-func (s *Service) recordGrant(l *link, choice prompt.Choice, subject string, config authz.Config) {
-	switch choice {
-	case prompt.ChoiceAllowOnce:
-		// Nothing is recorded, so the next signature asks again.
-	case prompt.ChoiceAllowSecretTTL:
-		s.store.GrantTemporary(l.host, subject, config.DefaultTTL)
-	case prompt.ChoiceAllowHostTTL:
-		s.store.GrantTemporary(l.host, authz.HostWildcard, config.DefaultTTL)
-	case prompt.ChoiceAllowSecretSession:
-		s.store.GrantSession(l.host, subject)
-	case prompt.ChoiceAllowHostSession:
-		s.store.GrantSession(l.host, authz.HostWildcard)
-	case prompt.ChoiceAllowSecretAlways:
-		note := "approved interactively on " + time.Now().Format("2006-01-02")
-		if err := s.store.GrantPermanent(l.host, subject, note); err != nil {
-			l.failed("save", "could not save the rule: "+err.Error())
-			return
-		}
-		l.event("saved", event.Info, fmt.Sprintf("saved a rule allowing %s from %s", subject, l.host))
-	}
 }
 
 // link is one connection's surroundings: the authenticated host it arrived

@@ -179,18 +179,24 @@ The first time a new secret is asked for, devtun asks you:
   cwd      /home/jsc/projects/api
            (caller details come from the remote box and are not verified)
 
-> Allow once
-  Allow this secret for 5m0s
-  Allow this secret for this session
-  Allow this secret always
-  Allow anything from bedev for 5m0s
-  Allow anything from bedev this session
-  Deny
+> Yes, once
+  Yes, this secret — 5m0s
+  Yes, this secret — this session
+  Yes, this secret — always (writes a rule)
+  Yes to anything from bedev — 5m0s
+  Yes to anything from bedev — this session
+  No
+  No, and stop asking this session
+  Never, this secret (writes a deny rule)
 ```
 
-Narrowest first, so the safe answer is under the cursor and the broad ones take deliberate effort. Under `--tui` this is a modal inside the interface — the thing neither predecessor could do, because a terminal form and a full-screen TUI cannot share a terminal.
+Narrowest first, and every approval sits above every refusal, so overshooting downward can never land on a "yes". Walking away, pressing escape, or letting it time out all mean *No*. Under `--tui` this is a modal inside the interface — the thing neither predecessor could do, because a terminal form and a full-screen TUI cannot share a terminal.
 
-**Deny always wins.** A deny rule beats an allow rule and beats a temporary grant, so a rule you wrote to block something cannot be undone by clicking through a prompt later.
+**"No" and "Never" are different answers.** *No* refuses this request and leaves no trace. *No, and stop asking* refuses for the rest of the session — the answer for something you keep declining, which previously had no expression at all: the only way to make the prompt stop was to say yes. *Never* writes a deny rule.
+
+**Deny always wins**, at every level: a refusal beats an approval whether it was typed into a file, written by *Never*, or clicked as *stop asking*. Among answers of the same kind the written one wins. So a rule you wrote to block something cannot be undone by clicking through a prompt later — and a standing allow rule does not quietly re-open something you just said no to. That asymmetry is deliberate: an approval given by mistake costs you one secret, a refusal given by mistake costs you a moment's confusion, and the two should not be equally easy to reverse by accident.
+
+The **Secrets** tab in `--tui` lists everything currently deciding — live grants and refusals with their remaining time, the rules devtun wrote, and the rules from your own config. `r` revokes the first two. The last are marked *from your config* and are not editable there: devtun did not write them, and quietly rewriting a file you hand-wrote would be a worse surprise than saying no.
 
 ```yaml
 # ~/.config/devtun/config.yaml

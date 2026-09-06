@@ -87,6 +87,11 @@ type grant struct {
 	host    string
 	subject string
 	expires time.Time
+	// action is what answering the prompt decided. A grant can refuse as well
+	// as allow: "no, and stop asking this session" is a real answer, and
+	// without it the only way to stop being asked about something you keep
+	// declining is to approve it.
+	action Action
 }
 
 // live reports whether the grant still applies.
@@ -106,6 +111,10 @@ func (g grant) live(now time.Time) bool {
 type Grant struct {
 	Host    string
 	Subject string
+	// Action is what this grant decided. A refusal is as much live state as an
+	// approval, and showing only the approvals would make the Secrets tab
+	// answer "what is open" while quietly omitting "what is shut".
+	Action Action
 	// Expires is zero for a grant that lasts as long as devtun runs.
 	Expires time.Time
 	// HostWide reports a grant covering everything from a host rather than one
@@ -126,7 +135,7 @@ func (s *Store) Grants() []Grant {
 			continue
 		}
 		out = append(out, Grant{
-			Host: g.host, Subject: g.subject, Expires: g.expires,
+			Host: g.host, Subject: g.subject, Expires: g.expires, Action: g.action,
 			HostWide: g.subject == HostWildcard,
 		})
 	}
@@ -207,22 +216,59 @@ func (s *Store) Decide(host, subject string) Verdict {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Denies first, across both rule sets, so neither can be used to escape the
-	// other. Only then allows, and only then the grants a prompt created.
+	// Refusals first — every refusal, written down or clicked through — then
+	// approvals. Deny wins over allow at every level, and the order matters
+	// more now that a prompt can create a refusal as well as a rule.
+	//
+	// It would be tidier to say "persistent beats live" and let a standing
+	// allow rule override a session refusal. It would also be wrong. If I have
+	// a rule allowing a whole vault and then answer "no, stop asking" for one
+	// secret in it, the most recent and most specific thing I said was no; a
+	// policy that quietly kept allowing it would be answering a question I did
+	// not ask. Among decisions of the *same* sense, persistent still wins,
+	// which is why rules are consulted before grants within each pass.
+	if v, ok := s.denyLocked(host, subject); ok {
+		return v
+	}
+	if v, ok := s.allowLocked(host, subject); ok {
+		return v
+	}
+	return Verdict{Action: ActionAsk, Reason: "no matching rule"}
+}
+
+// denyLocked reports any standing refusal, rule or grant. Caller holds s.mu.
+func (s *Store) denyLocked(host, subject string) (Verdict, bool) {
 	for _, rule := range s.allRulesLocked() {
 		if rule.Action == ActionDeny && ruleMatches(rule, host, subject) {
-			return Verdict{Action: ActionDeny, Reason: fmt.Sprintf("denied by rule %s → %s", rule.Host, rule.Subject)}
+			return Verdict{Action: ActionDeny, Reason: fmt.Sprintf("denied by rule %s → %s", rule.Host, rule.Subject)}, true
 		}
 	}
-	for _, rule := range s.allRulesLocked() {
-		if rule.Action == ActionAllow && ruleMatches(rule, host, subject) {
-			return Verdict{Action: ActionAllow, Reason: fmt.Sprintf("allowed by rule %s → %s", rule.Host, rule.Subject)}
-		}
-	}
-
 	now := time.Now()
 	for _, g := range s.grants {
-		if g.host != host || !g.live(now) || !Match(g.subject, subject) {
+		if g.action != ActionDeny || g.host != host || !g.live(now) || !Match(g.subject, subject) {
+			continue
+		}
+		if g.expires.IsZero() {
+			return Verdict{Action: ActionDeny, Reason: "refused for this session"}, true
+		}
+		return Verdict{
+			Action: ActionDeny,
+			Reason: fmt.Sprintf("refused, %s left", time.Until(g.expires).Round(time.Second)),
+		}, true
+	}
+	return Verdict{}, false
+}
+
+// allowLocked reports any standing approval. Caller holds s.mu.
+func (s *Store) allowLocked(host, subject string) (Verdict, bool) {
+	for _, rule := range s.allRulesLocked() {
+		if rule.Action == ActionAllow && ruleMatches(rule, host, subject) {
+			return Verdict{Action: ActionAllow, Reason: fmt.Sprintf("allowed by rule %s → %s", rule.Host, rule.Subject)}, true
+		}
+	}
+	now := time.Now()
+	for _, g := range s.grants {
+		if g.action == ActionDeny || g.host != host || !g.live(now) || !Match(g.subject, subject) {
 			continue
 		}
 		scope := "grant"
@@ -230,16 +276,15 @@ func (s *Store) Decide(host, subject string) Verdict {
 			scope = "host grant"
 		}
 		if g.expires.IsZero() {
-			return Verdict{Action: ActionAllow, Reason: scope + ", this session"}
+			return Verdict{Action: ActionAllow, Reason: scope + ", this session"}, true
 		}
 		return Verdict{
 			Action: ActionAllow,
 			Reason: fmt.Sprintf("%s, %s left", scope, time.Until(g.expires).Round(time.Second)),
 			Until:  g.expires,
-		}
+		}, true
 	}
-
-	return Verdict{Action: ActionAsk, Reason: "no matching rule"}
+	return Verdict{}, false
 }
 
 // allRulesLocked is the global set followed by the host's own. Order within a
@@ -263,13 +308,38 @@ func ruleMatches(rule Rule, host, subject string) bool {
 // GrantTemporary allows subject from host until the TTL expires. A subject of
 // HostWildcard grants everything from that host.
 func (s *Store) GrantTemporary(host, subject string, ttl time.Duration) {
-	s.addGrant(grant{host: host, subject: subject, expires: time.Now().Add(ttl)})
+	s.addGrant(grant{host: host, subject: subject, expires: time.Now().Add(ttl), action: ActionAllow})
 }
 
 // GrantSession allows subject from host for as long as this process runs.
 // Nothing is written to disk, so quitting is how it is revoked.
 func (s *Store) GrantSession(host, subject string) {
-	s.addGrant(grant{host: host, subject: subject})
+	s.addGrant(grant{host: host, subject: subject, action: ActionAllow})
+}
+
+// RefuseSession refuses subject from host for as long as this process runs.
+//
+// It is the answer to "no, and stop asking", which the menu lacked entirely:
+// the only way to stop being asked about something you keep declining was to
+// approve it, which is a poor thing for a security prompt to teach. Nothing is
+// written to disk, so quitting undoes it.
+func (s *Store) RefuseSession(host, subject string) {
+	s.addGrant(grant{host: host, subject: subject, action: ActionDeny})
+}
+
+// RefusePermanent appends a deny rule to the host's own set and persists it.
+//
+// This is "never", and it is meant to be hard to undo: a deny beats every
+// allow, including one clicked through later, so the way back is to edit the
+// file or use `devtun policy`. That asymmetry is deliberate. An approval given
+// by mistake costs you one secret; a refusal given by mistake costs you a
+// moment's confusion, and the two should not be equally easy to reverse by
+// accident.
+func (s *Store) RefusePermanent(host, subject, note string) error {
+	return s.appendRule(Rule{
+		Host: host, Subject: subject, Action: ActionDeny, Note: note,
+		Added: time.Now().UTC().Truncate(time.Second),
+	})
 }
 
 func (s *Store) addGrant(g grant) {
@@ -281,15 +351,18 @@ func (s *Store) addGrant(g grant) {
 
 // GrantPermanent appends an allow rule to the host's own set and persists it.
 func (s *Store) GrantPermanent(host, subject, note string) error {
+	return s.appendRule(Rule{
+		Host: host, Subject: subject, Action: ActionAllow, Note: note,
+		Added: time.Now().UTC().Truncate(time.Second),
+	})
+}
+
+// appendRule adds one rule to the host's own set and writes it out. Allow and
+// deny share this so the two can never drift in how they are recorded.
+func (s *Store) appendRule(rule Rule) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.hostRules = append(s.hostRules, Rule{
-		Host:    host,
-		Subject: subject,
-		Action:  ActionAllow,
-		Note:    note,
-		Added:   time.Now().UTC().Truncate(time.Second),
-	})
+	s.hostRules = append(s.hostRules, rule)
 	return s.saveLocked()
 }
 
@@ -300,6 +373,22 @@ func (s *Store) Rules() []Rule {
 	defer s.mu.Unlock()
 	out := make([]Rule, len(s.hostRules))
 	copy(out, s.hostRules)
+	return out
+}
+
+// GlobalRules returns the rules that came from the top-level config, which
+// devtun did not write and will not remove.
+//
+// They are listed separately rather than folded into Rules because the two are
+// different kinds of thing to a person reading them: one is a decision devtun
+// recorded on their behalf and can take back, the other is a line they typed
+// into a file. An interface that offered to revoke the second would be offering
+// something it cannot do.
+func (s *Store) GlobalRules() []Rule {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Rule, len(s.config.Rules))
+	copy(out, s.config.Rules)
 	return out
 }
 

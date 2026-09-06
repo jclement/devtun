@@ -512,3 +512,52 @@ func TestRevokeWorksOnAGrant(t *testing.T) {
 		}
 	}
 }
+
+// A tab that shows only the rules devtun wrote sends somebody hunting for one
+// that is right there in their own config file.
+func TestSecretsTabShowsGlobalRulesButWillNotRevokeThem(t *testing.T) {
+	secrets := &stubSecrets{
+		rules:  []authz.Rule{{Host: "bedev", Subject: "op://Work/CI", Action: authz.ActionAllow}},
+		global: []authz.Rule{{Host: "**", Subject: "op://Private/**", Action: authz.ActionDeny}},
+	}
+	m := newTestModel(t, deps{secrets: oneSource(secrets)})
+	send(m, "3")
+
+	view := plainView(m)
+	if !strings.Contains(view, "op://Private/**") {
+		t.Errorf("a global rule is not listed:\n%s", view)
+	}
+	if !strings.Contains(view, "from your config") {
+		t.Errorf("a global rule should say where it came from:\n%s", view)
+	}
+
+	// Select the global rule — it is listed after the host's own — and try.
+	send(m, "down")
+	send(m, "down")
+	send(m, "r")
+
+	if len(secrets.revoked) != 0 {
+		t.Errorf("a global rule must not be revoked through the interface: %v", secrets.revoked)
+	}
+	if !strings.Contains(plainView(m), "config file") {
+		t.Errorf("the refusal should say where to edit it instead:\n%s", plainView(m))
+	}
+}
+
+// A refusal is live state too, and reading it as a grant would invert what it
+// says.
+func TestLiveRefusalReadsAsARefusal(t *testing.T) {
+	secrets := &stubSecrets{live: []authz.Grant{
+		{Host: "bedev", Subject: "op://Private/Root", Action: authz.ActionDeny},
+	}}
+	m := newTestModel(t, deps{secrets: oneSource(secrets)})
+	send(m, "3")
+
+	view := plainView(m)
+	if !strings.Contains(view, "refuse") {
+		t.Errorf("a deny grant should read as a refusal:\n%s", view)
+	}
+	if strings.Contains(view, "grant  ") {
+		t.Errorf("a deny grant must not be labelled as a grant:\n%s", view)
+	}
+}
