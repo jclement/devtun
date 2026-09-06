@@ -15,7 +15,10 @@ jobs:
         with: {fetch-depth: 0}
       - uses: actions/setup-go@v6
         with: {go-version: "1.27"}
-      - uses: sigstore/cosign-installer@v4
+      # sigstore publishes no floating major tag, so this is pinned exactly:
+      # `@v4` does not resolve, and the job fails at set-up before anything is
+      # built.
+      - uses: sigstore/cosign-installer@v4.1.2
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
