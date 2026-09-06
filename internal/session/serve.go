@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"fmt"
+	"net"
+	"path"
 	"sync"
 
 	"github.com/jclement/devtun/internal/event"
@@ -72,6 +74,15 @@ func (s *Session) serveOnce(ctx context.Context, conn Conn) (err error) {
 	socket := newSocketServer(s.events)
 	instances, advisors, adviceHost := s.attachAll(ctx, conn, facts, paths, label, socket)
 
+	// Services that speak a foreign protocol publish their own socket beside
+	// the control one. See service.SocketService for why this cannot go
+	// through Hello.
+	own, closeOwn, err := s.publishOwnSockets(ctx, conn, paths, instances)
+	if err != nil {
+		return err
+	}
+	defer closeOwn()
+
 	// running is closed by each service's goroutine as it returns, so teardown
 	// can wait for them. The contract says Close is called after Run has
 	// returned, and until this existed it simply was not: the supervisor
@@ -90,12 +101,17 @@ func (s *Session) serveOnce(ctx context.Context, conn Conn) (err error) {
 
 	// One channel, one buffer slot per goroutine, so nothing leaks blocked on
 	// a send once the first failure has been taken.
-	failures := make(chan error, len(instances)+2)
+	failures := make(chan error, len(instances)+len(own)+2)
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	go func() { failures <- socket.serve(serveCtx, listener) }()
 	go func() { failures <- conn.KeepAlive(serveCtx, keepAliveInterval, keepAliveTimeout) }()
+	for _, o := range own {
+		go func(o ownSocket) {
+			failures <- annotate(o.id, o.serve(serveCtx, o.listener))
+		}(o)
+	}
 	for _, inst := range instances {
 		go func(inst attached) {
 			defer running.Done()
@@ -116,10 +132,69 @@ func (s *Session) serveOnce(ctx context.Context, conn Conn) (err error) {
 	}
 }
 
+// ownSocket is a service's private listener on the remote box.
+type ownSocket struct {
+	id       string
+	path     string
+	listener net.Listener
+	serve    func(context.Context, net.Listener) error
+}
+
+// publishOwnSockets creates a socket for each service that needs one of its
+// own, and returns a function that tears them all down.
+//
+// A service that cannot publish its socket is reported and skipped rather than
+// failing the connection: an sshd with forwarding restrictions should not cost
+// you port forwarding, which needs nothing on the remote at all.
+func (s *Session) publishOwnSockets(
+	ctx context.Context, conn Conn, paths shim.RemotePaths, instances []attached,
+) ([]ownSocket, func(), error) {
+	var out []ownSocket
+
+	closeAll := func() {
+		for _, o := range out {
+			_ = o.listener.Close()
+			// Cleanup outlives the cancelled context that brought us here, or
+			// a stale socket is left for the next run to trip over.
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupGrace)
+			conn.RemoveSocket(cleanupCtx, o.path)
+			cancel()
+		}
+	}
+
+	for _, inst := range instances {
+		provider, ok := inst.service.(service.SocketService)
+		if !ok {
+			continue
+		}
+		path := path.Join(path.Dir(paths.Socket), provider.SocketName())
+		listener, err := conn.ListenSocket(ctx, path)
+		if err != nil {
+			s.opts.Bus.For(inst.meta.ID).Emit(event.Event{
+				Kind: "socket-failed", Class: event.Lifecycle, Level: event.Warn,
+				Text: inst.meta.Title + " could not publish its socket: " + err.Error(),
+			})
+			continue
+		}
+		out = append(out, ownSocket{
+			id: inst.meta.ID, path: path, listener: listener, serve: provider.ServeSocket,
+		})
+		s.opts.Bus.For(inst.meta.ID).Emit(event.Event{
+			Kind: "listening", Class: event.Diagnostic, Level: event.Debug,
+			Text:   inst.meta.Title + " is listening on " + path,
+			Fields: []any{"socket", path},
+		})
+	}
+	return out, closeAll, nil
+}
+
 // attached pairs a running instance with the service it came from.
 type attached struct {
 	meta     service.Meta
 	instance service.Instance
+	// service is kept so the session can ask about the optional interfaces
+	// after attaching, without a second pass over the registry.
+	service service.Service
 }
 
 // attachAll probes and attaches every enabled service, and registers the ones
@@ -190,7 +265,7 @@ func (s *Session) attachAll(
 		}
 
 		adviceHost = h
-		instances = append(instances, attached{meta: meta, instance: instance})
+		instances = append(instances, attached{meta: meta, instance: instance, service: svc})
 		// Diagnostic, not Info: three services starting normally is three lines
 		// of filler at the top of every session, and the one line that matters
 		// there — that we connected — was getting buried under them. A service

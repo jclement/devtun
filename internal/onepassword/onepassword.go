@@ -26,11 +26,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/onepassword/opcli"
-	"github.com/jclement/devtun/internal/onepassword/policy"
-	"github.com/jclement/devtun/internal/onepassword/prompt"
+	opguard "github.com/jclement/devtun/internal/onepassword/policy"
 	"github.com/jclement/devtun/internal/onepassword/vaultcache"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 )
 
@@ -52,9 +53,9 @@ type Options struct {
 	// Rules are the global policy rules, applying to every host. The rules
 	// devtun writes when a prompt is answered "always" are per-host and are
 	// kept in the host's own config document instead.
-	Rules []policy.Rule
+	Rules []authz.Rule
 	// Accounts routes vaults to 1Password accounts.
-	Accounts policy.Accounts
+	Accounts Accounts
 	// DefaultTTL is how long a "for a while" grant lasts. Zero means five
 	// minutes.
 	DefaultTTL time.Duration
@@ -86,8 +87,8 @@ type Options struct {
 // and a session grant lasts as long as devtun does.
 type Service struct {
 	opts     Options
-	store    *policy.Store
-	guard    *policy.Guard
+	store    *authz.Store
+	guard    *opguard.Guard
 	cache    *vaultcache.Cache
 	prompter prompt.Prompter
 
@@ -104,18 +105,18 @@ func New(opts Options) *Service {
 	if prompter == nil {
 		prompter = prompt.Serialize(prompt.DenyAll{})
 	}
-	store := policy.NewStore(policy.Config{
-		DefaultTTL:       opts.DefaultTTL,
-		PromptTimeout:    opts.PromptTimeout,
-		AllowCommands:    opts.AllowCommands,
-		AllowAllCommands: opts.AllowAllCommands,
-		Accounts:         opts.Accounts,
-		Rules:            opts.Rules,
+	store := authz.NewStore(authz.Config{
+		DefaultTTL:    opts.DefaultTTL,
+		PromptTimeout: opts.PromptTimeout,
+		Rules:         opts.Rules,
 	})
 	return &Service{
-		opts:     opts,
-		store:    store,
-		guard:    policy.NewGuard(store.Config()),
+		opts:  opts,
+		store: store,
+		guard: opguard.NewGuard(opguard.GuardConfig{
+			AllowCommands:    opts.AllowCommands,
+			AllowAllCommands: opts.AllowAllCommands,
+		}),
 		cache:    vaultcache.New(opts.CacheTTL),
 		prompter: prompter,
 		runner:   opts.Runner,
@@ -207,7 +208,7 @@ func (s *Service) Attach(_ context.Context, h service.Host) (service.Instance, e
 
 	s.host = h
 	if !s.adopted {
-		var rules []policy.Rule
+		var rules []authz.Rule
 		// GetLocal, not Get: the global rules were already loaded into this
 		// service through Options, and Get falls through to the global section
 		// when the host has no rules of its own. Reading them twice was
@@ -235,7 +236,7 @@ func (s *Service) Forget() (grants, cached int) {
 
 // Rules exposes the rules devtun wrote for this host, for a caller that lists
 // or revokes them.
-func (s *Service) Rules() []policy.Rule { return s.store.Rules() }
+func (s *Service) Rules() []authz.Rule { return s.store.Rules() }
 
 // Revoke removes the host rule at index, as numbered by Rules.
 func (s *Service) Revoke(index int) error { return s.store.Revoke(index) }
@@ -244,7 +245,7 @@ func (s *Service) Revoke(index int) error { return s.store.Revoke(index) }
 // the access currently open in the user's name, as opposed to the rules on
 // disk. Forget() drops all of them at once; this is what makes it possible to
 // see one and drop just that one.
-func (s *Service) Grants() []policy.Grant { return s.store.Grants() }
+func (s *Service) Grants() []authz.Grant { return s.store.Grants() }
 
 // RevokeGrant drops a single live grant, reporting whether it was there.
 func (s *Service) RevokeGrant(host, subject string) bool {
@@ -299,6 +300,6 @@ type configSaver struct {
 }
 
 // SaveRules stores the whole rule set under the service's "rules" key.
-func (c configSaver) SaveRules(rules []policy.Rule) error {
+func (c configSaver) SaveRules(rules []authz.Rule) error {
 	return c.config.Set(rulesKey, rules)
 }

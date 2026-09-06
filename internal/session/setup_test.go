@@ -221,3 +221,37 @@ func TestRebuildBlockLeavesAnUnwritablePlanAlone(t *testing.T) {
 		t.Errorf("a plan with no file should have no block, got %q", got.Block)
 	}
 }
+
+// A line the shell already exports is not missing, and printing it anyway is
+// how a setup notice becomes noise people scroll past.
+func TestAlreadySetRecognisesAnExistingExport(t *testing.T) {
+	facts := service.Facts{Env: map[string]string{
+		"SSH_AUTH_SOCK": "/run/user/1000/devtun-agent.sock",
+	}}
+
+	if !alreadySet(facts, `export SSH_AUTH_SOCK="/run/user/1000/devtun-agent.sock"`) {
+		t.Error("an exact match should count as already set")
+	}
+	// A different value is somebody else's agent, or a stale path from a
+	// previous run. Accepting it silently leaves a service that cannot work and
+	// no line saying why.
+	if alreadySet(facts, `export SSH_AUTH_SOCK="/tmp/other-agent.sock"`) {
+		t.Error("a different value must not count as already set")
+	}
+	if alreadySet(service.Facts{}, `export SSH_AUTH_SOCK="/x"`) {
+		t.Error("an unset variable is not already set")
+	}
+}
+
+// A value containing a variable cannot be compared without expanding it, so
+// devtun must not pretend it can.
+func TestUnexpandableExportIsNeverConsideredSet(t *testing.T) {
+	facts := service.Facts{Env: map[string]string{"PATH": "/home/jsc/.devtun/bin:/usr/bin"}}
+
+	if alreadySet(facts, `export PATH="$HOME/.devtun/bin:$PATH"`) {
+		t.Error("a value with a variable in it cannot be compared")
+	}
+	if _, _, ok := parseExport("fish_add_path /home/jsc/.devtun/bin"); ok {
+		t.Error("only the export form devtun generates should parse")
+	}
+}

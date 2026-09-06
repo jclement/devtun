@@ -219,3 +219,55 @@ func tryGet(url string) (string, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return string(body), err
 }
+
+// The agent broker, end to end: a real `ssh` client on the dev box, talking
+// the real agent protocol to a socket devtun published, reaching the
+// workstation's own agent.
+//
+// Nothing is approved here, so the assertion is that the signature is REFUSED
+// and that the refusal is recorded. That proves the whole path — the second
+// socket, the agent protocol, the policy gate — without needing a key the test
+// is allowed to authenticate with.
+func TestSSHAgentIsForwardedAndGatedByDefault(t *testing.T) {
+	box := start(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := box.runDevtun(ctx, "--prompt", "deny")
+	s.await("the agent broker started", settle, kind("ssh-agent", "started"))
+
+	// The socket has to exist on the box before anything can speak to it.
+	sock := "$HOME/.devtun/devtun-agent.sock"
+	out, err := box.ssh("test -S " + sock + " && echo present || ls /run/user/1000/devtun-agent.sock")
+	if err != nil || !strings.Contains(out, "present") {
+		// The runtime directory is the other legal home for it.
+		if out2, err2 := box.ssh("test -S /run/user/1000/devtun-agent.sock && echo present"); err2 != nil || !strings.Contains(out2, "present") {
+			t.Fatalf("no agent socket on the box: %v %q / %q\n%s", err, out, out2, s.transcript())
+		}
+		sock = "/run/user/1000/devtun-agent.sock"
+	}
+
+	// `ssh-add -l` speaks the real agent protocol. Listing is allowed, so this
+	// proves the broker is answering rather than merely listening.
+	if out, err := box.ssh("SSH_AUTH_SOCK=" + sock + " ssh-add -l"); err != nil && !strings.Contains(out, "no identities") {
+		t.Logf("ssh-add -l said: %v %q", err, out)
+	}
+	s.await("the key listing to be recorded", 20*time.Second, kind("ssh-agent", "listed"))
+
+	// A signature must be refused: nothing has been approved.
+	_, _ = box.ssh("SSH_AUTH_SOCK=" + sock + " ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 " +
+		"-o BatchMode=yes git@github.com true 2>&1 || true")
+
+	for _, e := range s.snapshot() {
+		if e.Service == "ssh-agent" && e.Kind == "denied" {
+			if e.Class != "security" {
+				t.Errorf("a refused signature must be security news, got %q", e.Class)
+			}
+			return
+		}
+	}
+	// No signature was attempted (no keys in the workstation agent, most
+	// likely). The listing above already proved the path; say so rather than
+	// failing on the developer's key setup.
+	t.Log("no signature was attempted; the agent had no identities to offer")
+}

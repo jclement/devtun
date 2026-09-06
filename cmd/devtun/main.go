@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -30,6 +32,14 @@ func main() {
 	if code, handled := runShim(ctx, os.Args); handled {
 		os.Exit(code)
 	}
+
+	// x/crypto's agent server writes every request that returns an error — every
+	// refused signature — to the standard logger, and offers no way to turn it
+	// off. Those refusals are already events, rendered properly; a second
+	// unstyled copy landing in the middle of the TUI would corrupt the frame.
+	// devtun uses the standard logger for nothing else, so silencing it here is
+	// the whole fix.
+	log.SetOutput(io.Discard)
 
 	ui.Init()
 	if err := newRootCommand().ExecuteContext(ctx); err != nil {
@@ -52,7 +62,8 @@ func newRootCommand() *cobra.Command {
 
   tunnels     every port the box opens appears on your localhost
   1password   the box's ` + "`op`" + ` calls reach your vault, one approval at a time
-  browser     URLs the box wants opened open here
+  ssh-agent   the box signs with your keys, one approved signature at a time
+  browser     URLs the box tries to open, open here instead
 
 <destination> is an ssh_config alias or [user@]host[:port]. The alias is also
 the name settings and approvals are recorded against, so they keep working when

@@ -10,7 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/jclement/devtun/internal/onepassword/prompt"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 )
@@ -19,7 +19,7 @@ func testRequest() prompt.Request {
 	return prompt.Request{
 		Host:    "bedev",
 		Subject: "op://Personal/Docker/PAT",
-		Argv:    []string{"read", "op://Personal/Docker/PAT"},
+		Rows:    []prompt.Row{{Label: "command", Value: "op " + strings.Join([]string{"read", "op://Personal/Docker/PAT"}, " ")}},
 		Caller:  service.Caller{User: "jeff", Host: "bedev", Program: "deploy.sh", PID: 4242, CWD: "~/projects/api"},
 		TTL:     5 * time.Minute,
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/jclement/devtun/internal/onepassword"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
+	"github.com/jclement/devtun/internal/sshagent"
 	"github.com/jclement/devtun/internal/tunnels"
 	"github.com/jclement/devtun/internal/ui"
 )
@@ -38,6 +39,7 @@ type Options struct {
 	Bus      *event.Bus
 	Tunnels  *tunnels.Service
 	Secrets  *onepassword.Service
+	Agent    *sshagent.Service
 	Services []service.Service
 	Host     string
 	Version  string
@@ -55,7 +57,7 @@ func Run(ctx context.Context, o Options) error {
 
 	model := newModel(deps{
 		tunnels:  tunnelAdapter{svc: o.Tunnels},
-		secrets:  secretsOf(o.Secrets),
+		secrets:  secretSources(o.Secrets, o.Agent),
 		store:    storeOf(o.Store),
 		services: o.Services,
 		status:   statusOf(o.Session),
@@ -218,12 +220,31 @@ func (a tunnelAdapter) SetViewPrefs(p tunnels.ViewPrefs) {
 // interface that is nil, which is the difference between "no 1Password on this
 // session" and a crash.
 
-func secretsOf(s *onepassword.Service) secretsCtrl {
-	if s == nil {
-		return nil
+// secretSources lists the brokers whose grants and rules the Secrets tab shows.
+//
+// A nil service is left out rather than listed as empty: a session running only
+// tunnels has no broker at all, and a tab offering to revoke nothing from a
+// thing that is not running would be a lie about what is happening.
+func secretSources(op *onepassword.Service, agent *sshagent.Service) []secretSource {
+	var out []secretSource
+	if op != nil {
+		out = append(out, secretSource{id: "1password", title: "1Password", ctrl: op})
 	}
-	return s
+	if agent != nil {
+		out = append(out, secretSource{id: "ssh-agent", title: "SSH Agent", ctrl: cachelessBroker{agent}})
+	}
+	return out
 }
+
+// cachelessBroker adapts a broker that has nothing to purge.
+//
+// The agent never holds a secret to cache: it does not see key material at any
+// point, it only asks the real agent to produce a signature. So it can forget
+// grants but has no second number to report, and reporting a zero it computed
+// is more honest than an interface pretending every broker keeps a cache.
+type cachelessBroker struct{ *sshagent.Service }
+
+func (b cachelessBroker) Forget() (grants, cached int) { return b.Service.Forget(), 0 }
 
 func storeOf(s *hostcfg.Store) configStore {
 	if s == nil {

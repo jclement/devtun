@@ -6,7 +6,7 @@ import (
 )
 
 func TestGuardCheck(t *testing.T) {
-	guard := NewGuard(Config{})
+	guard := NewGuard(GuardConfig{})
 
 	tests := []struct {
 		name        string
@@ -51,7 +51,7 @@ func TestGuardCheck(t *testing.T) {
 }
 
 func TestGuardHonoursExtraAllowedCommands(t *testing.T) {
-	guard := NewGuard(Config{AllowCommands: []string{"item create"}})
+	guard := NewGuard(GuardConfig{AllowCommands: []string{"item create"}})
 	if err := guard.Check([]string{"item", "create", "login"}); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestGuardHonoursExtraAllowedCommands(t *testing.T) {
 // but it must not open the local-state flags, which are about *where* the
 // command acts rather than what it does.
 func TestAllowAllCommandsStillBlocksLocalStateFlags(t *testing.T) {
-	guard := NewGuard(Config{AllowAllCommands: true})
+	guard := NewGuard(GuardConfig{AllowAllCommands: true})
 	if err := guard.Check([]string{"item", "delete", "Docker"}); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestAllowAllCommandsStillBlocksLocalStateFlags(t *testing.T) {
 // stepped around by prefixing any option, and `op --account x run -- sh -c …`
 // reached the workstation's shell.
 func TestGlobalFlagsDoNotHideTheCommand(t *testing.T) {
-	guard := NewGuard(Config{})
+	guard := NewGuard(GuardConfig{})
 
 	mustRefuse := [][]string{
 		{"--account", "work", "item", "delete", "X"},
@@ -116,7 +116,7 @@ func TestGlobalFlagsDoNotHideTheCommand(t *testing.T) {
 // guessing either way fails open. Refusing costs a line in the table when `op`
 // grows a flag; guessing costs the allowlist its meaning.
 func TestUnknownGlobalFlagIsRefused(t *testing.T) {
-	guard := NewGuard(Config{})
+	guard := NewGuard(GuardConfig{})
 
 	err := guard.Check([]string{"--brand-new-flag", "value", "read", "op://V/I/F"})
 

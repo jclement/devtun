@@ -4,7 +4,7 @@
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      openssh-server python3 iproute2 lsof net-tools ca-certificates zsh \
+      openssh-server openssh-client python3 iproute2 lsof net-tools ca-certificates zsh \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /run/sshd
 

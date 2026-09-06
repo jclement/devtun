@@ -7,8 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
-	"github.com/jclement/devtun/internal/onepassword/policy"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/tunnels"
 )
@@ -195,11 +195,11 @@ func TestActivitySearchFiltersTheScrollback(t *testing.T) {
 }
 
 func TestSecretsTabListsRulesAndRevokesTheSelectedOne(t *testing.T) {
-	secrets := &stubSecrets{rules: []policy.Rule{
-		{Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: policy.ActionAllow},
-		{Host: "bedev", Subject: "op://Work/Deploy/key", Action: policy.ActionDeny},
+	secrets := &stubSecrets{rules: []authz.Rule{
+		{Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: authz.ActionAllow},
+		{Host: "bedev", Subject: "op://Work/Deploy/key", Action: authz.ActionDeny},
 	}}
-	m := newTestModel(t, deps{tunnels: newStub(), secrets: secrets})
+	m := newTestModel(t, deps{tunnels: newStub(), secrets: oneSource(secrets)})
 	send(m, "3")
 
 	view := plainView(m)
@@ -223,10 +223,10 @@ func TestSecretsTabListsRulesAndRevokesTheSelectedOne(t *testing.T) {
 // The one rule of the Secrets tab: a secret value must never reach the
 // clipboard. y copies the reference — the name of the secret, not the secret.
 func TestSecretsYankCopiesTheReferenceOnly(t *testing.T) {
-	secrets := &stubSecrets{rules: []policy.Rule{
-		{Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: policy.ActionAllow},
+	secrets := &stubSecrets{rules: []authz.Rule{
+		{Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: authz.ActionAllow},
 	}}
-	m := newTestModel(t, deps{tunnels: newStub(), secrets: secrets})
+	m := newTestModel(t, deps{tunnels: newStub(), secrets: oneSource(secrets)})
 	send(m, "3")
 	send(m, "down")
 
@@ -429,11 +429,11 @@ func TestAgeAndTrafficFormatting(t *testing.T) {
 // without knowing a shortcut — so a click has to run the same thing the key
 // does, including where the same letter means different things per tab.
 func TestClickingTheKeyBarRunsTheTabsOwnAction(t *testing.T) {
-	secrets := &stubSecrets{rules: []policy.Rule{
-		{Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: policy.ActionAllow},
-		{Host: "bedev", Subject: "op://Work/Deploy/key", Action: policy.ActionAllow},
+	secrets := &stubSecrets{rules: []authz.Rule{
+		{Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: authz.ActionAllow},
+		{Host: "bedev", Subject: "op://Work/Deploy/key", Action: authz.ActionAllow},
 	}}
-	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node")), secrets: secrets})
+	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node")), secrets: oneSource(secrets)})
 	send(m, "3")
 	send(m, "down")
 	m.frame() // the zones are recorded as the bar renders
@@ -458,13 +458,13 @@ func TestClickingTheKeyBarRunsTheTabsOwnAction(t *testing.T) {
 // state devtun holds. It has to be visible, and revocable one at a time.
 func TestSecretsTabListsLiveGrantsFirst(t *testing.T) {
 	secrets := &stubSecrets{
-		rules: []policy.Rule{{Host: "bedev", Subject: "op://Work/CI", Action: policy.ActionAllow}},
-		live: []policy.Grant{
+		rules: []authz.Rule{{Host: "bedev", Subject: "op://Work/CI", Action: authz.ActionAllow}},
+		live: []authz.Grant{
 			{Host: "bedev", Subject: "op://Personal/Docker/PAT", Expires: time.Now().Add(5 * time.Minute)},
-			{Host: "bedev", Subject: policy.HostWildcard, HostWide: true},
+			{Host: "bedev", Subject: authz.HostWildcard, HostWide: true},
 		},
 	}
-	m := newTestModel(t, deps{secrets: secrets})
+	m := newTestModel(t, deps{secrets: oneSource(secrets)})
 	send(m, "3")
 
 	view := plainView(m)
@@ -491,9 +491,9 @@ func TestSecretsTabListsLiveGrantsFirst(t *testing.T) {
 // `r` should not make the user care whether the row is a grant or a rule.
 func TestRevokeWorksOnAGrant(t *testing.T) {
 	secrets := &stubSecrets{
-		live: []policy.Grant{{Host: "bedev", Subject: "op://Personal/Docker/PAT"}},
+		live: []authz.Grant{{Host: "bedev", Subject: "op://Personal/Docker/PAT"}},
 	}
-	m := newTestModel(t, deps{secrets: secrets})
+	m := newTestModel(t, deps{secrets: oneSource(secrets)})
 	send(m, "3")
 	send(m, "down")
 	send(m, "r")

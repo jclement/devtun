@@ -12,15 +12,13 @@
 // undone by a per-host approval. A persistent deny also beats a live grant, so
 // a rule added to block something cannot be undone by clicking through a
 // prompt.
-package policy
+package authz
 
 import (
 	"fmt"
 	"sort"
 	"sync"
 	"time"
-
-	"github.com/jclement/devtun/internal/onepassword/opref"
 )
 
 // Action is the outcome of matching a request against the policy.
@@ -55,30 +53,6 @@ type Rule struct {
 	Added   time.Time `yaml:"added,omitempty"`
 }
 
-// Accounts routes a request to one of several 1Password accounts.
-//
-// A secret reference names a vault but not an account, and `op` resolves an
-// ambiguous vault against whichever account is currently the default — so with
-// two accounts signed in, half your references quietly fail. Vaults belong to
-// exactly one account, so the vault is the right thing to route on.
-type Accounts struct {
-	// Default is used for any vault not named in ByVault. Empty means "let op
-	// decide", which is correct when only one account is signed in.
-	Default string `yaml:"default,omitempty"`
-	// ByVault maps a vault name to the account that holds it.
-	ByVault map[string]string `yaml:"by_vault,omitempty"`
-}
-
-// For returns the account to use for a subject, or "" to let op choose.
-func (a Accounts) For(subject string) string {
-	if ref, err := opref.Parse(subject); err == nil {
-		if account, ok := a.ByVault[ref.Vault]; ok {
-			return account
-		}
-	}
-	return a.Default
-}
-
 // Config is everything the store and the guard need to know that does not
 // change while the process runs. It is passed in rather than read from a file,
 // because where these settings live is the caller's business.
@@ -89,16 +63,6 @@ type Config struct {
 	// that hangs forever is worse than one that fails, because it stalls
 	// whatever script made it.
 	PromptTimeout time.Duration
-	// AllowCommands extends the read-only command allowlist in guard.go. Each
-	// entry is a space-separated command path, e.g. "item create".
-	AllowCommands []string
-	// AllowAllCommands disables the command allowlist entirely. It means any
-	// process on the remote box can drive your unlocked vault, including
-	// deleting items; it exists as an escape hatch, not as a setting to enable
-	// casually.
-	AllowAllCommands bool
-	// Accounts routes vaults to 1Password accounts.
-	Accounts Accounts
 	// Rules are the global rules, applying to every host.
 	Rules []Rule
 }

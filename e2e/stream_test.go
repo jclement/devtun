@@ -152,6 +152,14 @@ func (s *stream) never(what string, window time.Duration, match func(evt) bool) 
 	}
 }
 
+// snapshot copies what has been seen so far, for assertions that scan rather
+// than wait.
+func (s *stream) snapshot() []evt {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]evt(nil), s.seen...)
+}
+
 func (s *stream) transcript() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

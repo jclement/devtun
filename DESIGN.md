@@ -68,7 +68,8 @@ the Service. A reconnect is therefore invisible to policy — you are not re-ask
 for a secret you approved a minute ago — and browser tabs keep working because
 the same local port numbers are reclaimed.
 
-**3. One socket, and a `Hello` frame routes it.** opproxy's protocol was an `op`
+**3. One socket for devtun's own services, and a `Hello` frame routes it — but
+a service whose clients are not devtun gets its own.** opproxy's protocol was an `op`
 invocation with no room for a discriminator, so a second service would have
 meant a second socket, a second path convention and a second line in the user's
 shell rc. devtun reads a `Hello` naming a service and hands the connection to
@@ -81,6 +82,17 @@ connection silently routed nowhere. And the envelope says nothing about what
 follows it, so a service wanting a long-lived bidirectional stream needs no
 renegotiation; one-request-per-connection remains the rule for `op` because it is
 a deliberate isolation property, not an accident of the framing.
+
+**The limit of this, stated plainly, because an earlier version of this document
+got it wrong.** Hello works because both ends are devtun. A service whose clients
+are somebody else's software cannot use it: an `ssh` client connects to
+`SSH_AUTH_SOCK` and immediately speaks the SSH agent protocol, and nothing on
+this side will make it send a greeting frame first. `service.SocketService` is
+the escape hatch — a service declares a socket name and serves its own listener,
+published beside the control socket by the session. The cost is a second path
+and a second line in the user's shell rc, and it is paid by that service alone.
+Services that *can* use Hello still should; one socket and one rc line is the
+better arrangement wherever it is available.
 
 **4. The remote setup is one line, and it is a `PATH` entry rather than an
 environment variable.** A per-session variable can only reach shells started
@@ -176,6 +188,44 @@ refused rather than skipped. We cannot know whether an unknown flag eats the
 next argument, and guessing wrong either hides the real command or invents one
 — both fail open. The cost is a line to add when `op` grows a flag. That is the
 right trade for a guard that means something.
+
+**6d. The SSH agent is a service, and building it is what created
+`internal/authz`.** `ssh -A` already forwards an agent; the value here is that
+plain `ForwardAgent` is a blind trust decision — anyone with your uid or root on
+that box can silently authenticate as you, anywhere, for as long as you are
+connected, and you never learn it happened. devtun already owned the four things
+that fix that: a prompt, per-host policy with deny beating allow, TTL grants,
+and a security-classed log. All four lived inside `internal/onepassword`.
+Building this service is what turned them into `internal/authz` and
+`internal/prompt` — exactly the refactor the second-opinion review predicted it
+would require, which is the most useful thing that review said.
+
+Four decisions inside it are not negotiable:
+
+- **`Sign` is gated; `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock` and
+  `Signers` are refused outright.** They never reach policy and cannot be
+  prompted into working. A remote box has no business modifying your agent —
+  the same reasoning as the guard refusing `--session`. `Signers` is on that
+  list because handing one back would hand back an *ungated signing
+  capability*, making everything above it decorative. `List` is allowed and
+  logged: it does reveal which keys you hold.
+- **The session-bind signature is verified, not merely parsed.** OpenSSH 8.9+
+  sends `session-bind@openssh.com` naming the destination's host key before it
+  signs. That host key is half the policy subject — so if it were taken on the
+  client's word, a process on the dev box could claim GitHub's host key, collect
+  the grant a human gave for GitHub, and spend it authenticating elsewhere. The
+  signature over the session identifier is what makes the destination a fact
+  rather than a claim, and a bind that fails to verify drops the binding rather
+  than leaving an earlier one standing.
+- **The subject says when it does not know.** An older `ssh` sends no bind at
+  all, and then the destination reads `(destination unknown)`. Inventing one
+  would be worse than vagueness, because it would be a specific claim that
+  happened to be untrue.
+- **Grants default to per key and destination, for the session, and the cursor
+  starts there.** `git push` signs several times in a row. A menu whose default
+  costs a keystroke per signature is a service switched off by lunchtime, and a
+  service switched off protects nothing. The options stay in narrowest-first
+  order; only the starting point moves.
 
 **7. Authorisation is two layers and the order matters.** The *guard* asks
 whether this shape of command may be proxied at all, default-deny against a
@@ -366,51 +416,20 @@ opening nothing, because it looks like it worked.
 
 ## Deferred
 
-**The SSH agent as service #4.** This is the immediate next thing, and the real
-test of §1. opproxy described itself as "agent forwarding, inverted", so
-forwarding an actual agent is the case this architecture was reverse-engineered
-from, and `x/crypto/ssh/agent` supplies both halves.
-
-The value is not the forwarding — `ssh -A` does that. It is that `ForwardAgent`
-is today a blind trust decision: anyone with your uid or root on that box can
-silently authenticate as you, anywhere, for as long as you are connected, and
-you never learn it happened. devtun already owns the four things that fix it —
-an approval prompt, persistent per-host policy with deny beating allow, TTL
-grants, and a security-classed log.
-
-- `Sign` is gated. `Add`, `Remove`, `RemoveAll` and `Lock` are refused outright:
-  a remote box has no business mutating your agent, the same reasoning as the
-  guard refusing `--session` and `--config`. `List` is allowed but logged.
-- The subject is the key fingerprint plus the destination where it is knowable.
-  OpenSSH 8.9+ sends `session-bind@openssh.com` carrying the destination host
-  key, which is how it implements its own agent restrictions; when it is present
-  the prompt can name github.com, and when it is absent the prompt must say so
-  rather than implying a precision it does not have.
-- Grants must default to per (key, destination) for a session, or `git push`
-  generates enough prompts that the service is switched off within the hour.
-- **It does not fit the `Hello` envelope, and this document used to claim it
-  would.** An `ssh` client connects to `SSH_AUTH_SOCK` and immediately speaks the
-  agent binary protocol; it will never send devtun's greeting frame, and nothing
-  can make it. So the agent needs its own remote socket — either a second
-  reverse forward, or a small resident adapter that speaks agent protocol on one
-  side and Hello on the other. Both cost the "one socket" property in §3.
-
-  That is worth stating plainly because §1 advertises the service seam as
-  extensible, and this is the first real test of the claim. The verdict is
-  mixed: the *lifecycle* half (Meta/Probe/Attach/Instance, reconnection, config,
-  events) genuinely does absorb a new service without changes. The *transport*
-  half does not, and neither does the authorisation machinery — approval,
-  grants, deny-precedence and policy persistence all live inside
-  `internal/onepassword` rather than in anything reusable. An agent broker wants
-  every one of them. Lifting them into a shared `internal/authz` is the work
-  this service will actually require, and pretending otherwise would mean
-  discovering it halfway through.
-- It costs the "one line forever" property: `ssh` finds its agent through
-  `SSH_AUTH_SOCK` and there is no binary to shadow, so the rc block becomes two
-  lines with a fixed socket path.
+**Lift the prompt-to-grant translation into `authz`.** `authorize` and
+`recordGrant` now exist twice — once in `internal/onepassword`, once in
+`internal/sshagent` — as near-copies. `authz` supplied the store and the rules;
+what it did not supply is the small dance of *ask a human, then turn their
+answer into a grant of the right shape and lifetime*. That is the piece to
+extract, as something like `authz.Broker` taking a `Prompter`, and it should
+happen before a fifth service copies it a third time. Two copies is a
+coincidence; three is a design.
 
 **Other services** — a forwarded Docker socket, an AWS SSO broker, GPG. The seam
-is the deliverable, not a fourth service.
+is the deliverable, not any particular one of them. What the agent proved is
+that the lifecycle half absorbs a new service cleanly and the transport half
+does not: a service speaking someone else's protocol needs `SocketService` and
+its own rc line, and that will be true of the Docker socket too.
 
 **Several hosts in one interface.** `session` is already per-host and nothing
 prevents it; the first cut is one host per process, as both predecessors were.

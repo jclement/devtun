@@ -168,3 +168,49 @@ func TestEveryProbedToolAppearsInTheScript(t *testing.T) {
 		}
 	}
 }
+
+// A remote environment commonly holds tokens, so the probe asks about a short
+// allowlist rather than reading all of it to answer one question.
+func TestOnlyAllowlistedEnvironmentIsCollected(t *testing.T) {
+	out := `@@DEVTUN-BASICS
+/home/jsc
+
+/bin/zsh
+jsc
+bedev
+Linux
+x86_64
+@@DEVTUN-SHELL
+PATH	/usr/bin
+env.SSH_AUTH_SOCK	/run/user/1000/keyring/ssh
+env.BROWSER	
+@@DEVTUN-END
+`
+	facts := parseFacts(out)
+
+	if got := facts.EnvValue("SSH_AUTH_SOCK"); got != "/run/user/1000/keyring/ssh" {
+		t.Errorf("SSH_AUTH_SOCK = %q", got)
+	}
+	if got := facts.EnvValue("BROWSER"); got != "" {
+		t.Errorf("an unset variable should read empty, got %q", got)
+	}
+	if got := facts.EnvValue("AWS_SECRET_ACCESS_KEY"); got != "" {
+		t.Errorf("nothing outside the allowlist should be collected, got %q", got)
+	}
+}
+
+// The script must only ever ask about the allowlist — that is the whole point
+// of having one.
+func TestScriptAsksOnlyForAllowlistedEnvironment(t *testing.T) {
+	script := factsScript()
+	for _, name := range probedEnv {
+		if !strings.Contains(script, "${"+name+"-}") {
+			t.Errorf("the probe never asks for %q", name)
+		}
+	}
+	for _, secret := range []string{"AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "$(env)", "printenv"} {
+		if strings.Contains(script, secret) {
+			t.Errorf("the probe reaches for %q, which it has no business reading", secret)
+		}
+	}
+}

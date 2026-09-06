@@ -50,14 +50,27 @@ var blockedCommands = map[string]string{
 }
 
 // Guard checks command shape against the allowlist and flag rules.
+// GuardConfig is what the command allowlist needs. It is the guard's own
+// because a command allowlist is a 1Password idea: authz knows about hosts and
+// subjects, and nothing about `op` having subcommands.
+type GuardConfig struct {
+	// AllowCommands extends the read-only defaults. Each entry is a
+	// space-separated command path, e.g. "item create".
+	AllowCommands []string
+	// AllowAllCommands disables the allowlist entirely. It means any process on
+	// the remote box can drive your unlocked vault, deletions included; it is
+	// an escape hatch, not a setting to enable casually.
+	AllowAllCommands bool
+}
+
 type Guard struct {
 	allowed  map[string]bool
 	allowAll bool
 }
 
 // NewGuard builds a guard from configuration. Commands listed in
-// Config.AllowCommands are added to the read-only defaults.
-func NewGuard(config Config) *Guard {
+// GuardConfig.AllowCommands are added to the read-only defaults.
+func NewGuard(config GuardConfig) *Guard {
 	allowed := make(map[string]bool, len(readOnlyCommands)+len(config.AllowCommands))
 	for _, command := range readOnlyCommands {
 		allowed[command] = true

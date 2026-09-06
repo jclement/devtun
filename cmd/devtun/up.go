@@ -10,16 +10,17 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/browser"
 	"github.com/jclement/devtun/internal/buildinfo"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/onepassword"
-	oppolicy "github.com/jclement/devtun/internal/onepassword/policy"
-	"github.com/jclement/devtun/internal/onepassword/prompt"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/render"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
+	"github.com/jclement/devtun/internal/sshagent"
 	"github.com/jclement/devtun/internal/sshx"
 	"github.com/jclement/devtun/internal/tui"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -55,6 +56,9 @@ type upFlags struct {
 	remoteBind string
 	samePort   bool
 	interval   time.Duration
+
+	// SSH agent
+	noAgent bool
 
 	// 1Password
 	promptBackend string
@@ -104,6 +108,7 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	fl.BoolVar(&f.samePort, "same-port", false, "never remap; a busy local port is an error")
 	fl.DurationVar(&f.interval, "interval", 2*time.Second, "how often to scan the remote for new ports")
 
+	fl.BoolVar(&f.noAgent, "no-agent", false, "do not forward your SSH agent")
 	fl.StringVar(&f.promptBackend, "prompt", "auto", "approvals: auto, tui, dialog, deny")
 	fl.StringVar(&f.account, "account", "", "pin 1Password requests to one account")
 	fl.StringVar(&f.opPath, "op", "", "path to the 1Password CLI")
@@ -156,7 +161,7 @@ func runUp(ctx context.Context, f upFlags) error {
 	useTUI := f.tui && ui.IsTTY() && !f.jsonOut && !f.plain
 
 	bus := event.NewBus(historyLimit)
-	services, tunnelSvc, opSvc, err := buildServices(f, store, useTUI)
+	services, tunnelSvc, opSvc, agentSvc, err := buildServices(f, store, useTUI)
 	if err != nil {
 		return err
 	}
@@ -184,6 +189,7 @@ func runUp(ctx context.Context, f upFlags) error {
 			Bus:        bus,
 			Tunnels:    tunnelSvc,
 			Secrets:    opSvc,
+			Agent:      agentSvc,
 			Services:   services,
 			Host:       dest.Label(),
 			Version:    buildinfo.Version(),
@@ -254,10 +260,10 @@ func resolveDestination(f upFlags) (*sshx.Destination, sshx.Options, error) {
 // Tunnels comes first because the browser bridge resolves ports through it, and
 // because it is the one that needs nothing on the remote box: if everything
 // else fails, forwarding still works, which is very often why devtun was run.
-func buildServices(f upFlags, store *hostcfg.Store, useTUI bool) ([]service.Service, *tunnels.Service, *onepassword.Service, error) {
+func buildServices(f upFlags, store *hostcfg.Store, useTUI bool) ([]service.Service, *tunnels.Service, *onepassword.Service, *sshagent.Service, error) {
 	policy, err := tunnelPolicy(f)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	tunnelSvc := tunnels.New(tunnels.Options{
@@ -270,15 +276,15 @@ func buildServices(f upFlags, store *hostcfg.Store, useTUI bool) ([]service.Serv
 
 	prompter, err := buildPrompter(f, useTUI)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	rules, err := globalRules(store)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	accounts, err := globalAccounts(store, f.account)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	opSvc := onepassword.New(onepassword.Options{
 		Rules:         rules,
@@ -290,6 +296,19 @@ func buildServices(f upFlags, store *hostcfg.Store, useTUI bool) ([]service.Serv
 		OpPath:        f.opPath,
 	})
 
+	// The agent broker is enabled like every other service, and gated the same
+	// way: nothing is signed without an approval, and nothing happens at all
+	// until SSH_AUTH_SOCK points at it — a line the user has to accept. Being
+	// the odd service out and defaulting to off would not add safety, it would
+	// only add a flag to discover after `git push` has already failed.
+	agentSvc := sshagent.New(sshagent.Options{
+		Rules:         rules,
+		DefaultTTL:    f.ttl,
+		PromptTimeout: f.promptTimeout,
+		AuthSock:      f.authSock,
+		KnownHosts:    f.knownHosts,
+	})
+
 	browserSvc := browser.New(browser.Options{
 		// The service, not its Manager: the Manager does not exist until the
 		// first connection, so capturing it here would capture nil.
@@ -298,8 +317,11 @@ func buildServices(f upFlags, store *hostcfg.Store, useTUI bool) ([]service.Serv
 		Bind:    f.bind,
 	})
 
-	all := []service.Service{tunnelSvc, opSvc, browserSvc}
-	return filterServices(all, f.only), tunnelSvc, opSvc, nil
+	all := []service.Service{tunnelSvc, opSvc, agentSvc, browserSvc}
+	if f.noAgent {
+		all = []service.Service{tunnelSvc, opSvc, browserSvc}
+	}
+	return filterServices(all, f.only), tunnelSvc, opSvc, agentSvc, nil
 }
 
 // filterServices applies --only, which is how you run devtun as just one of
@@ -382,8 +404,8 @@ func cacheTTL(f upFlags) time.Duration {
 // A failure here is reported rather than swallowed: rules include denies, so
 // carrying on without them would silently widen access, which is the one
 // direction a config error must never fail in.
-func globalRules(store *hostcfg.Store) ([]oppolicy.Rule, error) {
-	var rules []oppolicy.Rule
+func globalRules(store *hostcfg.Store) ([]authz.Rule, error) {
+	var rules []authz.Rule
 	if _, err := store.GlobalFor("1password").Get("rules", &rules); err != nil {
 		return nil, fmt.Errorf("reading global 1Password rules: %w", err)
 	}
@@ -395,8 +417,8 @@ func globalRules(store *hostcfg.Store) ([]oppolicy.Rule, error) {
 // ambiguous vault against whichever is currently the default and half your
 // references quietly fail. A vault belongs to exactly one account, which makes
 // the vault the right thing to route on.
-func globalAccounts(store *hostcfg.Store, account string) (oppolicy.Accounts, error) {
-	var accounts oppolicy.Accounts
+func globalAccounts(store *hostcfg.Store, account string) (onepassword.Accounts, error) {
+	var accounts onepassword.Accounts
 	if _, err := store.GlobalFor("1password").Get("accounts", &accounts); err != nil {
 		return accounts, fmt.Errorf("reading 1Password account routing: %w", err)
 	}

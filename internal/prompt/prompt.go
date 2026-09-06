@@ -71,15 +71,55 @@ type Request struct {
 	// Host is the SSH host the request came from — the identity the decision is
 	// recorded against.
 	Host string
-	// Subject is the secret or command being asked for.
+	// Subject is the thing being asked for.
 	Subject string
-	// Argv is the full command, shown so an unusual request is visible.
-	Argv []string
+	// Noun is what the menu calls the subject — "secret", "key". Empty means
+	// "secret". It exists because a menu offering to "allow this secret" for a
+	// signature request is describing something that is not happening, and the
+	// menu is read at the exact moment somebody is deciding.
+	Noun string
+	// Scope names what a subject-wide grant actually covers, when that is
+	// narrower than the subject reads. The agent uses it for the destination:
+	// "allow this key for github.com" is a promise a person can weigh, where
+	// "allow this key" is not.
+	Scope string
+	// Prefer is the option the cursor starts on. Zero — ChoiceDeny — means
+	// narrowest-first, which is the right default for a one-off secret. A
+	// service whose requests arrive in floods (an agent signing for a `git
+	// push`) sets the session option instead, because a menu whose default
+	// costs six keystrokes a minute gets the service switched off.
+	Prefer Choice
+	// Rows are labelled detail lines shown above the menu. They are supplied
+	// rather than derived so this package needs to know nothing about what any
+	// particular service considers worth showing.
+	Rows []Row
 	// Caller is unverified provenance from the remote box. It is displayed with
 	// that caveat and never used to decide anything.
 	Caller service.Caller
 	// TTL is how long the temporary options will last, so the prompt can say so.
 	TTL time.Duration
+}
+
+// Row is one labelled line of detail in a prompt.
+type Row struct {
+	Label string
+	Value string
+}
+
+// SubjectNoun is what to call the subject in a sentence.
+func (r Request) SubjectNoun() string {
+	if r.Noun == "" {
+		return "secret"
+	}
+	return r.Noun
+}
+
+// ScopeSuffix renders the scope for a menu label, empty when there is none.
+func (r Request) ScopeSuffix() string {
+	if r.Scope == "" {
+		return ""
+	}
+	return " for " + r.Scope
 }
 
 // ErrNoPrompter is returned when a decision is needed but nobody can be asked.
@@ -180,13 +220,34 @@ type MenuItem struct {
 // prompt lands on it.
 func MenuFor(request Request) []MenuItem {
 	ttl := request.TTL.String()
+	// "this key for github.com" rather than "this secret": the menu is the
+	// sentence somebody is deciding on, and it should describe what will
+	// actually happen.
+	this := "this " + request.SubjectNoun() + request.ScopeSuffix()
 	return []MenuItem{
 		{"Allow once", ChoiceAllowOnce},
-		{fmt.Sprintf("Allow this secret for %s", ttl), ChoiceAllowSecretTTL},
-		{"Allow this secret for this session", ChoiceAllowSecretSession},
-		{"Allow this secret always", ChoiceAllowSecretAlways},
+		{fmt.Sprintf("Allow %s for %s", this, ttl), ChoiceAllowSecretTTL},
+		{fmt.Sprintf("Allow %s for this session", this), ChoiceAllowSecretSession},
+		{fmt.Sprintf("Allow %s always", this), ChoiceAllowSecretAlways},
 		{fmt.Sprintf("Allow anything from %s for %s", request.Host, ttl), ChoiceAllowHostTTL},
 		{fmt.Sprintf("Allow anything from %s this session", request.Host), ChoiceAllowHostSession},
 		{"Deny", ChoiceDeny},
 	}
+}
+
+// PreferredIndex is where the cursor starts, given the request's Prefer.
+//
+// It is an index rather than a reordering on purpose: the options stay in
+// narrowest-first order, so a hurried reader still sees the broad ones below
+// the narrow ones and has to travel to reach them.
+func PreferredIndex(items []MenuItem, prefer Choice) int {
+	if prefer == ChoiceDeny {
+		return 0
+	}
+	for i, item := range items {
+		if item.Choice == prefer {
+			return i
+		}
+	}
+	return 0
 }

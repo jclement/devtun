@@ -6,7 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/jclement/devtun/internal/onepassword/policy"
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/ui"
 )
 
@@ -15,14 +15,17 @@ import (
 // live grant somebody clicked through, and the tab shows both — a grant is the
 // more consequential of the two and the shorter-lived, so it is listed first.
 type secretRow struct {
-	rule policy.Rule
+	rule authz.Rule
 	// index is the rule's position in the broker's own list, which is what
 	// Revoke takes. Filtering the view must not change what `r` revokes, so the
 	// index travels with the row rather than being its position on screen.
 	index int
 	// grant is set instead of rule for a live allowance.
-	grant   *policy.Grant
+	grant   *authz.Grant
 	isGrant bool
+	// source is which broker this row belongs to, since the tab shows more
+	// than one and `r` has to revoke through the right door.
+	source secretSource
 }
 
 // reloadSecrets pulls the live grants and the host's persistent rules.
@@ -32,7 +35,7 @@ type secretRow struct {
 // deliberately and can read on disk; a grant is one you clicked through a
 // minute ago and may well have forgotten.
 func (m *Model) reloadSecrets() {
-	if m.d.secrets == nil {
+	if len(m.d.secrets) == 0 {
 		m.secretRows = nil
 		return
 	}
@@ -41,19 +44,27 @@ func (m *Model) reloadSecrets() {
 		return q == "" || strings.Contains(strings.ToLower(text), q)
 	}
 
+	// Grants from every broker first, then rules from every broker. Grants are
+	// shorter-lived and more consequential, and grouping by lifetime rather
+	// than by broker is what makes the tab answer "what is open right now" at a
+	// glance.
 	rows := make([]secretRow, 0, 8)
-	for _, g := range m.d.secrets.Grants() {
-		grant := g
-		if !matches(g.Host + " " + g.Subject) {
-			continue
+	for _, src := range m.d.secrets {
+		for _, g := range src.ctrl.Grants() {
+			grant := g
+			if !matches(src.title + " " + g.Host + " " + g.Subject) {
+				continue
+			}
+			rows = append(rows, secretRow{grant: &grant, isGrant: true, source: src})
 		}
-		rows = append(rows, secretRow{grant: &grant, isGrant: true})
 	}
-	for i, r := range m.d.secrets.Rules() {
-		if !matches(r.Host + " " + r.Subject + " " + r.Note) {
-			continue
+	for _, src := range m.d.secrets {
+		for i, r := range src.ctrl.Rules() {
+			if !matches(src.title + " " + r.Host + " " + r.Subject + " " + r.Note) {
+				continue
+			}
+			rows = append(rows, secretRow{rule: r, index: i, source: src})
 		}
-		rows = append(rows, secretRow{rule: r, index: i})
 	}
 	m.secretRows = rows
 }
@@ -66,8 +77,8 @@ func (m *Model) secretsView() string {
 	}
 
 	empty := "nothing is open — every request is asked about"
-	if m.d.secrets == nil {
-		empty = "the 1Password broker is not running on this host"
+	if len(m.d.secrets) == 0 {
+		empty = "no broker is running for this host"
 	} else if m.search[tabSecrets] != "" {
 		empty = "nothing matches " + m.search[tabSecrets]
 	}
@@ -82,7 +93,7 @@ func (m *Model) secretLine(r secretRow, selected bool) string {
 		return m.grantLine(*r.grant, selected)
 	}
 	action := ui.OK.Render(pad(string(r.rule.Action), 6))
-	if r.rule.Action == policy.ActionDeny {
+	if r.rule.Action == authz.ActionDeny {
 		action = ui.Error.Render(pad(string(r.rule.Action), 6))
 	}
 
@@ -111,7 +122,7 @@ func (m *Model) secretLine(r secretRow, selected bool) string {
 // A grant with no expiry lasts as long as devtun does, which is a materially
 // different promise from five minutes and has to read differently — "this
 // session" rather than a countdown that never moves.
-func (m *Model) grantLine(g policy.Grant, selected bool) string {
+func (m *Model) grantLine(g authz.Grant, selected bool) string {
 	left := ui.Muted.Render("this session")
 	if !g.Expires.IsZero() {
 		left = ui.Warn.Render(FormatAge(g.Expires.Sub(m.d.now())) + " left")
@@ -152,7 +163,7 @@ func (m *Model) handleSecretsKey(msg tea.KeyPressMsg) tea.Cmd {
 // revokeSelected takes back a rule this host was granted.
 func (m *Model) revokeSelected() tea.Cmd {
 	i := m.cursor()
-	if m.d.secrets == nil || i < 0 || i >= len(m.secretRows) {
+	if len(m.d.secrets) == 0 || i < 0 || i >= len(m.secretRows) {
 		return m.needSelection()
 	}
 	row := m.secretRows[i]
@@ -161,7 +172,7 @@ func (m *Model) revokeSelected() tea.Cmd {
 	// memory and is addressed by what it covers, the other is a line in a file
 	// addressed by position. `r` should not make the user care which.
 	if row.isGrant {
-		if !m.d.secrets.RevokeGrant(row.grant.Host, row.grant.Subject) {
+		if !row.source.ctrl.RevokeGrant(row.grant.Host, row.grant.Subject) {
 			return m.showToast(toastMsg{text: "that grant has already lapsed", bad: true})
 		}
 		m.reloadSecrets()
@@ -169,7 +180,7 @@ func (m *Model) revokeSelected() tea.Cmd {
 		return m.showToast(toastMsg{text: "revoked the grant for " + row.grant.Subject})
 	}
 
-	if err := m.d.secrets.Revoke(row.index); err != nil {
+	if err := row.source.ctrl.Revoke(row.index); err != nil {
 		return m.showToast(toastMsg{text: err.Error(), bad: true})
 	}
 	m.reloadSecrets()
@@ -194,17 +205,22 @@ func (m *Model) copyReference() tea.Cmd {
 	return tea.Batch(yank(ref), m.showToast(toastMsg{text: "copied " + ref}))
 }
 
-// forgetGrants drops every live grant and everything cached under one.
+// forgetGrants drops every live grant, and everything cached under one, across
+// every broker.
 //
-// It is the "lock it back up" action, and it is the only thing the interface
-// can say about grants at all: the broker holds them in memory and offers no
-// way to enumerate them, so the count in the toast is the first and last time
-// they are visible.
+// It is the "lock it back up" action. Individual grants can now be revoked with
+// `r`, so this is the panic button rather than the only option — and a panic
+// button that left one broker still holding an open door would be worse than
+// none, which is why it sweeps all of them.
 func (m *Model) forgetGrants() tea.Cmd {
-	if m.d.secrets == nil {
+	if len(m.d.secrets) == 0 {
 		return nil
 	}
-	grants, cached := m.d.secrets.Forget()
+	var grants, cached int
+	for _, src := range m.d.secrets {
+		g, c := src.ctrl.Forget()
+		grants, cached = grants+g, cached+c
+	}
 	if grants == 0 && cached == 0 {
 		return m.showToast(toastMsg{text: "nothing to forget"})
 	}

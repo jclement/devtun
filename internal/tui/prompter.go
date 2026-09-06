@@ -9,7 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/jclement/devtun/internal/onepassword/prompt"
+	"github.com/jclement/devtun/internal/prompt"
+	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/ui"
 )
@@ -152,6 +153,11 @@ func (m *Model) openApproval(msg approvalMsg) tea.Cmd {
 	m.approval = &approvalState{
 		request: msg.request, options: msg.options, reply: msg.reply,
 		deadline: msg.deadline,
+		// Where the cursor starts is the service's call: a one-off secret wants
+		// the narrowest option under the cursor, an agent signing for a `git
+		// push` wants the session one, or the menu costs a keystroke per
+		// signature. The order never changes — only the starting point.
+		cursor: prompt.PreferredIndex(msg.options, msg.request.Prefer),
 	}
 	// Ring the terminal. devtun is meant to run in a window you are not looking
 	// at, so a request that only appears on screen is a request that gets
@@ -226,10 +232,20 @@ func (m *Model) approvalBox() string {
 		}
 		b.WriteString(ui.Muted.Render(pad(label, 8)) + " " + value + "\n")
 	}
-	row("command", "op "+strings.Join(a.request.Argv, " "))
+	// The rows come from the service. This used to hardcode `op ` + argv, which
+	// put an empty command row in front of anyone approving a signature.
+	for _, r := range a.request.Rows {
+		row(r.Label, r.Value)
+	}
 	row("caller", describeCaller(a.request))
 	row("cwd", a.request.Caller.CWD)
-	b.WriteString(ui.Muted.Render("caller details come from the remote box and are not verified") + "\n\n")
+	// The caveat only belongs on screen when there are caller details to
+	// caveat. An agent connection carries no provenance at all, and a warning
+	// about information that is not shown trains people to skip the line.
+	if a.request.Caller != (service.Caller{}) {
+		b.WriteString(ui.Muted.Render("caller details come from the remote box and are not verified") + "\n")
+	}
+	b.WriteString("\n")
 
 	// Narrowest first, deny last: the safe answer is the one under the cursor
 	// and the broad ones take deliberate effort to reach.

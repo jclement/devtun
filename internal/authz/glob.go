@@ -2,7 +2,7 @@
 // usually op:// references), so the wildcard semantics follow the shell rather
 // than a plain regexp: `*` stops at a separator and `**` does not. That is what
 // makes `op://Personal/*` mean "any item in Personal" rather than "everything".
-package policy
+package authz
 
 import "strings"
 

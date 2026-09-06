@@ -37,11 +37,23 @@ func dialogAvailable() bool {
 }
 
 // Ask shows the dialog and maps the selected label back to a Choice.
+// dialogTitle names the window after what is being asked for, since a dialog
+// that says "1Password" while asking about an SSH key is worse than one with no
+// title at all.
+func dialogTitle(request Request) string {
+	switch request.SubjectNoun() {
+	case "key":
+		return "devtun — SSH agent"
+	default:
+		return "devtun — 1Password"
+	}
+}
+
 func (d *Dialog) Ask(ctx context.Context, request Request) (Choice, error) {
 	labels, choices := dialogOptions(request)
 
 	script := buildChooserScript(
-		"devtun — 1Password",
+		dialogTitle(request),
 		dialogPrompt(request),
 		labels,
 	)

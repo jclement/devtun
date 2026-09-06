@@ -12,6 +12,7 @@ import (
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/ui"
 )
 
@@ -24,7 +25,12 @@ func (t *TUI) Ask(ctx context.Context, request Request) (Choice, error) {
 		return ChoiceDeny, ErrNoPrompter
 	}
 
-	choice := ChoiceDeny
+	// huh starts the cursor on whichever option matches the bound value, so
+	// seeding it is how a service says where a human should land. An unset
+	// preference resolves to the first option rather than to the zero Choice,
+	// which is Deny — starting on "Deny" would be a different thing entirely.
+	menu := MenuFor(request)
+	choice := menu[PreferredIndex(menu, request.Prefer)].Choice
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[Choice]().
@@ -56,21 +62,31 @@ func headline(request Request) string {
 // details lays out the supporting facts, including the warning that the caller
 // information cannot be trusted.
 func details(request Request) string {
-	rows := [][2]string{
-		{"command", "op " + strings.Join(request.Argv, " ")},
-	}
+	// The rows are supplied by the service, not derived here: this package has
+	// no business knowing that one caller has a command line and another has
+	// none. It used to hardcode `"command", "op " + argv`, which rendered an
+	// empty `command  op ` row in front of anyone approving a signature.
+	rows := append([]Row(nil), request.Rows...)
 	if caller := describeCaller(request); caller != "" {
-		rows = append(rows, [2]string{"caller", caller})
+		rows = append(rows, Row{"caller", caller})
 	}
 	if request.Caller.CWD != "" {
-		rows = append(rows, [2]string{"cwd", request.Caller.CWD})
+		rows = append(rows, Row{"cwd", request.Caller.CWD})
 	}
 
 	var lines []string
 	for _, row := range rows {
-		lines = append(lines, ui.Muted.Render(fmt.Sprintf("%-8s", row[0]))+" "+truncate(row[1], 96))
+		if row.Value == "" {
+			continue
+		}
+		lines = append(lines, ui.Muted.Render(fmt.Sprintf("%-8s", row.Label))+" "+truncate(row.Value, 96))
 	}
-	lines = append(lines, ui.Muted.Render("caller details come from the remote box and are not verified"))
+	// Only warn about caller details when there are some. An agent connection
+	// carries no provenance at all, and a caveat about information that is not
+	// on screen is noise that trains people to skip the line.
+	if request.Caller != (service.Caller{}) {
+		lines = append(lines, ui.Muted.Render("caller details come from the remote box and are not verified"))
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 

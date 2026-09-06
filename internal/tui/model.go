@@ -9,8 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
-	"github.com/jclement/devtun/internal/onepassword/policy"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -40,11 +40,23 @@ type tunnelCtrl interface {
 
 // secretsCtrl is the slice of the 1Password broker the Secrets tab drives.
 type secretsCtrl interface {
-	Rules() []policy.Rule
+	Rules() []authz.Rule
 	Revoke(index int) error
-	Grants() []policy.Grant
+	Grants() []authz.Grant
 	RevokeGrant(host, subject string) bool
 	Forget() (grants, cached int)
+}
+
+// secretSource is one broker's slice of the Secrets tab.
+//
+// There are two now — the vault and the agent — and there will be more. They
+// are listed together rather than on separate tabs because the question the tab
+// answers is "what is open in my name right now", and that question does not
+// care which broker holds the door. The source is a column, not a screen.
+type secretSource struct {
+	id    string
+	title string
+	ctrl  secretsCtrl
 }
 
 // configStore is where the Services tab records what runs on this host.
@@ -57,7 +69,7 @@ type configStore interface {
 // Run builds one from Options; a test builds one by hand.
 type deps struct {
 	tunnels  tunnelCtrl
-	secrets  secretsCtrl
+	secrets  []secretSource
 	store    configStore
 	services []service.Service
 

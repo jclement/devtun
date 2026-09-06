@@ -80,7 +80,17 @@ type Facts struct {
 	// Tools maps a command name to its resolved path, empty when absent.
 	// Populated for the union of what every service asks about.
 	Tools map[string]string
+	// Env holds the few environment variables a service needs to know the
+	// remote shell already sets, as the user's own login shell reports them.
+	// It is a short allowlist rather than the whole environment: the remote
+	// environment can contain secrets, and hoovering it up to answer one
+	// question would put them in this process for no reason.
+	Env map[string]string
 }
+
+// EnvValue returns a remote environment variable as the user's login shell
+// sees it, empty when unset.
+func (f Facts) EnvValue(name string) string { return f.Env[name] }
 
 // Has reports whether the remote has the named command.
 func (f Facts) Has(tool string) bool { return f.Tools[tool] != "" }
@@ -189,6 +199,30 @@ type Caller struct {
 	PID     int    `json:"pid,omitempty"`
 	CWD     string `json:"cwd,omitempty"`
 	Program string `json:"program,omitempty"`
+}
+
+// SocketService is implemented by a service that must publish its own socket on
+// the remote box, rather than taking a share of the shared control socket.
+//
+// This exists for exactly one reason and it is worth stating, because it is a
+// hole in the tidier story told by Hello. The control socket works because both
+// ends are devtun: the shim opens a connection and announces which service it
+// is for. A service whose clients are *not* devtun cannot do that. An `ssh`
+// client connects to SSH_AUTH_SOCK and immediately speaks the SSH agent
+// protocol; nothing will make it send a greeting frame first, and no amount of
+// design on this side changes that.
+//
+// So a service that has to speak somebody else's protocol gets its own socket,
+// and the cost — a second path, a second line in the user's shell rc — is real
+// and is paid by that service alone. Services that can use Hello still should:
+// one socket and one rc line is the better arrangement wherever it is possible.
+type SocketService interface {
+	// SocketName is the file name for this service's socket. It is placed
+	// beside the control socket, so the service chooses a name and not a path.
+	SocketName() string
+	// ServeSocket owns the listener until ctx is cancelled. The listener is
+	// closed by the session afterwards.
+	ServeSocket(ctx context.Context, listener net.Listener) error
 }
 
 // Advisor is implemented by a service that needs something in the user's shell

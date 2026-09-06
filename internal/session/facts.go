@@ -33,6 +33,12 @@ const factsTimeout = 15 * time.Second
 // stays a single round trip no matter how many services are enabled.
 var probedTools = []string{"op", "ss", "lsof", "netstat", "nc", "socat", "python3", "docker", "git"}
 
+// probedEnv is the short list of environment variables worth asking the user's
+// own shell about. It is an allowlist on purpose: a remote environment commonly
+// holds tokens, and reading all of it to answer "is SSH_AUTH_SOCK already set"
+// would pull secrets into this process for no reason at all.
+var probedEnv = []string{"SSH_AUTH_SOCK", "BROWSER"}
+
 const (
 	markBasics = "@@DEVTUN-BASICS"
 	markShell  = "@@DEVTUN-SHELL"
@@ -49,6 +55,9 @@ func factsScript() string {
 	// embedded in a single-quoted argument, so it contains no single quotes.
 	var inner strings.Builder
 	inner.WriteString(`printf "PATH\t%s\n" "$PATH"; `)
+	for _, name := range probedEnv {
+		fmt.Fprintf(&inner, `printf "env.%s\t%%s\n" "${%s-}"; `, name, name)
+	}
 	for _, tool := range probedTools {
 		fmt.Fprintf(&inner, `printf "%s\t%%s\n" "$(command -v %s 2>/dev/null || true)"; `, tool, tool)
 	}
@@ -92,7 +101,10 @@ func probeFacts(ctx context.Context, r factsRunner) (service.Facts, error) {
 // message of the day, a prompt escape, a version-manager banner — and none of
 // that is ours. Anything outside the markers is ignored rather than guessed at.
 func parseFacts(out string) service.Facts {
-	facts := service.Facts{Tools: make(map[string]string)}
+	facts := service.Facts{
+		Tools: make(map[string]string),
+		Env:   make(map[string]string),
+	}
 
 	section := ""
 	var basics []string
@@ -121,6 +133,12 @@ func parseFacts(out string) service.Facts {
 			if key == "PATH" {
 				if facts.LoginPath == "" {
 					facts.LoginPath = value
+				}
+				continue
+			}
+			if name, ok := strings.CutPrefix(key, "env."); ok {
+				if facts.Env[name] == "" {
+					facts.Env[name] = value
 				}
 				continue
 			}

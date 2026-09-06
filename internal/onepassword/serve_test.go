@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/onepassword/opcli"
-	"github.com/jclement/devtun/internal/onepassword/policy"
-	"github.com/jclement/devtun/internal/onepassword/prompt"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/shim"
 )
@@ -156,7 +156,7 @@ func start(t *testing.T, opts Options, secrets map[string]string) *harness {
 // allowAll is the policy most tests want: the interesting refusals then come
 // from the guard or the prompt rather than from a rule.
 func allowAll() Options {
-	return Options{Rules: []policy.Rule{{Host: "**", Subject: "**", Action: policy.ActionAllow}}}
+	return Options{Rules: []authz.Rule{{Host: "**", Subject: "**", Action: authz.ActionAllow}}}
 }
 
 // send serves one request on its own connection and returns the reply.
@@ -193,7 +193,7 @@ func (h *harness) resolve(t *testing.T, refs ...string) opResponse {
 }
 
 func TestReadIsForwardedWhenPolicyAllows(t *testing.T) {
-	opts := Options{Rules: []policy.Rule{{Host: "devbox", Subject: "op://Personal/**", Action: policy.ActionAllow}}}
+	opts := Options{Rules: []authz.Rule{{Host: "devbox", Subject: "op://Personal/**", Action: authz.ActionAllow}}}
 	h := start(t, opts, map[string]string{"op://Personal/Docker/PAT": "ghp_secret"})
 
 	response := h.exec(t, "read", "op://Personal/Docker/PAT")
@@ -212,7 +212,7 @@ func TestReadIsForwardedWhenPolicyAllows(t *testing.T) {
 }
 
 func TestDeniedRequestNeverReachesTheVault(t *testing.T) {
-	opts := Options{Rules: []policy.Rule{{Host: "**", Subject: "op://Personal/**", Action: policy.ActionDeny}}}
+	opts := Options{Rules: []authz.Rule{{Host: "**", Subject: "op://Personal/**", Action: authz.ActionDeny}}}
 	opts.Prompter = &scriptedPrompter{choice: prompt.ChoiceAllowOnce}
 	h := start(t, opts, map[string]string{"op://Personal/Docker/PAT": "ghp_secret"})
 
@@ -420,7 +420,7 @@ func TestOneRequestPerConnection(t *testing.T) {
 // host with a rule must not get that host's rule.
 func TestDecisionsIgnoreWhatTheCallerClaims(t *testing.T) {
 	opts := Options{
-		Rules:    []policy.Rule{{Host: "trusted", Subject: "**", Action: policy.ActionAllow}},
+		Rules:    []authz.Rule{{Host: "trusted", Subject: "**", Action: authz.ActionAllow}},
 		Prompter: &scriptedPrompter{choice: prompt.ChoiceDeny},
 	}
 	h := start(t, opts, map[string]string{"op://V/I/F": "s3cret"})
@@ -477,9 +477,9 @@ func TestResolveReturnsTheWholeBatch(t *testing.T) {
 // A denied reference must fail the whole batch: a config file that is
 // three-quarters filled in is a deploy-time failure with no obvious cause.
 func TestResolveIsAllOrNothing(t *testing.T) {
-	opts := Options{Rules: []policy.Rule{
-		{Host: "**", Subject: "op://Personal/Docker/**", Action: policy.ActionAllow},
-		{Host: "**", Subject: "op://Personal/Root/**", Action: policy.ActionDeny},
+	opts := Options{Rules: []authz.Rule{
+		{Host: "**", Subject: "op://Personal/Docker/**", Action: authz.ActionAllow},
+		{Host: "**", Subject: "op://Personal/Root/**", Action: authz.ActionDeny},
 	}}
 	h := start(t, opts, map[string]string{
 		"op://Personal/Docker/PAT": "ghp_secret",
@@ -677,7 +677,7 @@ func TestForgetDropsGrantsAndCachedValues(t *testing.T) {
 
 func TestAccountRoutingByVault(t *testing.T) {
 	opts := allowAll()
-	opts.Accounts = policy.Accounts{
+	opts.Accounts = Accounts{
 		Default: "adipose.1password.com",
 		ByVault: map[string]string{"Barreleye": "barreleyesoftware.1password.com"},
 	}
@@ -705,7 +705,7 @@ func TestAccountRoutingByVault(t *testing.T) {
 func TestCacheKeysAreScopedToTheAccount(t *testing.T) {
 	opts := allowAll()
 	opts.CacheTTL = time.Minute
-	opts.Accounts = policy.Accounts{
+	opts.Accounts = Accounts{
 		Default: "personal.1password.com",
 		ByVault: map[string]string{"Shared": "work.1password.com"},
 	}
@@ -765,8 +765,8 @@ func TestProbeIgnoresTheRemoteBox(t *testing.T) {
 // prompt.
 func TestAttachAdoptsTheHostsOwnRules(t *testing.T) {
 	host := newFakeHost("devbox")
-	host.config.seed(t, rulesKey, []policy.Rule{
-		{Host: "devbox", Subject: "op://V/I/F", Action: policy.ActionDeny},
+	host.config.seed(t, rulesKey, []authz.Rule{
+		{Host: "devbox", Subject: "op://V/I/F", Action: authz.ActionDeny},
 	})
 
 	runner := &fakeRunner{version: "2.30.0", secrets: map[string]string{"op://V/I/F": "s3cret"}}
@@ -809,11 +809,11 @@ func TestAlwaysWritesARuleToTheHostConfig(t *testing.T) {
 		t.Errorf("the host config was written %d times, want 1", h.host.config.writes())
 	}
 
-	var stored []policy.Rule
+	var stored []authz.Rule
 	if _, err := h.host.config.Get(rulesKey, &stored); err != nil {
 		t.Fatalf("reading back the rules: %v", err)
 	}
-	if len(stored) != 1 || stored[0].Subject != "op://V/I/F" || stored[0].Action != policy.ActionAllow {
+	if len(stored) != 1 || stored[0].Subject != "op://V/I/F" || stored[0].Action != authz.ActionAllow {
 		t.Fatalf("stored rules = %+v", stored)
 	}
 

@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,5 +124,59 @@ func TestNewRejectsUnknownBackend(t *testing.T) {
 	}
 	if _, err := New(BackendDeny); err != nil {
 		t.Fatalf("New(deny): %v", err)
+	}
+}
+
+// The menu is the sentence somebody is deciding on, so it has to describe what
+// will actually happen. "Allow this secret" in front of a signature request
+// describes something that is not happening.
+func TestMenuNamesTheSubjectAndItsScope(t *testing.T) {
+	key := Request{Host: "bedev", Noun: "key", Scope: "github.com", TTL: 5 * time.Minute}
+
+	var labels []string
+	for _, item := range MenuFor(key) {
+		labels = append(labels, item.Label)
+	}
+	joined := strings.Join(labels, "\n")
+
+	if !strings.Contains(joined, "this key for github.com for 5m0s") {
+		t.Errorf("the menu should name the key and its destination:\n%s", joined)
+	}
+	if strings.Contains(joined, "this secret") {
+		t.Errorf("a signature request should not be described as a secret:\n%s", joined)
+	}
+
+	// The default noun keeps the 1Password wording exactly as it was.
+	secret := Request{Host: "bedev", TTL: 5 * time.Minute}
+	for _, item := range MenuFor(secret) {
+		if strings.Contains(item.Label, "this secret") {
+			return
+		}
+	}
+	t.Error("with no noun the menu should still say 'this secret'")
+}
+
+// The order never changes — only where the cursor starts. A hurried reader must
+// still see the broad options below the narrow ones and travel to reach them.
+func TestPreferredIndexMovesTheCursorNotTheOptions(t *testing.T) {
+	menu := MenuFor(Request{Host: "bedev", Noun: "key", TTL: time.Minute})
+
+	if got := PreferredIndex(menu, ChoiceAllowSecretSession); menu[got].Choice != ChoiceAllowSecretSession {
+		t.Errorf("the preferred option was not found, landed on %v", menu[got].Choice)
+	}
+	if menu[0].Choice != ChoiceAllowOnce {
+		t.Error("the options must stay in narrowest-first order")
+	}
+	if menu[len(menu)-1].Choice != ChoiceDeny {
+		t.Error("deny must stay last")
+	}
+
+	// An unset preference is the zero Choice, which is Deny — and resolving
+	// that literally would start the cursor on "Deny".
+	if got := PreferredIndex(menu, ChoiceDeny); got != 0 {
+		t.Errorf("an unset preference should land on the first option, got %d", got)
+	}
+	if got := PreferredIndex(menu, Choice(99)); got != 0 {
+		t.Errorf("an unknown preference should land on the first option, got %d", got)
 	}
 }

@@ -28,6 +28,7 @@ One SSH connection. Three services on top of it:
 |---|---|
 | **tunnels** | Every port the box opens appears on your localhost, on the same port number. Service appears, tunnel appears. |
 | **1password** | The box's `op` calls come back to your unlocked vault, one approval at a time. The vault never leaves your laptop. |
+| **ssh-agent** | The box signs with your keys — `git push`, `ssh` to another host — one approved signature at a time. Your keys never leave your laptop. |
 | **browser** | URLs the box wants opened open on your machine, with the port rewritten to wherever that tunnel actually landed. |
 
 They share the connection, the reconnect logic, the config file, and one screen. Turn any of them off; add a fourth later.
@@ -129,6 +130,44 @@ Secrets are violet with a lock; tunnels are cyan. That separation is the entire 
 
 It's clickable too, because it's 2026 and you have a mouse.
 
+## Your SSH keys, without handing them over
+
+`ssh -A` already forwards an agent. The problem is that it is a blind trust
+decision: anyone with your uid — or root — on that box can silently authenticate
+as you, anywhere, for as long as you are connected, and you never find out.
+
+devtun forwards the same agent through the same approval machinery as your
+vault:
+
+```
+14:31:02 🔑 key  bedev wants to sign for github.com with SHA256:qN3l… (ed25519)
+14:31:04 🔑 key  signed for github.com — allowed this key for github.com this session
+14:33:19 🔑 key  ✗ refused signing for gitlab.com — denied by rule
+```
+
+`Add`, `Remove`, `Lock` and `Signers` are refused outright — never prompted,
+never policy-checked. A remote box has no business modifying your agent, and
+handing back a signer would hand back an ungated signing capability. Listing
+your keys is allowed and logged, because it does reveal which keys you hold.
+
+Where the destination is knowable, the prompt names it: OpenSSH 8.9+ tells the
+agent which host it is authenticating to, and devtun resolves that against your
+`known_hosts`. Where it is not — an older `ssh` — the prompt says the
+destination is unknown rather than implying a precision it does not have.
+
+It needs a second line in your shell rc, because `ssh` finds its agent through
+an environment variable and there is no binary to shadow:
+
+```sh
+export SSH_AUTH_SOCK="$HOME/.devtun/devtun-agent.sock"
+```
+
+devtun offers to add it with the first one. `--no-agent` turns the service off.
+
+**Grant it per key and destination for the session.** `git push` signs
+constantly, and approving each one individually is how you end up switching the
+whole thing off by lunchtime.
+
 ## Approvals
 
 The first time a new secret is asked for, devtun asks you:
@@ -185,7 +224,12 @@ One file per host, because the per-host state *is* the interesting state: it's w
 # hosts/bedev.yaml
 services:
   1password: {enabled: true}
+  ssh-agent: {enabled: true}
   browser:   {enabled: false}
+ssh-agent:
+  rules:
+    - {subject: "** → github.com", action: allow}
+    - {subject: "** → **", action: deny}     # nowhere else, from this box
 tunnels:
   ports:
     3000: {label: frontend, scheme: https, local: 13000}

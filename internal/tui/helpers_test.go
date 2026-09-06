@@ -11,7 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/jclement/devtun/internal/onepassword/policy"
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -169,9 +169,18 @@ func (s *stubTunnels) SetViewPrefs(p tunnels.ViewPrefs) {
 }
 
 // stubSecrets is a secretsCtrl over a fixed rule list.
+// oneSource wraps a single stub broker as the tab's source list, which is what
+// the model takes now that there is more than one broker.
+func oneSource(s *stubSecrets) []secretSource {
+	if s == nil {
+		return nil
+	}
+	return []secretSource{{id: "1password", title: "1Password", ctrl: s}}
+}
+
 type stubSecrets struct {
-	rules     []policy.Rule
-	live      []policy.Grant
+	rules     []authz.Rule
+	live      []authz.Grant
 	grants    int
 	cached    int
 	forgot    bool
@@ -179,7 +188,7 @@ type stubSecrets struct {
 	revokedBy []string
 }
 
-func (s *stubSecrets) Rules() []policy.Rule { return s.rules }
+func (s *stubSecrets) Rules() []authz.Rule { return s.rules }
 
 func (s *stubSecrets) Revoke(i int) error {
 	s.revoked = append(s.revoked, i)
@@ -187,7 +196,7 @@ func (s *stubSecrets) Revoke(i int) error {
 	return nil
 }
 
-func (s *stubSecrets) Grants() []policy.Grant { return s.live }
+func (s *stubSecrets) Grants() []authz.Grant { return s.live }
 
 func (s *stubSecrets) RevokeGrant(host, subject string) bool {
 	for i, g := range s.live {

@@ -9,8 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
-	"github.com/jclement/devtun/internal/onepassword/policy"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/tunnels"
 )
@@ -50,8 +50,8 @@ func TestViewNeverExceedsTheTerminalWidth(t *testing.T) {
 		row(8080, 8080, strings.Repeat("x", 400)),
 		skippedRow(5432, strings.Repeat("y", 200), tunnels.SkipHidden),
 	}
-	secrets := &stubSecrets{rules: []policy.Rule{
-		{Host: strings.Repeat("h", 90), Subject: "op://" + strings.Repeat("v", 200), Action: policy.ActionAllow, Note: strings.Repeat("n", 80)},
+	secrets := &stubSecrets{rules: []authz.Rule{
+		{Host: strings.Repeat("h", 90), Subject: "op://" + strings.Repeat("v", 200), Action: authz.ActionAllow, Note: strings.Repeat("n", 80)},
 	}}
 	services := []service.Service{stubService{meta: service.Meta{
 		ID: "1password", Title: "1Password", Glyph: "🔒", Short: strings.Repeat("s", 200),
@@ -61,7 +61,7 @@ func TestViewNeverExceedsTheTerminalWidth(t *testing.T) {
 		for _, tb := range []tab{tabTunnels, tabActivity, tabSecrets, tabServices} {
 			stub := newStub(rows...)
 			stub.prefs.ShowHidden = true
-			m := newTestModel(t, deps{tunnels: stub, secrets: secrets, services: services, store: newStubStore()})
+			m := newTestModel(t, deps{tunnels: stub, secrets: oneSource(secrets), services: services, store: newStubStore()})
 			m.Update(tea.WindowSizeMsg{Width: width, Height: 20})
 			m.tab = tb
 			m.Update(eventMsg(event.Event{

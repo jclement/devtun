@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/onepassword/opcli"
 	"github.com/jclement/devtun/internal/onepassword/opref"
-	"github.com/jclement/devtun/internal/onepassword/policy"
-	"github.com/jclement/devtun/internal/onepassword/prompt"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/shim"
 )
@@ -173,7 +173,7 @@ func cacheKey(account string, argv []string) (string, bool) {
 // once more than one account is signed in: a reference names a vault, and the
 // vault decides the account.
 func (s *Service) accountFor(subject string) string {
-	return s.store.Config().Accounts.For(subject)
+	return s.opts.Accounts.For(subject)
 }
 
 // handleResolve authorises and reads a batch of secret references. It is
@@ -240,9 +240,9 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 func (s *Service) authorize(ctx context.Context, l *link, subject string, argv []string) (allowed bool, reason string, until time.Time) {
 	verdict := s.store.Decide(l.host, subject)
 	switch verdict.Action {
-	case policy.ActionAllow:
+	case authz.ActionAllow:
 		return true, verdict.Reason, verdict.Until
-	case policy.ActionDeny:
+	case authz.ActionDeny:
 		return false, verdict.Reason, time.Time{}
 	}
 
@@ -253,9 +253,13 @@ func (s *Service) authorize(ctx context.Context, l *link, subject string, argv [
 	choice, err := s.prompter.Ask(askCtx, prompt.Request{
 		Host:    l.host,
 		Subject: subject,
-		Argv:    argv,
+		Noun:    "secret",
 		Caller:  l.caller,
 		TTL:     config.DefaultTTL,
+		// The command is shown so an unusual request is visible: `op read` and
+		// `op item get` reach the same secret, but a shape you did not expect
+		// is worth seeing before approving it.
+		Rows: []prompt.Row{{Label: "command", Value: "op " + strings.Join(argv, " ")}},
 	})
 	// Belt and braces on the prompt deadline. A Prompter is meant to abandon
 	// its question when the context fires, but this is the one decision in
@@ -282,7 +286,7 @@ func (s *Service) authorize(ctx context.Context, l *link, subject string, argv [
 // answer lapses — the zero time when it does not lapse on its own. A failure to
 // persist an "always" rule is reported but does not undo the approval: the user
 // said yes, and the worst case is being asked again.
-func (s *Service) recordGrant(l *link, choice prompt.Choice, subject string, config policy.Config) time.Time {
+func (s *Service) recordGrant(l *link, choice prompt.Choice, subject string, config authz.Config) time.Time {
 	ttl := config.DefaultTTL
 	switch choice {
 	case prompt.ChoiceAllowOnce:
@@ -292,12 +296,12 @@ func (s *Service) recordGrant(l *link, choice prompt.Choice, subject string, con
 		s.store.GrantTemporary(l.host, subject, ttl)
 		return time.Now().Add(ttl)
 	case prompt.ChoiceAllowHostTTL:
-		s.store.GrantTemporary(l.host, policy.HostWildcard, ttl)
+		s.store.GrantTemporary(l.host, authz.HostWildcard, ttl)
 		return time.Now().Add(ttl)
 	case prompt.ChoiceAllowSecretSession:
 		s.store.GrantSession(l.host, subject)
 	case prompt.ChoiceAllowHostSession:
-		s.store.GrantSession(l.host, policy.HostWildcard)
+		s.store.GrantSession(l.host, authz.HostWildcard)
 	case prompt.ChoiceAllowSecretAlways:
 		note := "approved interactively on " + time.Now().Format("2006-01-02")
 		if err := s.store.GrantPermanent(l.host, subject, note); err != nil {

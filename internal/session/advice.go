@@ -19,23 +19,33 @@ func (s *Session) reportSetup(
 	ctx context.Context, conn Conn, facts service.Facts,
 	paths shim.RemotePaths, label string, advisors []service.Advisor, h service.Host,
 ) {
+	plan := planRC(facts, paths.Bin)
+
+	// Anything a service needs beyond the PATH line goes in the same block, so
+	// a user ever sees one devtun block in their rc rather than one per
+	// service. The SSH agent service is the first to use this: `ssh` finds its
+	// agent through SSH_AUTH_SOCK and there is no binary to shadow, so it is
+	// the one capability that cannot be delivered by PATH alone.
+	for _, advisor := range advisors {
+		for _, line := range advisor.SetupLines(h) {
+			if !alreadySet(facts, line) {
+				plan.Lines = append(plan.Lines, line)
+			}
+		}
+	}
+
+	// Nothing missing: say so once and stop. Printing a block of instructions
+	// to somebody who has already followed them is how instructions stop being
+	// read, which is exactly when it matters that they are.
 	if onPath(facts.LoginPath, paths.Bin) {
+		plan.Lines = plan.Lines[1:] // drop the PATH line, which is satisfied
+	}
+	if len(plan.Lines) == 0 {
 		s.events.Emit(event.Event{
 			Kind: "remote-ready", Class: event.Lifecycle, Level: event.Info,
 			Text: label + " is ready",
 		})
 		return
-	}
-
-	plan := planRC(facts, paths.Bin)
-
-	// Anything a service needs beyond the PATH line goes in the same block, so
-	// a user ever sees one devtun block in their rc rather than one per
-	// service. The SSH agent service will be the first to use this: `ssh` finds
-	// its agent through SSH_AUTH_SOCK and there is no binary to shadow, so it
-	// is the one capability that cannot be delivered by PATH alone.
-	for _, advisor := range advisors {
-		plan.Lines = append(plan.Lines, advisor.SetupLines(h)...)
 	}
 	plan = rebuildBlock(plan)
 
@@ -154,6 +164,42 @@ func rebuildBlock(plan RCPlan) RCPlan {
 		append(append([]string{}, plan.Lines...), setupMarkerEnd)...,
 	), "\n")
 	return plan
+}
+
+// alreadySet reports whether an advisor's export line is redundant because the
+// user's shell already exports that variable with that value.
+//
+// The comparison is deliberately exact. A different value is not "already set"
+// — it is somebody else's agent, or a stale path from a previous devtun — and
+// silently accepting it would leave the user with a service that cannot work
+// and no line saying why.
+func alreadySet(facts service.Facts, line string) bool {
+	name, value, ok := parseExport(line)
+	if !ok {
+		return false
+	}
+	return facts.EnvValue(name) == value
+}
+
+// parseExport pulls NAME and VALUE out of `export NAME="VALUE"`. It understands
+// only the form devtun itself generates; anything else is treated as unknown
+// and therefore still worth printing.
+func parseExport(line string) (name, value string, ok bool) {
+	rest, found := strings.CutPrefix(strings.TrimSpace(line), "export ")
+	if !found {
+		return "", "", false
+	}
+	name, value, found = strings.Cut(rest, "=")
+	if !found {
+		return "", "", false
+	}
+	value = strings.Trim(value, `"'`)
+	if strings.Contains(value, "$") {
+		// A value with a variable in it cannot be compared against what the
+		// shell reported without expanding it, so do not pretend to.
+		return "", "", false
+	}
+	return name, value, true
 }
 
 // onPath reports whether dir is already on the shell's PATH. This is why the
