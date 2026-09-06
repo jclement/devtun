@@ -36,10 +36,22 @@ They share the connection, the reconnect logic, the config file, and one screen.
 ## Install
 
 ```sh
-brew install jclement/tap/devtun
+brew install --cask jclement/tap/devtun
 ```
 
-Static binaries — `CGO_ENABLED=0`, no libc drama. Or `go install github.com/jclement/devtun/cmd/devtun@latest`.
+A cask rather than a formula because Homebrew distributes prebuilt binaries that
+way now. Static — `CGO_ENABLED=0`, no libc drama. Or `go install
+github.com/jclement/devtun/cmd/devtun@latest`, or grab a binary from
+[releases](https://github.com/jclement/devtun/releases).
+
+```sh
+devtun update          # replace this binary with the latest release
+devtun update --check  # just say whether one exists
+```
+
+It refuses to overwrite a Homebrew-managed install and tells you to `brew
+upgrade` instead, because overwriting a file your package manager believes it
+owns is how you end up with a version number that is a work of fiction.
 
 ## On the remote box
 
