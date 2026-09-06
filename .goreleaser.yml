@@ -50,14 +50,39 @@ signs:
     artifacts: checksum
     output: true
 
-brews:
-  - repository:
+# Homebrew distributes prebuilt binaries as casks now; the older `brews`
+# (formula) block is deprecated, and the tap already holds casks for the other
+# tools here.
+homebrew_casks:
+  - name: devtun
+    binaries: [devtun]
+    repository:
       owner: jclement
       name: homebrew-tap
+      # GoReleaser accepts only a bare {{ .Env.VAR }} here — no other
+      # interpolation — so the "is it configured?" test lives in skip_upload.
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    # Pushing to another repository needs a PAT the default GITHUB_TOKEN cannot
+    # provide. Without one the release still publishes its binaries and only the
+    # tap update is skipped, rather than failing the whole run.
+    skip_upload: '{{ if index .Env "HOMEBREW_TAP_TOKEN" }}false{{ else }}true{{ end }}'
+    directory: Casks
     homepage: https://github.com/jclement/devtun
-    description: Make a remote dev box feel local — ports, secrets and browser, over one SSH connection
+    description: Your remote dev box, but it behaves like localhost — ports, secrets, SSH agent and browser over one SSH connection
     license: MIT
-    test: system "#{bin}/devtun --version"
+    commit_author:
+      name: goreleaser
+      email: noreply@github.com
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            # Strip the quarantine flag so a downloaded binary runs without a
+            # Gatekeeper prompt.
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/devtun"],
+                           must_succeed: false
+          end
 
 changelog:
   sort: asc
