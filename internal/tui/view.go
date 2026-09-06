@@ -316,7 +316,15 @@ func (m *Model) bottomBorder() string {
 		if m.toast.bad {
 			style = ui.Error
 		}
-		return m.borderWith(style.Render("▸ "+m.toast.text), "", cornerBL, cornerBR)
+		// Clamp rather than hand borderWith something too long: it drops an
+		// oversized label as a unit, so a message a few characters past the
+		// frame width does not shrink — it disappears. A toast that vanishes
+		// on a narrow terminal, or on a machine whose home directory happens
+		// to have a longer name, is worse than a truncated one, and the
+		// failure is invisible until somebody notices they were never told
+		// anything.
+		text := clampWidth("▸ "+m.toast.text, m.width-6)
+		return m.borderWith(style.Render(text), "", cornerBL, cornerBR)
 	}
 	return m.borderWith(m.keyBar(), m.viewChip(), cornerBL, cornerBR)
 }

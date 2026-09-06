@@ -296,3 +296,25 @@ func dangerSequence(t *testing.T) string {
 	}
 	return before
 }
+
+// borderWith drops an oversized label as a unit, so a toast a few characters
+// past the frame width does not shrink — it vanishes. That failure is
+// invisible: the user is simply never told anything, and on a narrow terminal
+// it would happen to every long message.
+func TestALongToastIsTruncatedNotDropped(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node"))})
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+
+	long := strings.Repeat("this message is far too long for the footer ", 4)
+	m.showToast(toastMsg{text: long})
+
+	bottom := strings.Split(m.frame(), "\n")
+	last := ansi.Strip(bottom[len(bottom)-1])
+
+	if !strings.Contains(last, "this message") {
+		t.Errorf("the toast vanished instead of being truncated:\n%s", last)
+	}
+	if w := ansi.StringWidth(last); w != 60 {
+		t.Errorf("the border is %d cells wide, want 60", w)
+	}
+}

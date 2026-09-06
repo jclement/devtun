@@ -539,8 +539,12 @@ func TestSecretsTabShowsGlobalRulesButWillNotRevokeThem(t *testing.T) {
 	if len(secrets.revoked) != 0 {
 		t.Errorf("a global rule must not be revoked through the interface: %v", secrets.revoked)
 	}
-	if !strings.Contains(plainView(m), "config file") {
-		t.Errorf("the refusal should say where to edit it instead:\n%s", plainView(m))
+	// Assert on the toast itself, not the rendered frame. Whether a message
+	// fits the footer depends on the terminal width and, before this was
+	// fixed, on how long the machine's home directory happened to be — which
+	// is not what this test is about.
+	if !m.hasToast || !strings.Contains(m.toast.text, "config file") {
+		t.Errorf("the refusal should say where to edit it instead, got %q", m.toast.text)
 	}
 }
 

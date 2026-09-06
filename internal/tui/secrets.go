@@ -7,7 +7,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jclement/devtun/internal/authz"
-	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/ui"
 )
 
@@ -139,15 +138,6 @@ func (m *Model) secretLine(r secretRow, selected bool) string {
 	return line
 }
 
-// globalConfigHint names the file a global rule lives in, so the refusal to
-// revoke it says where to go instead of merely saying no.
-func globalConfigHint() string {
-	if dir, err := hostcfg.Dir(); err == nil {
-		return dir + "/config.yaml"
-	}
-	return "your devtun config.yaml"
-}
-
 // grantLine renders a live allowance, with how long it has left.
 //
 // A grant with no expiry lasts as long as devtun does, which is a materially
@@ -210,7 +200,7 @@ func (m *Model) revokeSelected() tea.Cmd {
 	// addressed by position. `r` should not make the user care which.
 	if row.global {
 		return m.showToast(toastMsg{
-			text: "that rule is in your config file, not devtun's — edit " + globalConfigHint(),
+			text: "that rule came from your config file — edit it there",
 			bad:  true,
 		})
 	}
