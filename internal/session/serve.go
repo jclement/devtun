@@ -32,7 +32,7 @@ func (s *Session) serveOnce(ctx context.Context, conn Conn) (err error) {
 	paths := shim.PathsFor(facts.Home, facts.RuntimeDir)
 
 	if s.opts.AutoInstall {
-		syncer := &shimSyncer{Binary: s.opts.ShimBinary, Events: s.events}
+		syncer := &shimSyncer{Binary: s.opts.ShimBinary, Version: s.opts.Version, Fetch: s.opts.FetchShim, Events: s.events}
 		uploaded, err := syncer.sync(ctx, conn, facts, paths, s.opts.Version)
 		switch {
 		case err != nil:
@@ -321,7 +321,7 @@ func (s *Session) Prepare(ctx context.Context) error {
 	}
 	paths := shim.PathsFor(facts.Home, facts.RuntimeDir)
 
-	syncer := &shimSyncer{Binary: s.opts.ShimBinary, Events: s.events}
+	syncer := &shimSyncer{Binary: s.opts.ShimBinary, Version: s.opts.Version, Fetch: s.opts.FetchShim, Events: s.events}
 	uploaded, err := syncer.sync(ctx, conn, facts, paths, s.opts.Version)
 	if err != nil {
 		return err

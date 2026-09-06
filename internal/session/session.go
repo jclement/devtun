@@ -104,6 +104,10 @@ type Options struct {
 	AutoInstall bool
 	// ShimBinary overrides the shim uploaded to the remote.
 	ShimBinary string
+	// FetchShim downloads a helper built for another platform. Nil means one
+	// cannot be downloaded, which is right for a development build that has no
+	// release to take it from.
+	FetchShim func(ctx context.Context, goos, goarch string) (string, error)
 	// Version is this build, used for the shim handshake.
 	Version string
 	// Setup decides how forward devtun is about the remote shell rc.

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/release"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/shim"
 )
@@ -28,8 +30,13 @@ import (
 // shimSyncer installs and refreshes the remote shim.
 type shimSyncer struct {
 	// Binary is the local path to a shim built for the remote's platform. When
-	// empty, this process's own executable is used if the platforms match.
+	// empty, one is found or downloaded.
 	Binary string
+	// Version is this build, which is also the release a helper is taken from.
+	Version string
+	// Fetch downloads a helper for another platform. Nil disables downloading,
+	// which is what a development build with no release wants.
+	Fetch  func(ctx context.Context, goos, goarch string) (string, error)
 	Events event.Sink
 }
 
@@ -43,7 +50,7 @@ func (s *shimSyncer) sync(ctx context.Context, c remoteClient, facts service.Fac
 		return false, nil
 	}
 
-	local, err := s.localBinary(facts)
+	local, err := s.localBinary(ctx, facts)
 	if err != nil {
 		return false, err
 	}
@@ -83,12 +90,24 @@ func (s *shimSyncer) remoteVersion(ctx context.Context, c remoteClient, binary s
 }
 
 // localBinary finds a shim built for the remote's platform.
-func (s *shimSyncer) localBinary(facts service.Facts) (string, error) {
+//
+// The order matters and each step is for a different person. An explicit
+// --shim-binary is somebody who knows exactly what they want. dist/ is a
+// development checkout that has cross-built. Using this executable itself
+// covers the case where the remote happens to be the same platform. And the
+// download is for everybody else — which, for a tool installed from Homebrew
+// and pointed at a Linux box, is the ordinary case rather than the exotic one.
+//
+// That last step was missing at first, and the failure was quiet in the way
+// that matters: tunnels kept working, so devtun looked fine, while 1Password
+// and the SSH agent simply never started and the only clue was one line telling
+// a Homebrew user to run a mise task in a repository they have never cloned.
+func (s *shimSyncer) localBinary(ctx context.Context, facts service.Facts) (string, error) {
 	if s.Binary != "" {
 		return s.Binary, nil
 	}
-	// dist/ is where `mise run build:all` puts the cross-built shims, so a
-	// development checkout can install onto anything without a release.
+	// dist/ is where `mise run build:all` puts the cross-built helpers, so a
+	// development checkout can install onto anything without cutting a release.
 	candidate := path.Join("dist", fmt.Sprintf("devtun-%s-%s", facts.OS, facts.Arch))
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate, nil
@@ -100,8 +119,25 @@ func (s *shimSyncer) localBinary(facts service.Facts) (string, error) {
 		}
 		return self, nil
 	}
-	return "", fmt.Errorf("no devtun binary for %s/%s: build one with `mise run build:all`, or pass --shim-binary",
-		facts.OS, facts.Arch)
+
+	if s.Fetch == nil {
+		return "", fmt.Errorf("no devtun binary for %s/%s: build one with `mise run build:all`, or pass --shim-binary",
+			facts.OS, facts.Arch)
+	}
+	s.Events.Emit(event.Event{
+		Kind: "shim-fetching", Class: event.Lifecycle, Level: event.Info,
+		Text: fmt.Sprintf("downloading the %s/%s helper from release %s", facts.OS, facts.Arch, s.Version),
+	})
+	binary, err := s.Fetch(ctx, facts.OS, facts.Arch)
+	if err != nil {
+		if errors.Is(err, release.ErrNoRelease) {
+			return "", fmt.Errorf("no devtun binary for %s/%s: build one with `mise run build:all`, or pass --shim-binary",
+				facts.OS, facts.Arch)
+		}
+		return "", fmt.Errorf("no devtun binary for %s/%s and it could not be downloaded: %w",
+			facts.OS, facts.Arch, err)
+	}
+	return binary, nil
 }
 
 // ensureLinks creates the bin directory and the argv[0] symlinks.

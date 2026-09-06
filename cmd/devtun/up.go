@@ -17,6 +17,7 @@ import (
 	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/onepassword"
 	"github.com/jclement/devtun/internal/prompt"
+	"github.com/jclement/devtun/internal/release"
 	"github.com/jclement/devtun/internal/render"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
@@ -174,9 +175,17 @@ func runUp(ctx context.Context, f upFlags) error {
 		Reconnect:   !f.noReconnect,
 		AutoInstall: !f.noInstall,
 		ShimBinary:  f.shimBinary,
-		Version:     buildinfo.Version(),
-		Setup:       setupMode,
-		AskSetup:    askSetupOnTerminal,
+		// A helper for the remote's platform is downloaded from this build's
+		// own release when there is no other way to get one — which is the
+		// ordinary case for anyone who installed from Homebrew and is pointing
+		// devtun at a Linux box.
+		FetchShim: (&release.Fetcher{
+			Slug:    repoSlug,
+			Version: buildinfo.Version(),
+		}).Binary,
+		Version:  buildinfo.Version(),
+		Setup:    setupMode,
+		AskSetup: askSetupOnTerminal,
 	})
 
 	if f.installOnly {

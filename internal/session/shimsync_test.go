@@ -196,7 +196,7 @@ func TestLocalBinaryPrefersTheCrossBuiltDist(t *testing.T) {
 	}
 
 	syncer := &shimSyncer{}
-	got, err := syncer.localBinary(service.Facts{OS: "linux", Arch: "arm64"})
+	got, err := syncer.localBinary(context.Background(), service.Facts{OS: "linux", Arch: "arm64"})
 	if err != nil {
 		t.Fatalf("localBinary: %v", err)
 	}
@@ -209,12 +209,75 @@ func TestLocalBinaryExplainsHowToBuildOne(t *testing.T) {
 	t.Chdir(t.TempDir())
 	syncer := &shimSyncer{}
 
-	_, err := syncer.localBinary(service.Facts{OS: "plan9", Arch: "mips"})
+	_, err := syncer.localBinary(context.Background(), service.Facts{OS: "plan9", Arch: "mips"})
 
 	if err == nil {
 		t.Fatal("an unbuildable platform should be an error")
 	}
 	if !strings.Contains(err.Error(), "build:all") {
 		t.Errorf("the error should say how to fix it, got %v", err)
+	}
+}
+
+// The failure this fixes was quiet in the way that matters: tunnels kept
+// working, so devtun looked fine, while 1Password and the SSH agent never
+// started — and the only clue was a line telling a Homebrew user to run a mise
+// task in a repository they have never cloned.
+func TestAHelperIsDownloadedWhenThereIsNoOtherWayToGetOne(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	var askedOS, askedArch string
+	syncer := &shimSyncer{
+		Version: "v0.1.0",
+		Events:  event.Discard,
+		Fetch: func(_ context.Context, goos, goarch string) (string, error) {
+			askedOS, askedArch = goos, goarch
+			return "/tmp/fetched-devtun", nil
+		},
+	}
+
+	got, err := syncer.localBinary(context.Background(), service.Facts{OS: "linux", Arch: "arm64"})
+	if err != nil {
+		t.Fatalf("localBinary: %v", err)
+	}
+	if got != "/tmp/fetched-devtun" {
+		t.Errorf("want the downloaded helper, got %q", got)
+	}
+	if askedOS != "linux" || askedArch != "arm64" {
+		t.Errorf("downloaded for %s/%s, want linux/arm64", askedOS, askedArch)
+	}
+}
+
+// A development build has no release to take a helper from, and should say the
+// developer thing rather than reporting a failed download.
+func TestNoFetcherStillGivesTheDeveloperMessage(t *testing.T) {
+	t.Chdir(t.TempDir())
+	syncer := &shimSyncer{Events: event.Discard}
+
+	_, err := syncer.localBinary(context.Background(), service.Facts{OS: "linux", Arch: "arm64"})
+
+	if err == nil {
+		t.Fatal("want an error when there is no way to get a helper")
+	}
+	if !strings.Contains(err.Error(), "build:all") {
+		t.Errorf("a developer should be told how to build one, got %v", err)
+	}
+}
+
+// An explicit --shim-binary must win over everything, including a download.
+func TestAnExplicitBinaryIsNeverOverridden(t *testing.T) {
+	syncer := &shimSyncer{
+		Binary:  "/explicit/devtun",
+		Version: "v0.1.0",
+		Events:  event.Discard,
+		Fetch: func(context.Context, string, string) (string, error) {
+			t.Error("an explicit binary must not trigger a download")
+			return "", nil
+		},
+	}
+
+	got, err := syncer.localBinary(context.Background(), service.Facts{OS: "linux", Arch: "arm64"})
+	if err != nil || got != "/explicit/devtun" {
+		t.Errorf("localBinary = %q, %v", got, err)
 	}
 }
