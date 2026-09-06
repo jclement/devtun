@@ -170,7 +170,7 @@ func (f *Fetcher) download(ctx context.Context, name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("downloading %s: %w", name, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("downloading %s: %s", name, response.Status)
@@ -188,7 +188,7 @@ func extract(archive []byte, want string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the downloaded archive is not gzip: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	reader := tar.NewReader(gz)
 	for {
@@ -235,10 +235,11 @@ func write(path string, body []byte) error {
 		return err
 	}
 	name := temp.Name()
-	defer os.Remove(name)
+	// A no-op once the rename below has succeeded.
+	defer func() { _ = os.Remove(name) }()
 
 	if _, err := temp.Write(body); err != nil {
-		temp.Close()
+		_ = temp.Close()
 		return err
 	}
 	if err := temp.Close(); err != nil {
