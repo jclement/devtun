@@ -69,6 +69,10 @@ func newRootCommand() *cobra.Command {
 the name settings and approvals are recorded against, so they keep working when
 a machine changes address.
 
+On a terminal you get the interactive interface. Use --log for a coloured line
+per event, or --json for NDJSON; piped output is machine-readable either way
+without being asked.
+
 ` + completionHint(),
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,

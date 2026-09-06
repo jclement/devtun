@@ -131,9 +131,14 @@ func parseFacts(out string) service.Facts {
 			// First answer wins: the login shell is asked before the
 			// interactive one, and either counts.
 			if key == "PATH" {
-				if facts.LoginPath == "" {
-					facts.LoginPath = value
-				}
+				// PATH is unioned across both shells, not first-answer-wins
+				// like everything else here, and the difference is not
+				// academic. A login shell answers with a perfectly non-empty
+				// PATH that simply lacks devtun's directory, so under
+				// first-wins it beat the interactive shell's answer — and
+				// somebody who had put the line in .zshrc, exactly where the
+				// instructions said, was told forever that they had not.
+				facts.LoginPath = unionPath(facts.LoginPath, value)
 				continue
 			}
 			if name, ok := strings.CutPrefix(key, "env."); ok {
@@ -160,6 +165,30 @@ func parseFacts(out string) service.Facts {
 	facts.OS = normalizeOS(basics[5])
 	facts.Arch = normalizeArch(basics[6])
 	return facts
+}
+
+// unionPath merges two PATH values, keeping order and dropping duplicates.
+//
+// The union is the honest answer to "can the user's shell find this": a
+// directory on either shell's PATH will be found by something, and which of the
+// two devtun happened to ask first is not a fact about the box.
+func unionPath(existing, incoming string) string {
+	if existing == "" {
+		return incoming
+	}
+	if incoming == "" {
+		return existing
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, entry := range append(strings.Split(existing, ":"), strings.Split(incoming, ":")...) {
+		if entry == "" || seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		out = append(out, entry)
+	}
+	return strings.Join(out, ":")
 }
 
 // normalizeOS maps uname -s onto GOOS spelling, so a caller can compare it

@@ -88,8 +88,12 @@ op	/home/jsc/.local/bin/op
 `
 	facts := parseFacts(both)
 
-	if facts.LoginPath != "/usr/bin" {
-		t.Errorf("the first non-empty PATH should win, got %q", facts.LoginPath)
+	// PATH is the exception to first-answer-wins: it is unioned, because a
+	// directory on either shell's PATH will be found by something.
+	for _, want := range []string{"/usr/bin", "/home/jsc/.local/bin"} {
+		if !onPath(facts.LoginPath, want) {
+			t.Errorf("%q is missing from the unioned PATH %q", want, facts.LoginPath)
+		}
 	}
 	if facts.Tools["op"] != "/home/jsc/.local/bin/op" {
 		t.Errorf("a tool found only by the interactive shell should still count, got %q", facts.Tools["op"])
@@ -212,5 +216,55 @@ func TestScriptAsksOnlyForAllowlistedEnvironment(t *testing.T) {
 		if strings.Contains(script, secret) {
 			t.Errorf("the probe reaches for %q, which it has no business reading", secret)
 		}
+	}
+}
+
+// A directory on either shell's PATH will be found by something, and which of
+// the two devtun asked first is not a fact about the box.
+//
+// This is a regression test for a bug somebody hit in real use: they put the
+// line in .zshrc, exactly where the instructions said, and devtun went on
+// telling them to add it. The login shell answered with a perfectly non-empty
+// PATH that simply lacked the directory, and under first-answer-wins it beat
+// the interactive shell's answer.
+func TestPathIsUnionedAcrossBothShells(t *testing.T) {
+	out := `@@DEVTUN-BASICS
+/home/jsc
+
+/bin/zsh
+jsc
+bedev
+Linux
+x86_64
+@@DEVTUN-SHELL
+PATH	/usr/bin:/bin
+PATH	/home/jsc/.devtun/bin:/usr/bin:/bin
+@@DEVTUN-END
+`
+	facts := parseFacts(out)
+
+	if !onPath(facts.LoginPath, "/home/jsc/.devtun/bin") {
+		t.Errorf("the interactive shell's PATH was discarded: %q", facts.LoginPath)
+	}
+	// The login shell's own entries must survive too.
+	for _, want := range []string{"/usr/bin", "/bin"} {
+		if !onPath(facts.LoginPath, want) {
+			t.Errorf("%q is missing from %q", want, facts.LoginPath)
+		}
+	}
+	if strings.Count(facts.LoginPath, "/usr/bin") != 1 {
+		t.Errorf("entries should be deduplicated, got %q", facts.LoginPath)
+	}
+}
+
+func TestUnionPathHandlesEmpties(t *testing.T) {
+	if got := unionPath("", "/usr/bin"); got != "/usr/bin" {
+		t.Errorf("got %q", got)
+	}
+	if got := unionPath("/usr/bin", ""); got != "/usr/bin" {
+		t.Errorf("got %q", got)
+	}
+	if got := unionPath("/a:/b", "/b:/c"); got != "/a:/b:/c" {
+		t.Errorf("want order kept and duplicates dropped, got %q", got)
 	}
 }

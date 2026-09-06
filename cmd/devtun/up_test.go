@@ -132,3 +132,31 @@ func (s stubService) Probe(_ context.Context, _ service.Host) service.Support {
 func (s stubService) Attach(_ context.Context, _ service.Host) (service.Instance, error) {
 	return nil, nil
 }
+
+// The interface is what devtun is; the log is what you ask for when you want
+// to pipe it or watch it in a corner. But a TUI written into a pipe is line
+// noise, so anything that is not a terminal still gets machine-readable output
+// without being asked.
+func TestModeSelection(t *testing.T) {
+	tests := []struct {
+		name    string
+		flags   upFlags
+		tty     bool
+		wantTUI bool
+	}{
+		{"a terminal gets the interface", upFlags{}, true, true},
+		{"--log opts out", upFlags{logMode: true}, true, false},
+		{"--json opts out", upFlags{jsonOut: true}, true, false},
+		{"--plain opts out", upFlags{plain: true}, true, false},
+		{"a pipe never gets the interface", upFlags{}, false, false},
+		{"--tui cannot force it into a pipe", upFlags{tui: true}, false, false},
+		{"--tui on a terminal is the default anyway", upFlags{tui: true}, true, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := wantsTUI(test.flags, test.tty); got != test.wantTUI {
+				t.Errorf("wantsTUI = %v, want %v", got, test.wantTUI)
+			}
+		})
+	}
+}

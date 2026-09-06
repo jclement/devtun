@@ -72,6 +72,7 @@ type upFlags struct {
 
 	// presentation and behaviour
 	tui        bool
+	logMode    bool
 	jsonOut    bool
 	plain      bool
 	noColor    bool
@@ -118,7 +119,8 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	fl.DurationVar(&f.ttl, "ttl", 0, "lifetime of temporary approvals (default 5m)")
 	fl.DurationVar(&f.promptTimeout, "prompt-timeout", 0, "how long a request waits for you (default 2m)")
 
-	fl.BoolVar(&f.tui, "tui", false, "the interactive interface")
+	fl.BoolVar(&f.tui, "tui", false, "the interactive interface (the default on a terminal)")
+	fl.BoolVar(&f.logMode, "log", false, "a coloured line per event instead of the interface")
 	fl.BoolVar(&f.noDissolve, "no-dissolve", false, "skip the quit animation. you monster.")
 	fl.BoolVar(&f.jsonOut, "json", false, "NDJSON, one object per event")
 	fl.BoolVar(&f.plain, "plain", false, "plain log lines, no colour")
@@ -159,7 +161,14 @@ func runUp(ctx context.Context, f upFlags) error {
 		}
 	}()
 
-	useTUI := f.tui && ui.IsTTY() && !f.jsonOut && !f.plain
+	// The interface is the default, because it is the thing devtun is: a board
+	// of what is forwarded, what is open in your name, and what just happened.
+	// The log is what you ask for when you want to pipe it, watch it in a
+	// corner, or read it later — so it is a flag rather than the fallback.
+	//
+	// Anything that is not a terminal still gets machine-readable output
+	// without being asked: a TUI written into a pipe is line noise.
+	useTUI := wantsTUI(f, ui.IsTTY())
 
 	bus := event.NewBus(historyLimit)
 	services, tunnelSvc, opSvc, agentSvc, err := buildServices(f, store, useTUI)
@@ -207,6 +216,18 @@ func runUp(ctx context.Context, f upFlags) error {
 		})
 	}
 	return runHeadless(ctx, f, sess, bus, dest)
+}
+
+// wantsTUI decides between the interface and a stream of events.
+//
+// It takes isTTY rather than asking, so the decision is testable without a
+// terminal — which is the only way to check the rule that matters here: a TUI
+// written into a pipe is line noise, and no flag may override that.
+func wantsTUI(f upFlags, isTTY bool) bool {
+	if !isTTY {
+		return false
+	}
+	return !f.logMode && !f.jsonOut && !f.plain
 }
 
 // runHeadless is log mode: the events go to a writer and the session owns the

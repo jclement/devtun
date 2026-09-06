@@ -81,12 +81,14 @@ hide: [5432, 6379, 3306]
 ## The interface
 
 ```sh
-devtun bedev          # colourful log, one line per thing that happens
-devtun --tui bedev    # the full interface
+devtun bedev          # the interface
+devtun --log bedev    # a coloured line per thing that happens
 devtun --json bedev   # NDJSON, one object per event (automatic when piped)
 ```
 
-Log mode is the default because most of the time you want this running in a corner and only want to *notice* it when something happens:
+The interface is the default, because it is what devtun *is*: a board of what is forwarded, what is open in your name, and what just happened. A TUI written into a pipe is line noise, so anything that is not a terminal gets machine-readable output without being asked — no flag overrides that.
+
+`--log` is for when you want it running in a corner and only want to *notice* it when something happens:
 
 ```
 14:19:44 ⧉  ssh        connected to bedev
@@ -102,7 +104,7 @@ Log mode is the default because most of the time you want this running in a corn
 
 Secrets are violet with a lock; tunnels are cyan. That separation is the entire argument for putting them in one window — you can tell at a glance which lines are about your vault without reading a word.
 
-`--tui` gives you the interactive version:
+The interface:
 
 ```
 ╭─ devtun ▸ bedev ───── ● connected · 3 fwd · 2 hidden · 00:14:22 ─╮
