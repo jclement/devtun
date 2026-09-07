@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // fakeConfig is an in-memory service.Config. It round-trips every document
@@ -101,5 +103,69 @@ func TestStoreWithoutConfig(t *testing.T) {
 	s.SetView(ViewPrefs{ShowHidden: true})
 	if !s.View().ShowHidden {
 		t.Error("in-memory view prefs were not kept")
+	}
+}
+
+// yamlConfig is a service.Config that round-trips through YAML, which is what
+// the real host file is. The JSON fake above cannot stand in for these: the
+// whole point of the `hide` key is that `hide: 5432`, `hide: "1-2"` and a list
+// of both are all accepted, and that is UnmarshalYAML's doing.
+type yamlConfig map[string]string
+
+func (c yamlConfig) Get(key string, v any) (bool, error) { return c.GetLocal(key, v) }
+
+func (c yamlConfig) GetLocal(key string, v any) (bool, error) {
+	doc, ok := c[key]
+	if !ok {
+		return false, nil
+	}
+	if err := yaml.Unmarshal([]byte(doc), v); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (c yamlConfig) Set(string, any) error { return nil }
+
+func TestStoreReadsTheHostsHideList(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		doc  string
+		in   []int
+		out  []int
+	}{
+		{name: "a bare port", doc: "5432", in: []int{5432}, out: []int{3000}},
+		{name: "a range", doc: `"32768-60999"`, in: []int{32768, 40000, 60999}, out: []int{3000, 61000}},
+		{name: "a list of both", doc: "[5432, \"6000-6100\"]", in: []int{5432, 6050}, out: []int{3000}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewStore(yamlConfig{keyHide: tc.doc})
+			if err := s.HideErr(); err != nil {
+				t.Fatalf("reading %s: %v", tc.doc, err)
+			}
+			for _, port := range tc.in {
+				if !s.Hide().Contains(port) {
+					t.Errorf("%d is not hidden by %s", port, tc.doc)
+				}
+			}
+			for _, port := range tc.out {
+				if s.Hide().Contains(port) {
+					t.Errorf("%d should not be hidden by %s", port, tc.doc)
+				}
+			}
+		})
+	}
+}
+
+// A hide list that will not parse fails open — the port gets forwarded — so the
+// error has to survive for the service to say so. Silently reading it as empty
+// is how you find out from the port table instead.
+func TestStoreKeepsABrokenHideList(t *testing.T) {
+	s := NewStore(yamlConfig{keyHide: `"9000-8000"`})
+	if s.HideErr() == nil {
+		t.Fatal("a backwards range parsed without complaint")
+	}
+	if !s.Hide().Empty() {
+		t.Error("a broken list still hid something")
 	}
 }

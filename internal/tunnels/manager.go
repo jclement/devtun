@@ -145,6 +145,10 @@ type Manager struct {
 	// a host's file, so removing it from the global list restores the row
 	// everywhere at once.
 	globalHide PortSet
+	// hostHide is the same idea written in one host's file, for the ports that
+	// are noisy on that box and nowhere else. Both are read-only here: `x`
+	// writes a mode against a port, never into a list somebody hand-wrote.
+	hostHide   PortSet
 	showHidden bool
 
 	settings *Store
@@ -159,6 +163,8 @@ type ManagerOptions struct {
 	// rather than a list of ports so a range can be written: the ports worth
 	// hiding on a box that binds to port 0 are different every restart.
 	GlobalHide PortSet
+	// HostHide is the hide list from this host's own config file.
+	HostHide PortSet
 	// Grace is how many consecutive scans a service may be absent before its
 	// tunnel is torn down. Two absorbs a single dropped scan without leaving
 	// dead listeners around.
@@ -193,6 +199,7 @@ func NewManager(alloc *Allocator, dialer Dialer, opts ManagerOptions) *Manager {
 		settings: opts.Settings,
 	}
 	m.globalHide = opts.GlobalHide
+	m.hostHide = opts.HostHide
 	if opts.Settings != nil {
 		m.showHidden = opts.Settings.View().ShowHidden
 	}
@@ -343,7 +350,7 @@ func (m *Manager) wantLocked(e *entry) want {
 	case ModeHidden:
 		return want{skip: SkipHidden}
 	}
-	if m.globalHide.Contains(e.svc.Port) {
+	if m.globalHide.Contains(e.svc.Port) || m.hostHide.Contains(e.svc.Port) {
 		return want{skip: SkipHidden}
 	}
 	if m.policy.Paused && e.pausedKeep {

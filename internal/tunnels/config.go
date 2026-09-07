@@ -1,7 +1,11 @@
 package tunnels
 
 import (
+	"fmt"
+	"strings"
 	"sync"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/jclement/devtun/internal/service"
 )
@@ -11,6 +15,7 @@ import (
 const (
 	keyPorts = "ports"
 	keyView  = "view"
+	keyHide  = "hide"
 )
 
 // PortPrefs is what devtun remembers about one remote port between runs. It is
@@ -32,6 +37,51 @@ func (p PortPrefs) IsZero() bool {
 	return p.Label == "" && p.Scheme == "" &&
 		(p.Mode == "" || Mode(p.Mode) == ModeAuto) && p.Local == 0
 }
+
+// PortList is a host file's `hide:` list — ports and ranges this box never
+// forwards, in the same syntax as --exclude.
+//
+// It exists because `x` can only hide one port at a time, and a box that binds
+// to port 0 hands out a different port every restart: the thing a person means
+// is "never anything in 32768-60999 on this machine", and only a range can say
+// it. The global list in config.yaml says the same thing everywhere; this one
+// says it about one host, which is the more common case — the noisy ports are a
+// property of the box, not of your taste.
+//
+// devtun never writes it. Pressing `x` records mode: hidden against the port,
+// which is a decision about one port and reads back as one; rewriting a range
+// somebody hand-wrote into a list of ports would destroy what they meant.
+type PortList []string
+
+// UnmarshalYAML accepts a scalar or a sequence, of numbers or strings, so that
+// `hide: 5432`, `hide: "32768-60999"` and a list of both all mean what they
+// look like.
+func (p *PortList) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		var value string
+		if err := node.Decode(&value); err != nil {
+			return err
+		}
+		*p = PortList{value}
+		return nil
+	case yaml.SequenceNode:
+		out := make(PortList, 0, len(node.Content))
+		for _, item := range node.Content {
+			var value string
+			if err := item.Decode(&value); err != nil {
+				return fmt.Errorf("hide: %q is not a port or a range", item.Value)
+			}
+			out = append(out, value)
+		}
+		*p = out
+		return nil
+	}
+	return fmt.Errorf("hide: expected a port, a range, or a list of them")
+}
+
+// Spec renders the list in --exclude syntax, for ParsePortSet to read.
+func (p PortList) Spec() string { return strings.Join(p, ",") }
 
 // ViewPrefs is how a host's table is presented. These are display choices
 // only: none of them forwards or stops forwarding anything.
@@ -71,6 +121,12 @@ type viewDoc struct {
 type Store struct {
 	cfg service.Config
 
+	// hide is the host file's own never-forward list, read once and never
+	// written back. hideErr keeps a list that would not parse, so the service
+	// can say so out loud rather than forwarding a port the file said to hide.
+	hide    PortSet
+	hideErr error
+
 	mu    sync.Mutex
 	ports map[int]PortPrefs
 	view  ViewPrefs
@@ -89,6 +145,21 @@ func NewStore(cfg service.Config) *Store {
 		s.ports = ports
 	}
 
+	// GetLocal, not Get: a global `tunnels: hide:` would be a second spelling
+	// of the top-level `hide:` list, which already applies everywhere. This key
+	// means "on this box".
+	var spec PortList
+	if ok, err := cfg.GetLocal(keyHide, &spec); err != nil {
+		s.hideErr = err
+	} else if ok {
+		set, err := ParsePortSet(spec.Spec())
+		if err != nil {
+			s.hideErr = fmt.Errorf("the `hide` list in this host's config: %w", err)
+		} else {
+			s.hide = set
+		}
+	}
+
 	var doc viewDoc
 	if ok, err := cfg.Get(keyView, &doc); ok && err == nil {
 		s.view.ShowHidden = doc.ShowHidden
@@ -102,6 +173,15 @@ func NewStore(cfg service.Config) *Store {
 	}
 	return s
 }
+
+// Hide is the host's own never-forward list. It is fixed for the run: the file
+// is read on attach and devtun never writes this key.
+func (s *Store) Hide() PortSet { return s.hide }
+
+// HideErr reports a `hide` list that would not parse. The list fails open — a
+// port you meant to hide gets forwarded — so the service says so rather than
+// leaving you to wonder why the row is still there.
+func (s *Store) HideErr() error { return s.hideErr }
 
 // Port returns the remembered settings for a remote port.
 func (s *Store) Port(port int) PortPrefs {

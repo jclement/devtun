@@ -38,23 +38,24 @@ type tunnelCtrl interface {
 	Hidden() int
 }
 
-// secretsCtrl is the slice of the 1Password broker the Secrets tab drives.
+// secretsCtrl is the slice of a broker that the Access tab drives.
 type secretsCtrl interface {
 	Rules() []authz.Rule
 	GlobalRules() []authz.Rule
 	Revoke(index int) error
+	Deny(index int) error
 	Grants() []authz.Grant
 	RevokeGrant(host, subject string) bool
 	Forget() (grants, cached int)
 }
 
-// secretSource is one broker's slice of the Secrets tab.
+// accessSource is one broker's slice of the Access tab.
 //
 // There are two now — the vault and the agent — and there will be more. They
 // are listed together rather than on separate tabs because the question the tab
 // answers is "what is open in my name right now", and that question does not
 // care which broker holds the door. The source is a column, not a screen.
-type secretSource struct {
+type accessSource struct {
 	id    string
 	title string
 	ctrl  secretsCtrl
@@ -70,7 +71,7 @@ type configStore interface {
 // Run builds one from Options; a test builds one by hand.
 type deps struct {
 	tunnels  tunnelCtrl
-	secrets  []secretSource
+	secrets  []accessSource
 	store    configStore
 	services []service.Service
 
@@ -161,7 +162,7 @@ type Model struct {
 	logFilter event.Class
 
 	// Secrets and Services tabs.
-	secretRows []secretRow
+	accessRows []accessRow
 	svcRows    []serviceRow
 	// svcState is what the session has said about each service, keyed by id.
 	svcState map[string]svcState
@@ -286,10 +287,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case bellMsg:
-		// Written straight to the terminal rather than into the frame: Bubble
-		// Tea v2 renders through a cell buffer, which would treat a bare \a
-		// spliced into the view as a character to draw rather than a bell.
-		return m, tea.Printf("\a")
+		// Written straight to the terminal, not through tea.Printf and not
+		// into the view.
+		//
+		// The view is a cell buffer, which would draw a bare \a as a character
+		// rather than ring anything. tea.Printf is worse: it prints a line
+		// *above* the program, which scrolls the frame and eats the top row —
+		// the window losing its first line at apparently random moments, which
+		// is exactly what it did.
+		//
+		// BEL moves no cursor and occupies no cell, so writing it directly
+		// past the renderer disturbs nothing.
+		ring()
+		return m, nil
 
 	case toastMsg:
 		return m, m.showToast(msg)
@@ -395,8 +405,8 @@ func (m *Model) rowCount() int {
 	switch m.tab {
 	case tabActivity:
 		return len(m.logRows)
-	case tabSecrets:
-		return len(m.secretRows)
+	case tabAccess:
+		return len(m.accessRows)
 	case tabServices:
 		return len(m.svcRows)
 	default:
@@ -475,7 +485,7 @@ func (m *Model) clampCursor() {
 func (m *Model) reload() {
 	m.reloadTunnels()
 	m.reloadActivity()
-	m.reloadSecrets()
+	m.reloadAccess()
 	m.reloadServices()
 	m.clampCursor()
 }
@@ -583,8 +593,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch m.tab {
 	case tabActivity:
 		return m.handleActivityKey(msg)
-	case tabSecrets:
-		return m.handleSecretsKey(msg)
+	case tabAccess:
+		return m.handleAccessKey(msg)
 	case tabServices:
 		return m.handleServicesKey(msg)
 	default:
@@ -605,9 +615,13 @@ func (m *Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.confirming = true
 		return nil, true
 
-	case "tab":
+	// Left and right walk the tabs, which is what a hand reaches for before it
+	// finds tab/shift+tab. They are free here: no tab uses them for anything
+	// of its own, and the two places that do — the inline editor and the
+	// settings popup — take their keys before this handler sees them.
+	case "tab", "right":
 		return m.selectTab(m.tab.next(1)), true
-	case "shift+tab":
+	case "shift+tab", "left":
 		return m.selectTab(m.tab.next(-1)), true
 	case "1", "2", "3", "4":
 		n, _ := strconv.Atoi(msg.String())

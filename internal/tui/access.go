@@ -10,11 +10,11 @@ import (
 	"github.com/jclement/devtun/internal/ui"
 )
 
-// secretRow is one line of the Secrets tab: something currently standing
+// accessRow is one line of the Access tab: something currently standing
 // between this host and the vault. That is either a rule written to disk or a
 // live grant somebody clicked through, and the tab shows both — a grant is the
 // more consequential of the two and the shorter-lived, so it is listed first.
-type secretRow struct {
+type accessRow struct {
 	rule authz.Rule
 	// index is the rule's position in the broker's own list, which is what
 	// Revoke takes. Filtering the view must not change what `r` revokes, so the
@@ -25,7 +25,7 @@ type secretRow struct {
 	isGrant bool
 	// source is which broker this row belongs to, since the tab shows more
 	// than one and `r` has to revoke through the right door.
-	source secretSource
+	source accessSource
 	// global marks a rule that came from the top-level config. It is shown so
 	// the tab answers "what is deciding", and it cannot be revoked here: devtun
 	// did not write it, and quietly editing a file the user hand-wrote would be
@@ -33,18 +33,18 @@ type secretRow struct {
 	global bool
 }
 
-// reloadSecrets pulls the live grants and the host's persistent rules.
+// reloadAccess pulls the live grants and the host's persistent rules.
 //
 // Grants come first because they are the answer to "what is open right now",
 // which is the question this tab exists for. A rule is a decision you made
 // deliberately and can read on disk; a grant is one you clicked through a
 // minute ago and may well have forgotten.
-func (m *Model) reloadSecrets() {
+func (m *Model) reloadAccess() {
 	if len(m.d.secrets) == 0 {
-		m.secretRows = nil
+		m.accessRows = nil
 		return
 	}
-	q := strings.ToLower(strings.TrimSpace(m.search[tabSecrets]))
+	q := strings.ToLower(strings.TrimSpace(m.search[tabAccess]))
 	matches := func(text string) bool {
 		return q == "" || strings.Contains(strings.ToLower(text), q)
 	}
@@ -53,14 +53,14 @@ func (m *Model) reloadSecrets() {
 	// shorter-lived and more consequential, and grouping by lifetime rather
 	// than by broker is what makes the tab answer "what is open right now" at a
 	// glance.
-	rows := make([]secretRow, 0, 8)
+	rows := make([]accessRow, 0, 8)
 	for _, src := range m.d.secrets {
 		for _, g := range src.ctrl.Grants() {
 			grant := g
 			if !matches(src.title + " " + g.Host + " " + g.Subject) {
 				continue
 			}
-			rows = append(rows, secretRow{grant: &grant, isGrant: true, source: src})
+			rows = append(rows, accessRow{grant: &grant, isGrant: true, source: src})
 		}
 	}
 	for _, src := range m.d.secrets {
@@ -68,7 +68,7 @@ func (m *Model) reloadSecrets() {
 			if !matches(src.title + " " + r.Host + " " + r.Subject + " " + r.Note) {
 				continue
 			}
-			rows = append(rows, secretRow{rule: r, index: i, source: src})
+			rows = append(rows, accessRow{rule: r, index: i, source: src})
 		}
 	}
 	// The global rules last, because they are the least likely to be what you
@@ -79,32 +79,32 @@ func (m *Model) reloadSecrets() {
 			if !matches(src.title + " " + r.Host + " " + r.Subject + " " + r.Note) {
 				continue
 			}
-			rows = append(rows, secretRow{rule: r, source: src, global: true})
+			rows = append(rows, accessRow{rule: r, source: src, global: true})
 		}
 	}
-	m.secretRows = rows
+	m.accessRows = rows
 }
 
-func (m *Model) secretsView() string {
+func (m *Model) accessView() string {
 	var lines []string
-	end := min(m.offset()+m.listHeight(), len(m.secretRows))
+	end := min(m.offset()+m.listHeight(), len(m.accessRows))
 	for i := m.offset(); i < end; i++ {
-		lines = append(lines, m.secretLine(m.secretRows[i], i == m.cursor()))
+		lines = append(lines, m.accessLine(m.accessRows[i], i == m.cursor()))
 	}
 
 	empty := "nothing is open — every request is asked about"
 	if len(m.d.secrets) == 0 {
 		empty = "no broker is running for this host"
-	} else if m.search[tabSecrets] != "" {
-		empty = "nothing matches " + m.search[tabSecrets]
+	} else if m.search[tabAccess] != "" {
+		empty = "nothing matches " + m.search[tabAccess]
 	}
 	return m.listView(lines, m.listHeight(), empty)
 }
 
-// secretLine renders one rule. The subject carries ui.Secret, the same
+// accessLine renders one rule. The subject carries ui.Secret, the same
 // treatment a vault reference gets in the log and in the approval prompt: it
 // is the one string on screen you must never misread as something else.
-func (m *Model) secretLine(r secretRow, selected bool) string {
+func (m *Model) accessLine(r accessRow, selected bool) string {
 	if r.isGrant {
 		return m.grantLine(*r.grant, selected)
 	}
@@ -175,10 +175,12 @@ func (m *Model) grantLine(g authz.Grant, selected bool) string {
 	return line
 }
 
-func (m *Model) handleSecretsKey(msg tea.KeyPressMsg) tea.Cmd {
+func (m *Model) handleAccessKey(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
 	case "r":
 		return m.revokeSelected()
+	case "D":
+		return m.denySelected()
 	case "y":
 		return m.copyReference()
 	case "F":
@@ -190,10 +192,10 @@ func (m *Model) handleSecretsKey(msg tea.KeyPressMsg) tea.Cmd {
 // revokeSelected takes back a rule this host was granted.
 func (m *Model) revokeSelected() tea.Cmd {
 	i := m.cursor()
-	if len(m.d.secrets) == 0 || i < 0 || i >= len(m.secretRows) {
+	if len(m.d.secrets) == 0 || i < 0 || i >= len(m.accessRows) {
 		return m.needSelection()
 	}
-	row := m.secretRows[i]
+	row := m.accessRows[i]
 
 	// A grant and a rule are revoked through different doors: one lives in
 	// memory and is addressed by what it covers, the other is a line in a file
@@ -208,7 +210,7 @@ func (m *Model) revokeSelected() tea.Cmd {
 		if !row.source.ctrl.RevokeGrant(row.grant.Host, row.grant.Subject) {
 			return m.showToast(toastMsg{text: "that grant has already lapsed", bad: true})
 		}
-		m.reloadSecrets()
+		m.reloadAccess()
 		m.clampCursor()
 		return m.showToast(toastMsg{text: "revoked the grant for " + row.grant.Subject})
 	}
@@ -216,9 +218,47 @@ func (m *Model) revokeSelected() tea.Cmd {
 	if err := row.source.ctrl.Revoke(row.index); err != nil {
 		return m.showToast(toastMsg{text: err.Error(), bad: true})
 	}
-	m.reloadSecrets()
+	m.reloadAccess()
 	m.clampCursor()
 	return m.showToast(toastMsg{text: "revoked " + row.rule.Subject})
+}
+
+// denySelected turns the selected allow rule into a refusal.
+//
+// This is the one edit the tab offers, and it goes one way on purpose. Rewriting
+// a rule you regret as a deny is the change people actually want to make in a
+// hurry — "I clicked always and I should not have, and I do not want to be asked
+// again either". The opposite change, a deny becoming an allow on one keystroke
+// over whichever row the cursor is on, is the accident that deny-beats-allow
+// exists to prevent; that one stays a deliberate edit of the file.
+//
+// D, not d: it rewrites policy, and an upper-case key is not pressed by accident
+// while scrolling.
+func (m *Model) denySelected() tea.Cmd {
+	i := m.cursor()
+	if len(m.d.secrets) == 0 || i < 0 || i >= len(m.accessRows) {
+		return m.needSelection()
+	}
+	row := m.accessRows[i]
+	switch {
+	case row.isGrant:
+		// A grant is not a rule and has no action to rewrite. Revoking it is
+		// the whole of what can be done, and r already does that.
+		return m.showToast(toastMsg{text: "that is a live grant — r takes it back", bad: true})
+	case row.global:
+		return m.showToast(toastMsg{
+			text: "that rule came from your config file — edit it there",
+			bad:  true,
+		})
+	case row.rule.Action == authz.ActionDeny:
+		return m.showToast(toastMsg{text: "already a deny"})
+	}
+
+	if err := row.source.ctrl.Deny(row.index); err != nil {
+		return m.showToast(toastMsg{text: err.Error(), bad: true})
+	}
+	m.reloadAccess()
+	return m.showToast(toastMsg{text: "now denying " + row.rule.Subject})
 }
 
 // copyReference yanks the op:// reference — the *name* of the secret, never
@@ -231,10 +271,10 @@ func (m *Model) revokeSelected() tea.Cmd {
 // into a script.
 func (m *Model) copyReference() tea.Cmd {
 	i := m.cursor()
-	if i < 0 || i >= len(m.secretRows) {
+	if i < 0 || i >= len(m.accessRows) {
 		return m.needSelection()
 	}
-	ref := m.secretRows[i].rule.Subject
+	ref := m.accessRows[i].rule.Subject
 	return tea.Batch(yank(ref), m.showToast(toastMsg{text: "copied " + ref}))
 }
 

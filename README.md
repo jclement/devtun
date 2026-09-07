@@ -87,6 +87,20 @@ time.
 hide: [5432, "32768-60999"]     # postgres, and the whole ephemeral range
 ```
 
+The same key works in a host file, for the ports that are noisy on *that* box
+and nowhere else — which is most of them:
+
+```yaml
+# hosts/bedev.yaml
+tunnels:
+  hide: ["32768-60999"]         # this box binds its test servers to port 0
+```
+
+`x` writes `mode: hidden` against one port; a `hide:` list is how you say it
+about a range. devtun never rewrites either list, so a range you wrote stays a
+range. To bring one port back from a hidden range, press `a` on it until it says
+*on* — an explicit "always" beats every hide list.
+
 ## The interface
 
 ```sh
@@ -117,7 +131,7 @@ The interface:
 
 ```
 ╭─ devtun ▸ bedev ───── ● connected · 3 fwd · 2 hidden · 00:14:22 ─╮
-│ ▸Tunnels │ Activity │ Secrets │ Services                        │
+│ ▸Tunnels │ Activity │ Access │ Services                         │
 ├──────────────────────────────────────────────────────────────────┤
 │    LOCAL     ↓REMOTE  M  VIA    PROCESS         AGE  CONNS    IN │
 │●    3000  ←     3000     http   node vite       14m      2 1.2MB │
@@ -128,27 +142,29 @@ The interface:
 │ 14:22:01 🔒 op   ✓ op://Personal/Docker/PAT  allowed 5m · vite   │
 │ 14:20:11 ⇄ tun   opened 5173 → localhost:5174                    │
 │ 14:19:44 ⧉ ssh   connected · helper v0.1.0 current               │
-╰─ ↑↓ move · x hide · e enter · c config · ? help · esc quit ──────╯
+╰─ ↑↓ move · x hide · b browser · enter detail · c config · ? help ╯
 ```
 
-`●` means traffic is flowing right now, `◦` means it just showed up, `≠` means the local port isn't the one you asked for. The last three events sit under every tab, so a 1Password approval is never off-screen.
+`●` means traffic is flowing right now, `◦` means it just showed up, `≠` means the local port isn't the one you asked for. The activity pane sits under every tab, so a 1Password approval is never off-screen; it takes about a quarter of the window, up to eight lines, and gives way entirely on a window too short to spare them.
 
 ### Keys
 
 | | |
 |---|---|
 | `↑↓` / `j k`, `g` / `G`, `pgup` / `pgdn` | move |
-| `tab` / `1`–`4` | switch tabs |
+| `tab`, `← →` / `1`–`4` | switch tabs |
 | `x` | **hide this port** — remembered per host |
 | `H` | show hidden ports, so you can unhide |
 | `a` | auto → always on → hidden |
 | `enter`, `d` | detail |
-| `o`, `space` | open in your browser |
+| `b`, `o`, `space` | open in your browser |
 | `t` | say http / https — remembered |
 | `l` | pin the local port · `n` name it |
 | `y` | copy the URL (never a secret value) |
-| `c` | settings · `p` pause new tunnels |
+| `c` | settings — sort, and which services run here (`← →` changes a row) |
+| `p` | pause new tunnels |
 | `/` `s` `r` | search, sort, reverse |
+| `r` · `D` | Access tab: revoke a rule or grant · rewrite an allow as a deny |
 | `esc`, `q` | quit — it asks, then dissolves the screen in green rain |
 
 It's clickable too, because it's 2026 and you have a mouse.
@@ -219,7 +235,9 @@ Narrowest first, and every approval sits above every refusal, so overshooting do
 
 **Deny always wins**, at every level: a refusal beats an approval whether it was typed into a file, written by *Never*, or clicked as *stop asking*. Among answers of the same kind the written one wins. So a rule you wrote to block something cannot be undone by clicking through a prompt later — and a standing allow rule does not quietly re-open something you just said no to. That asymmetry is deliberate: an approval given by mistake costs you one secret, a refusal given by mistake costs you a moment's confusion, and the two should not be equally easy to reverse by accident.
 
-The **Secrets** tab in `--tui` lists everything currently deciding — live grants and refusals with their remaining time, the rules devtun wrote, and the rules from your own config. `r` revokes the first two. The last are marked *from your config* and are not editable there: devtun did not write them, and quietly rewriting a file you hand-wrote would be a worse surprise than saying no.
+The **Access** tab in `--tui` lists everything currently deciding — live grants and refusals with their remaining time, the rules devtun wrote, and the rules from your own config. `r` revokes the first two, and `D` rewrites a rule you regret as a deny, which is the difference between "stop allowing this" and "stop asking me about it". Rules from your config are marked *from your config* and are not editable there: devtun did not write them, and quietly rewriting a file you hand-wrote would be a worse surprise than saying no.
+
+`D` only ever tightens. Turning a deny back into an allow on one keystroke, over whichever row the cursor happens to be on, is precisely the accident that deny-beating-allow exists to prevent — so loosening stays deliberate: revoke the rule, or edit the file.
 
 ```yaml
 # ~/.config/devtun/config.yaml
@@ -260,6 +278,7 @@ ssh-agent:
     - {subject: "** → github.com", action: allow}
     - {subject: "** → **", action: deny}     # nowhere else, from this box
 tunnels:
+  hide: ["32768-60999"]                    # never, on this box
   ports:
     3000: {label: frontend, scheme: https, local: 13000}
     5432: {mode: hidden}

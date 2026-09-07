@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -57,6 +58,27 @@ func (m *Model) menuItems() []menuItem {
 		},
 	}}
 
+	// Whether a service runs at all is a per-host setting like any other, and
+	// this is the popup people open looking for one. It stays on the Services
+	// tab too: that tab is where the reason a service cannot run here is
+	// written, which is what you want in front of you while switching it off.
+	for _, svc := range m.d.services {
+		meta := svc.Meta()
+		items = append(items, menuItem{
+			title: meta.Glyph + " " + meta.Title,
+			help:  m.serviceHelp(meta.ID, meta.Short),
+			owner: "services",
+			get:   func() string { return strconv.FormatBool(m.serviceEnabled(meta.ID)) },
+			set: func(v string) {
+				if m.d.store == nil {
+					return
+				}
+				m.d.store.SetEnabled(m.d.host, meta.ID, v == "true")
+				m.reloadServices()
+			},
+		})
+	}
+
 	for _, svc := range m.d.services {
 		cfg, ok := svc.(service.Configurable)
 		if !ok {
@@ -77,9 +99,25 @@ func (m *Model) menuItems() []menuItem {
 	return items
 }
 
+// serviceHelp is the line under a service toggle: the reason it cannot run
+// here if there is one, since that is what the user has to act on, and
+// otherwise what it does plus when a change lands.
+func (m *Model) serviceHelp(id, short string) string {
+	if detail := m.svcState[id].detail; detail != "" {
+		return detail
+	}
+	return short + " — a change applies from the next connection"
+}
+
 // activateMenuItem applies the row under the cursor: a boolean flips, a choice
 // steps to the next option.
-func (m *Model) activateMenuItem(i int) tea.Cmd {
+func (m *Model) activateMenuItem(i int) tea.Cmd { return m.stepMenuItem(i, 1) }
+
+// stepMenuItem moves the row under the cursor by delta options. A boolean has
+// only two states, so either direction flips it; a choice walks its list, which
+// is why left exists at all — a four-option setting you overshot should not
+// need three more presses to come back to.
+func (m *Model) stepMenuItem(i, delta int) tea.Cmd {
 	items := m.menuItems()
 	if i < 0 || i >= len(items) {
 		return nil
@@ -88,12 +126,16 @@ func (m *Model) activateMenuItem(i int) tea.Cmd {
 	if len(item.options) == 0 {
 		item.set(map[bool]string{true: "false", false: "true"}[item.get() == "true"])
 	} else {
-		next := 0
+		at := 0
 		for j, o := range item.options {
 			if o == item.get() {
-				next = (j + 1) % len(item.options)
+				at = j
 				break
 			}
+		}
+		next := (at + delta) % len(item.options)
+		if next < 0 {
+			next += len(item.options)
 		}
 		item.set(item.options[next])
 	}
@@ -137,7 +179,9 @@ func (m *Model) handleMenuKey(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return nil
 	case " ", "enter", "right", "l":
-		return m.activateMenuItem(m.menu.cursor)
+		return m.stepMenuItem(m.menu.cursor, 1)
+	case "left", "h":
+		return m.stepMenuItem(m.menu.cursor, -1)
 	}
 	return nil
 }
@@ -164,7 +208,7 @@ func (m *Model) menuBox() string {
 
 	var b strings.Builder
 	b.WriteString(ui.Banner.Render("Settings") + ui.Muted.Render("  ·  remembered for "+m.d.host) + "\n")
-	b.WriteString(ui.Muted.Render("what is listed and how — nothing here forwards a port or releases a secret") + "\n\n")
+	b.WriteString(ui.Muted.Render("what runs here, what is listed, and how — nothing releases a secret") + "\n\n")
 
 	for i, item := range items {
 		selected := i == m.menu.cursor
@@ -205,6 +249,6 @@ func (m *Model) menuBox() string {
 		}
 	}
 
-	b.WriteString(ui.Muted.Render("↑↓ move · space change · esc close"))
+	b.WriteString(ui.Muted.Render("↑↓ move · ←→ change · esc close"))
 	return m.boxOf(b.String())
 }

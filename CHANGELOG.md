@@ -3,11 +3,53 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Fixed
+
+- **The frame lost its top line.** The approval bell was rung with
+  `tea.Printf("\a")`, which prints a line *above* the program — scrolling the
+  frame up by one and eating the header with it. The bell is written straight to
+  the terminal now and disturbs nothing.
+
+### Changed
+
+- **The activity pane scales with the window.** It was three lines at every
+  size: a waste on a tall terminal and, on a short one, three port rows you
+  could not see. It now takes about a quarter of the frame, up to eight lines,
+  and gives way entirely below the height where the table needs every row.
+- **The Secrets tab is called Access**, because that is what it is: the rules on
+  disk and the live grants, for the vault and the agent alike, with `r` to take
+  one back. Called Secrets, the person looking for a rule viewer did not find
+  it.
+- **Left and right walk the tabs**, and step a settings row through its options
+  in both directions. Nothing used them before, and they are what a hand reaches
+  for before it finds `tab`/`shift+tab`.
+- **The settings popup switches services on and off**, alongside the sort order
+  and each service's own settings — `c` is where people look for "turn that off
+  for this box". The Services tab keeps its toggle: it is where the reason a
+  service cannot run here is written.
+
+### Added
+
+- **`D` on the Access tab rewrites a rule as a deny.** Revoking an allow you
+  regret leaves devtun asking about it again; often what you mean is "and stop
+  asking". It only tightens — a deny becoming an allow under the cursor is the
+  accident deny-beats-allow exists to prevent, so that stays an edit of the file.
+- **`b` opens the selected port in a browser**, alongside `o` and space. It is
+  the letter people guess, and now the one the key bar advertises.
+- **A per-host `hide` list**, in a host file's `tunnels:` section, in the same
+  syntax as the global one. The noisy ports are usually a property of the box
+  rather than of your taste, and `x` can only hide one port at a time — a range
+  is the only thing that converges on a machine that binds to port 0. devtun
+  never rewrites either list, and a list that will not parse is said out loud
+  rather than silently read as empty.
+
 ## v0.1.5
 
 ### Changed
 
-- **The `hide` list accepts ranges**, in the same syntax as `--exclude`:
+- **The global `hide` list accepts ranges**, in the same syntax as `--exclude`:
   `hide: "32768-60999"`, or a list mixing ports and ranges. A box that binds
   services to port 0 gets whatever the kernel hands out, so the noisy ports are
   different on every restart and could not be hidden one at a time.

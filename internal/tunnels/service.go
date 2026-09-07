@@ -149,19 +149,37 @@ func (s *Service) Attach(ctx context.Context, h service.Host) (service.Instance,
 	s.sink.set(h.Events())
 
 	s.mu.Lock()
-	if s.mgr == nil {
+	first := s.mgr == nil
+	if first {
 		s.store = NewStore(h.Config())
 		s.mgr = NewManager(s.alloc, nil, ManagerOptions{
 			Policy:     s.opts.Policy,
 			Settings:   s.store,
 			GlobalHide: s.opts.GlobalHide,
+			HostHide:   s.store.Hide(),
 			Grace:      s.opts.Grace,
 			Events:     s.sink,
 			Now:        s.opts.Now,
 		})
 	}
 	mgr := s.mgr
+	store := s.store
 	s.mu.Unlock()
+
+	// A hide list that would not parse fails open, so it has to be said out
+	// loud: the alternative is a port you thought was hidden quietly appearing
+	// on the board. Once, on the first attach — a reconnect re-reads nothing.
+	if first {
+		if err := store.HideErr(); err != nil {
+			h.Events().Emit(event.Event{
+				// Network, not Diagnostic: a diagnostic is dropped without
+				// --verbose, and a hide list that silently did nothing is the
+				// whole thing this line exists to prevent.
+				Service: "tunnels", Class: event.Network, Level: event.Warn,
+				Kind: "config", Text: err.Error(),
+			})
+		}
+	}
 
 	// The dialer's lifetime is the instance's, not Attach's: Attach may be
 	// called with a context that covers only the attach, and a forwarder still

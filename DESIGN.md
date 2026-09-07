@@ -147,6 +147,21 @@ The cost is honest and stated in the README: a first attach to a busy box
 forwards a lot at once, and a remote database will collide with a local one. The
 `≠` marker is loud about it and `x` is one keystroke.
 
+`x` is not enough on its own, though, and the gap is worth recording. It records
+one decision about one port, which is exactly right for a port with a name and
+useless for a box that binds its test servers to port 0: those get a different
+port from the kernel every restart, so hiding them never converges. That is what
+the `hide` lists are for — the global one in `config.yaml`, and the same key in
+a host file's `tunnels:` section for ports that are noisy on one box only, which
+is most of them. Ranges are the reason both exist.
+
+devtun reads those lists and never writes them. A hide list is prose somebody
+wrote; rewriting `32768-60999` as the four ports that happened to be up would
+destroy what it meant. Which also means the two mechanisms have to be readable
+apart: `x` writes `mode: hidden` against a port, and an explicit `mode: on`
+beats every hide list, so a single port can be pulled back out of a hidden range
+without editing the file.
+
 One precedence call worth recording, because it differs from autotun and someone
 will wonder. **`--exclude` beats a stored `mode: on`.** autotun let `on` win.
 A flag typed in *this* command is a more recent and more deliberate act than a
@@ -248,7 +263,7 @@ approve it. A security prompt whose only way to make itself go away is "yes" is
 teaching the wrong reflex, and it is the reflex an attacker relies on.
 
 So a grant carries an action. *No, and stop asking* is a session-scoped refusal;
-*Never* writes a deny rule. Both are live state the Secrets tab lists and can
+*Never* writes a deny rule. Both are live state the Access tab lists and can
 revoke — a refusal is as much "what is currently deciding" as an approval, and
 showing only the approvals would answer "what is open" while silently omitting
 "what is shut".
@@ -266,12 +281,20 @@ by mistake costs one secret; a refusal given by mistake costs a moment's
 confusion. So "always" and "never" are both rules, but only a refusal is immune
 to being clicked away afterwards.
 
-**7b. Turning an answer into policy lives in `authz`, not in each broker.**
-`Record` is the step between "the human chose something" and "the store knows",
-and it existed twice as near-copies until adding refusals would have made it
-three times. The two brokers disagree about what a subject *is* and agree
-completely about what "yes, for five minutes" should do — which is the shape of
-something that belongs in one place.
+**7b. Deciding a request lives in `authz`, not in each broker.** `authz.Broker`
+owns the whole sequence — consult policy, ask a human if policy has no answer,
+record the answer so the same question is not asked twice — and `authz.Record`
+owns the last step of it. Both existed twice as near-copies.
+
+The argument is not tidiness. The copies had already drifted: the fix for an
+answer racing the prompt deadline went into the 1Password one and had to be
+noticed and carried across by hand. Near-copies of a security decision are the
+worst kind to keep, because the second copy is the one nobody remembers to look
+at.
+
+What differs between brokers is only what a subject *is* and how to describe it
+to a human — which is why `prompt.Request` carries the wording (the noun, the
+scope, the detail rows, where the cursor starts) and everything else is shared.
 
 **8. The zero value of every decision is "no".** `prompt.ChoiceDeny` is the zero
 `Choice`, so a prompt that times out, is interrupted, fails to render, or has
@@ -302,7 +325,7 @@ decision. Decisions come from the SSH destination, which is authenticated.
 the process, and for most of this project's life the only thing you could do
 about one was drop every grant at once. `policy.Store.Grants` returns a read-only
 copy — the store keeps its own grants unexported so nothing outside can forge
-one — and the Secrets tab lists them above the persistent rules, because a rule
+one — and the Access tab lists them above the persistent rules, because a rule
 is a decision you made deliberately and can read on disk while a grant is one you
 clicked through a minute ago and may well have forgotten.
 
@@ -323,6 +346,18 @@ sits one column right of every tunnel line, which quietly destroys the alignment
 the log exists to have. `ui.GlyphCells` is a table, because we choose the glyphs
 and can simply know.
 
+**10a-bis. An optional interface is found by asking, never by a list.** Every
+place devtun discovers what a service can do — a socket handler, an advisor, a
+config contributor, a prompter — iterates the registry and type-asserts. That is
+not a style preference; it is the fix for a bug that shipped. The approval modal
+was installed on the 1Password service by name, so when the agent broker arrived
+it silently kept the prompter it was built with — `Serialize(DenyAll{})`, which
+refuses everything. The default is right, and it is exactly what makes the
+omission silent: nothing errors, nothing logs, the feature is simply dead.
+
+A list of services that can do X will be missing the next service that can do X.
+Asking cannot be.
+
 **10b. Safety owns the border, not a chip on it.** When tunnels are bound
 somewhere other than loopback the whole top edge is drawn in the danger colour.
 A LAN-exposed session is the one condition on screen where the cost of not
@@ -334,6 +369,15 @@ every subscriber is required to be non-blocking — the renderers write to a
 buffered writer and the TUI adapter does a non-blocking send. The property it
 buys is that events can never be delivered out of order, which matters when the
 order is a security record.
+
+**11a. PATH is unioned across both shells; everything else takes the first
+answer.** The probe asks the login shell and then the interactive one, and for
+"does this box have `op`" the first non-empty answer is right — either shell
+finding it means it is there. For PATH it is wrong, and wrong in the way that
+looks like the tool is broken rather than the check: a login shell answers with
+a perfectly good PATH that simply lacks devtun's directory, so it beat the
+interactive shell's answer and somebody who had followed the instructions
+exactly was told forever that they had not.
 
 **12. Probe once, under the user's own shell.** `ssh host command` runs a
 non-interactive, non-login shell: no `.zshrc`, a bare `PATH`. A box configured

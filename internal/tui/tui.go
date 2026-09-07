@@ -33,7 +33,7 @@ import (
 )
 
 // Options is everything the interface is given. Every field is optional except
-// Bus and Session: a session running only tunnels has no Secrets service, and
+// Bus and Session: a session running only tunnels has no 1Password service, and
 // the interface must be honest about that rather than fall over.
 type Options struct {
 	Session  *session.Session
@@ -233,18 +233,18 @@ func (a tunnelAdapter) SetViewPrefs(p tunnels.ViewPrefs) {
 // interface that is nil, which is the difference between "no 1Password on this
 // session" and a crash.
 
-// secretSources lists the brokers whose grants and rules the Secrets tab shows.
+// secretSources lists the brokers whose grants and rules the Access tab shows.
 //
 // A nil service is left out rather than listed as empty: a session running only
 // tunnels has no broker at all, and a tab offering to revoke nothing from a
 // thing that is not running would be a lie about what is happening.
-func secretSources(op *onepassword.Service, agent *sshagent.Service) []secretSource {
-	var out []secretSource
+func secretSources(op *onepassword.Service, agent *sshagent.Service) []accessSource {
+	var out []accessSource
 	if op != nil {
-		out = append(out, secretSource{id: "1password", title: "1Password", ctrl: op})
+		out = append(out, accessSource{id: "1password", title: "1Password", ctrl: op})
 	}
 	if agent != nil {
-		out = append(out, secretSource{id: "ssh-agent", title: "SSH Agent", ctrl: cachelessBroker{agent}})
+		out = append(out, accessSource{id: "ssh-agent", title: "SSH Agent", ctrl: cachelessBroker{agent}})
 	}
 	return out
 }

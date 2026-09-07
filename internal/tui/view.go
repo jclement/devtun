@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -26,19 +27,28 @@ const (
 )
 
 const (
-	// tickerLines is how much of the activity stream stays visible under every
-	// tab. Three is enough that a 1Password approval cannot scroll away
-	// unnoticed while you are looking at something else, which is the whole
-	// reason it is there.
-	tickerLines = 3
-	// chromeLines is every line the body does not get: the header, the tab bar
-	// and its rule, the ticker with a rule of its own, and the key bar.
-	chromeLines = rowBody + 1 + tickerLines + 1
+	// The activity pane under every tab scales with the window rather than
+	// sitting at a fixed height.
+	//
+	// It exists so an approval cannot scroll away unnoticed while you are
+	// looking at the port table, and three lines is barely enough to notice
+	// one — on a tall terminal it is a waste of a screen that has room to
+	// spare. On a short one the opposite is true: every line it takes is a
+	// port you cannot see, and below a certain height the table matters more
+	// than the history does.
+	tickerMin     = 3  // below this it is not worth the rule that frames it
+	tickerWant    = 8  // what it grows to when there is room
+	tickerShare   = 4  // at most a quarter of the frame
+	tickerRoomFor = 10 // body rows that must survive before it grows at all
+
+	// baseChrome is every line the body never gets regardless of the activity
+	// pane: the header, the tab bar and its rule, and the key bar.
+	baseChrome = rowBody + 1
 
 	// A frame narrower or shorter than this cannot be drawn without lying
 	// about something, so it is not drawn at all.
 	minWidth  = 40
-	minHeight = chromeLines + 2
+	minHeight = baseChrome + tickerMin + 2
 )
 
 // Box-drawing pieces.
@@ -125,10 +135,15 @@ func (m *Model) baseView() string {
 	b.WriteByte('\n')
 	b.WriteString(m.body())
 	b.WriteByte('\n')
-	b.WriteString(m.separator("activity"))
-	b.WriteByte('\n')
-	b.WriteString(m.ticker())
-	b.WriteByte('\n')
+	// The activity pane disappears entirely on a frame too short to spare the
+	// rows. Its rule goes with it: a labelled separator over nothing is worse
+	// than no pane, because it looks like something failed to render.
+	if ticker := m.ticker(); ticker != "" {
+		b.WriteString(m.separator("activity"))
+		b.WriteByte('\n')
+		b.WriteString(ticker)
+		b.WriteByte('\n')
+	}
 	b.WriteString(m.bottomBorder())
 	return b.String()
 }
@@ -138,8 +153,8 @@ func (m *Model) body() string {
 	switch m.tab {
 	case tabActivity:
 		return m.activityView()
-	case tabSecrets:
-		return m.secretsView()
+	case tabAccess:
+		return m.accessView()
 	case tabServices:
 		return m.servicesView()
 	default:
@@ -157,7 +172,7 @@ func (m *Model) inner() int {
 
 // bodyHeight is how many lines the active tab gets.
 func (m *Model) bodyHeight() int {
-	if h := m.height - chromeLines; h > 1 {
+	if h := m.height - m.chrome(); h > 1 {
 		return h
 	}
 	return 1
@@ -169,6 +184,35 @@ func (m *Model) listTop() int {
 		return rowBody + 1 // the column header sits above the data
 	}
 	return rowBody
+}
+
+// tickerHeight is how many lines the activity pane gets.
+//
+// It is zero on a frame with no room to spare — a pane that costs three of the
+// eight rows you have is not helping — and otherwise grows toward tickerWant
+// without ever taking more than a quarter of the screen.
+func (m *Model) tickerHeight() int {
+	// Everything the body and the pane share, the pane's own rule included.
+	available := m.height - baseChrome
+	if available < tickerMin+1+tickerRoomFor {
+		return 0
+	}
+	height := available / tickerShare
+	if height < tickerMin {
+		return 0
+	}
+	if height > tickerWant {
+		return tickerWant
+	}
+	return height
+}
+
+// chrome is every line the active tab's body does not get.
+func (m *Model) chrome() int {
+	if h := m.tickerHeight(); h > 0 {
+		return baseChrome + h + 1 // the pane, plus the rule above it
+	}
+	return baseChrome
 }
 
 // listHeight is how many rows of the active tab's list fit on screen.
@@ -453,12 +497,12 @@ func (m *Model) keyBar() string {
 	switch m.tab {
 	case tabActivity:
 		keys = append(keys, [2]string{"f", "filter"}, [2]string{"/", "search"})
-	case tabSecrets:
-		keys = append(keys, [2]string{"r", "revoke"}, [2]string{"y", "copy ref"})
+	case tabAccess:
+		keys = append(keys, [2]string{"r", "revoke"}, [2]string{"D", "deny"}, [2]string{"y", "copy ref"})
 	case tabServices:
 		keys = append(keys, [2]string{"e", "enable"})
 	default:
-		keys = append(keys, [2]string{"x", "hide"}, [2]string{"enter", "detail"})
+		keys = append(keys, [2]string{"x", "hide"}, [2]string{"b", "browser"}, [2]string{"enter", "detail"})
 	}
 	keys = append(keys, [2]string{"c", "config"}, [2]string{"?", "help"}, [2]string{"esc", "quit"})
 
@@ -501,8 +545,13 @@ func (m *Model) keyBar() string {
 // look like the same line, because the class colouring is the thing that makes
 // a secret leaving your vault distinguishable from a port opening at a glance.
 func (m *Model) ticker() string {
-	recent := make([]event.Event, 0, tickerLines)
-	for i := len(m.log) - 1; i >= 0 && len(recent) < tickerLines; i-- {
+	height := m.tickerHeight()
+	if height == 0 {
+		return ""
+	}
+
+	recent := make([]event.Event, 0, height)
+	for i := len(m.log) - 1; i >= 0 && len(recent) < height; i-- {
 		// Diagnostic events are dropped for the same reason the log drops them
 		// without --verbose: a ticker that shows everything is a ticker nobody
 		// reads. The activity tab still has them.
@@ -512,11 +561,13 @@ func (m *Model) ticker() string {
 		recent = append(recent, m.log[i])
 	}
 
-	lines := make([]string, tickerLines)
+	// Oldest at the top, so the newest line is nearest the key bar and the pane
+	// reads downward like the log it mirrors.
+	lines := make([]string, height)
 	for i := range lines {
 		content := ""
-		if i < len(recent) {
-			content = clampWidth(eventLine(recent[i]), m.inner())
+		if from := len(recent) - height + i; from >= 0 {
+			content = clampWidth(eventLine(recent[from]), m.inner())
 		}
 		lines[i] = m.boxLine(content)
 	}
@@ -593,6 +644,20 @@ func overlayCenter(base, box string, width, height int) string {
 		baseLines[row] = left + "\x1b[0m" + bl + "\x1b[0m" + right
 	}
 	return strings.Join(baseLines, "\n")
+}
+
+// ring emits a terminal bell without going through the renderer.
+//
+// It writes to the controlling terminal rather than to stdout so it works when
+// output is redirected, and drops the bell entirely rather than risking a
+// stray byte in a pipe when there is no terminal to ring.
+func ring() {
+	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		return
+	}
+	defer func() { _ = tty.Close() }()
+	_, _ = tty.WriteString("\a")
 }
 
 // boxOf renders an overlay panel, clamped so it can never be wider than the

@@ -37,7 +37,7 @@ func (m *Model) helpBox() string {
 		keys  [][2]string
 	}{
 		{"everywhere", [][2]string{
-			{"tab / 1-4", "switch tab"},
+			{"tab, ← →, 1-4", "switch tab"},
 			{"↑ ↓ / j k", "move"},
 			{"g / G", "first / last"},
 			{"/", "search this tab"},
@@ -51,7 +51,7 @@ func (m *Model) helpBox() string {
 			{"H", "list the ports you hid, so x can unhide one"},
 			{"a", "auto → on → hidden (remembered)"},
 			{"t", "say http or https (remembered)"},
-			{"o, space", "open in browser — asks HTTP/HTTPS when needed"},
+			{"b, o, space", "open in browser — asks HTTP/HTTPS when needed"},
 			{"l", "set the local port (remembered)"},
 			{"n", "name this port (remembered)"},
 			{"y", "copy URL, or host:port for raw TCP"},
@@ -63,8 +63,9 @@ func (m *Model) helpBox() string {
 			{"enter", "the event in full, fields included"},
 			{"y", "copy the line"},
 		}},
-		{"secrets", [][2]string{
-			{"r", "revoke the selected rule"},
+		{"access — rules and live grants", [][2]string{
+			{"r", "revoke the selected rule or grant"},
+			{"D", "rewrite the selected allow rule as a deny"},
 			{"y", "copy the op:// reference — never the secret"},
 			{"F", "forget every live grant and cached value"},
 		}},
@@ -101,19 +102,19 @@ func (m *Model) compactHelpBox() string {
 	var b strings.Builder
 	b.WriteString(ui.Banner.Render("devtun "+m.d.version) + "\n")
 	b.WriteString(ui.Muted.Render("everywhere") + "\n")
-	b.WriteString(row("tab / 1-4", "switch tab"))
+	b.WriteString(row("tab, ←→, 1-4", "switch tab"))
 	b.WriteString(row("↑↓ / j k / gG", "move / first / last"))
 	b.WriteString(row("/ · c", "search · settings"))
 	b.WriteString(ui.Muted.Render("a port") + "\n")
 	b.WriteString(row("enter, d", "detail"))
 	b.WriteString(row("x · H", "hide · list hidden"))
 	b.WriteString(row("a · t", "auto/on/hidden · http/https"))
-	b.WriteString(row("o, space · y", "open in browser · copy"))
+	b.WriteString(row("b, o, space · y", "open in browser · copy"))
 	b.WriteString(row("l · n", "local port · name"))
 	b.WriteString(row("s / r · p", "sort / reverse · pause"))
 	b.WriteString(ui.Muted.Render("other tabs") + "\n")
 	b.WriteString(row("f", "activity: filter by class"))
-	b.WriteString(row("r · y · F", "secrets: revoke · copy ref · forget"))
+	b.WriteString(row("r · D · y · F", "access: revoke · deny · copy ref · forget"))
 	b.WriteString(row("e", "services: on/off for this host"))
 	b.WriteString(ui.Muted.Render("leave") + "\n")
 	b.WriteString(row("esc, q / ^C", "ask to quit / quit now"))

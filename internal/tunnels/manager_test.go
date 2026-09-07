@@ -969,3 +969,40 @@ func TestTheSummaryListsPortsInOrder(t *testing.T) {
 		t.Errorf("want the ports in order (%s), got %q", want, summary)
 	}
 }
+
+// A host's own hide list is the answer to "these ports are noisy on this box",
+// and a range is the point: a box that binds to port 0 gets a different port
+// every restart, so hiding them one at a time never converges.
+func TestAHostsOwnHideListHidesARange(t *testing.T) {
+	echo := newEchoServer(t)
+	mgr := NewManager(NewAllocator("127.0.0.1", false), &fixedDialer{addr: echo.addr()}, ManagerOptions{
+		Policy:   DefaultPolicy(),
+		HostHide: mustPortSet(t, "32768-60999"),
+		Events:   &collector{},
+	})
+	t.Cleanup(mgr.Close)
+
+	mgr.Sync(probe.Snapshot{
+		3000:  {Port: 3000, Proc: "vite", Binds: []probe.Bind{{Proto: "tcp", Addr: "127.0.0.1"}}},
+		37973: {Port: 37973, Proc: "dotnet", Binds: []probe.Bind{{Proto: "tcp", Addr: "127.0.0.1"}}},
+	})
+
+	if got := mgr.Hidden(); got != 1 {
+		t.Errorf("want the port in the host's range counted as hidden, got %d", got)
+	}
+	for _, st := range mgr.States() {
+		if st.RemotePort == 37973 {
+			t.Errorf("a port hidden by the host file is still on the table")
+		}
+	}
+
+	// "On" still wins, which is the only way back for a port the range covers
+	// without editing the file.
+	mgr.SetMode(37973, ModeOn)
+	mgr.Sync(probe.Snapshot{
+		37973: {Port: 37973, Proc: "dotnet", Binds: []probe.Bind{{Proto: "tcp", Addr: "127.0.0.1"}}},
+	})
+	if got := mgr.Hidden(); got != 0 {
+		t.Errorf("`on` did not beat the host's hide list, %d still hidden", got)
+	}
+}

@@ -186,6 +186,38 @@ func TestRevoke(t *testing.T) {
 	}
 }
 
+// Deny rewrites an allow in place, persists it, and takes effect immediately —
+// the point of the edit is that the next request does not ask.
+func TestDenyTightensARuleAndPersistsIt(t *testing.T) {
+	saver := &recordingSaver{}
+	store := newTestStore(t)
+	store.AdoptHostRules(nil, saver)
+
+	if err := store.GrantPermanent("devbox", "op://A/one/f", "clicked always"); err != nil {
+		t.Fatalf("GrantPermanent: %v", err)
+	}
+	if err := store.Deny(0); err != nil {
+		t.Fatalf("Deny: %v", err)
+	}
+
+	rules := store.Rules()
+	if len(rules) != 1 || rules[0].Action != ActionDeny {
+		t.Fatalf("rules after Deny = %+v", rules)
+	}
+	if rules[0].Note != "clicked always" {
+		t.Errorf("the note was lost: %q", rules[0].Note)
+	}
+	if saved := saver.last(); len(saved) != 1 || saved[0].Action != ActionDeny {
+		t.Errorf("the saver holds %+v", saved)
+	}
+	if verdict := store.Decide("devbox", "op://A/one/f"); verdict.Action != ActionDeny {
+		t.Errorf("action = %q, want the rewritten rule to decide", verdict.Action)
+	}
+	if err := store.Deny(5); err == nil {
+		t.Error("denying a missing index should fail")
+	}
+}
+
 func TestZeroConfigUsesDefaults(t *testing.T) {
 	store := NewStore(Config{})
 	if got := store.Config().DefaultTTL; got != 5*time.Minute {

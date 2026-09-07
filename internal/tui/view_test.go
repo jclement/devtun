@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"github.com/jclement/devtun/internal/ui"
 	"strings"
 	"testing"
@@ -33,7 +34,7 @@ func TestViewRendersTheTable(t *testing.T) {
 	view := plainView(m)
 
 	for _, want := range []string{
-		"devtun", "bedev", "Tunnels", "Activity", "Secrets", "Services",
+		"devtun", "bedev", "Tunnels", "Activity", "Access", "Services",
 		"LOCAL", "REMOTE", "PROCESS", "3000", "9090", "node vite", "connected", "2 fwd",
 	} {
 		if !strings.Contains(view, want) {
@@ -58,7 +59,7 @@ func TestViewNeverExceedsTheTerminalWidth(t *testing.T) {
 	}}}
 
 	for _, width := range []int{40, 41, 60, 80, 100, 200} {
-		for _, tb := range []tab{tabTunnels, tabActivity, tabSecrets, tabServices} {
+		for _, tb := range []tab{tabTunnels, tabActivity, tabAccess, tabServices} {
 			stub := newStub(rows...)
 			stub.prefs.ShowHidden = true
 			m := newTestModel(t, deps{tunnels: stub, secrets: oneSource(secrets), services: services, store: newStubStore()})
@@ -147,28 +148,59 @@ func TestLANWarningSurvivesANarrowHeader(t *testing.T) {
 }
 
 // The ticker is the reason an approval cannot be missed while you are looking
-// at another tab, so it shows the newest three and follows you across tabs.
-func TestTickerShowsTheMostRecentThreeUnderEveryTab(t *testing.T) {
+// at another tab, so it shows the newest events and follows you across tabs.
+// How many it shows scales with the window, so the test asks the model rather
+// than hard-coding a number.
+func TestTickerShowsTheMostRecentUnderEveryTab(t *testing.T) {
 	m := newTestModel(t, deps{tunnels: newStub()})
-	for i, text := range []string{"first", "second", "third", "fourth"} {
+	lines := m.tickerHeight()
+	if lines < tickerMin {
+		t.Fatalf("the test window is too short to have a ticker at all")
+	}
+
+	// One more than fits, so there is always an event that has scrolled out.
+	var texts []string
+	for i := 0; i <= lines; i++ {
+		texts = append(texts, fmt.Sprintf("event-%d", i))
+	}
+	for i, text := range texts {
 		m.Update(eventMsg(event.Event{
 			Time: testNow.Add(time.Duration(i) * time.Second), Service: "tunnels",
 			Class: event.Network, Kind: "opened", Text: text,
 		}))
 	}
 
-	for _, tb := range []tab{tabTunnels, tabActivity, tabSecrets, tabServices} {
+	for _, tb := range []tab{tabTunnels, tabActivity, tabAccess, tabServices} {
 		m.tab = tb
 		view := plainView(m)
-		for _, want := range []string{"second", "third", "fourth"} {
+		for _, want := range texts[1:] {
 			if !strings.Contains(view, want) {
 				t.Errorf("tab %s: the ticker is missing %q:\n%s", tb, want, view)
 			}
 		}
 		// The oldest has scrolled out. The activity tab lists everything, so
 		// only the other three can assert its absence.
-		if tb != tabActivity && strings.Contains(view, "first") {
-			t.Errorf("tab %s: the ticker kept a fourth line:\n%s", tb, view)
+		if tb != tabActivity && strings.Contains(view, texts[0]) {
+			t.Errorf("tab %s: the ticker kept one line too many:\n%s", tb, view)
+		}
+	}
+}
+
+// The ticker grows with the window and gives way entirely on a short one,
+// where every line it takes is a port row you cannot see.
+func TestTickerScalesWithTheWindowAndVanishesOnShortOnes(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub()})
+	for _, tc := range []struct {
+		height int
+		want   int
+	}{
+		{height: 12, want: 0}, // the table needs every row it can get
+		{height: 24, want: 5}, // a quarter of the frame
+		{height: 60, want: tickerWant},
+	} {
+		m.Update(tea.WindowSizeMsg{Width: 100, Height: tc.height})
+		if got := m.tickerHeight(); got != tc.want {
+			t.Errorf("at %d lines the ticker wanted %d lines, got %d", tc.height, tc.want, got)
 		}
 	}
 }

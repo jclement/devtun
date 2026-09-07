@@ -427,7 +427,9 @@ func (m *Model) handleTunnelsKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.toggleShowHidden()
 	case "t":
 		return m.cycleScheme()
-	case " ", "o":
+	// b as well as o and space: b is what the key bar advertises and what a
+	// browser is called, and o is already three other things elsewhere.
+	case " ", "o", "b":
 		return m.openSelected()
 	case "y":
 		return m.copySelected()

@@ -171,11 +171,11 @@ func (s *stubTunnels) SetViewPrefs(p tunnels.ViewPrefs) {
 // stubSecrets is a secretsCtrl over a fixed rule list.
 // oneSource wraps a single stub broker as the tab's source list, which is what
 // the model takes now that there is more than one broker.
-func oneSource(s *stubSecrets) []secretSource {
+func oneSource(s *stubSecrets) []accessSource {
 	if s == nil {
 		return nil
 	}
-	return []secretSource{{id: "1password", title: "1Password", ctrl: s}}
+	return []accessSource{{id: "1password", title: "1Password", ctrl: s}}
 }
 
 type stubSecrets struct {
@@ -187,6 +187,7 @@ type stubSecrets struct {
 	forgot    bool
 	revoked   []int
 	revokedBy []string
+	denied    []int
 }
 
 func (s *stubSecrets) Rules() []authz.Rule { return s.rules }
@@ -194,6 +195,12 @@ func (s *stubSecrets) Rules() []authz.Rule { return s.rules }
 func (s *stubSecrets) Revoke(i int) error {
 	s.revoked = append(s.revoked, i)
 	s.rules = append(s.rules[:i], s.rules[i+1:]...)
+	return nil
+}
+
+func (s *stubSecrets) Deny(i int) error {
+	s.denied = append(s.denied, i)
+	s.rules[i].Action = authz.ActionDeny
 	return nil
 }
 
@@ -341,7 +348,7 @@ func skippedRow(remote int, cmd string, skip tunnels.Skip) tunnels.State {
 // the frame passes on the strength of a line the tab did not draw.
 func bodyLines(m *Model) string {
 	lines := strings.Split(plainView(m), "\n")
-	if len(lines) < chromeLines+1 {
+	if len(lines) < m.chrome()+1 {
 		return ""
 	}
 	return strings.Join(lines[rowBody:rowBody+m.bodyHeight()], "\n")

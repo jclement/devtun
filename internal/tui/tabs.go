@@ -15,12 +15,17 @@ type tab int
 const (
 	tabTunnels tab = iota
 	tabActivity
-	tabSecrets
+	tabAccess
 	tabServices
 	tabCount
 )
 
-var tabTitles = [tabCount]string{"Tunnels", "Activity", "Secrets", "Services"}
+// "Access" rather than "Secrets", because the tab is where you go to see and
+// take back what a host is allowed to do — the rules on disk and the grants you
+// clicked through, for the vault and the agent alike. Called Secrets it read as
+// a list of things you own rather than as the rule viewer it is, and the person
+// looking for one did not find it.
+var tabTitles = [tabCount]string{"Tunnels", "Activity", "Access", "Services"}
 
 // String names the tab, for toasts and for the help box.
 func (t tab) String() string {

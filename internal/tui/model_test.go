@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -25,8 +26,8 @@ func TestTabsCycleAndJump(t *testing.T) {
 		t.Errorf("shift+tab moved to %v, want Tunnels", m.tab)
 	}
 	send(m, "3")
-	if m.tab != tabSecrets {
-		t.Errorf("3 moved to %v, want Secrets", m.tab)
+	if m.tab != tabAccess {
+		t.Errorf("3 moved to %v, want Access", m.tab)
 	}
 	// Wrapping is what makes tab usable without counting.
 	m.tab = tabServices
@@ -36,16 +37,38 @@ func TestTabsCycleAndJump(t *testing.T) {
 	}
 }
 
+// The arrows walk the tabs, which is what a hand reaches for first. No tab uses
+// them for anything of its own, so there is nothing to trade away.
+func TestArrowsWalkTheTabs(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node"))})
+
+	send(m, "right")
+	if m.tab != tabActivity {
+		t.Errorf("right moved to %v, want Activity", m.tab)
+	}
+	send(m, "left")
+	if m.tab != tabTunnels {
+		t.Errorf("left moved to %v, want Tunnels", m.tab)
+	}
+	// But not while something has the keyboard: the search box needs left and
+	// right to edit with, and a tab switch under the cursor would be baffling.
+	send(m, "/")
+	send(m, "left")
+	if m.tab != tabTunnels {
+		t.Errorf("left switched tabs from inside the search box, to %v", m.tab)
+	}
+}
+
 func TestClickingATabSelectsIt(t *testing.T) {
 	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node"))})
 	m.frame() // the zones are recorded as the bar renders
 
-	target := m.tabZones[int(tabSecrets)]
+	target := m.tabZones[int(tabAccess)]
 	click(m, target.x0+1, rowTabs)
-	if m.tab != tabSecrets {
-		t.Errorf("clicking the Secrets tab selected %v", m.tab)
+	if m.tab != tabAccess {
+		t.Errorf("clicking the Access tab selected %v", m.tab)
 	}
-	if !strings.Contains(plainView(m), "▸Secrets") {
+	if !strings.Contains(plainView(m), "▸Access") {
 		t.Errorf("the tab bar does not mark the selection:\n%s", plainView(m))
 	}
 }
@@ -220,7 +243,7 @@ func TestSecretsTabListsRulesAndRevokesTheSelectedOne(t *testing.T) {
 	}
 }
 
-// The one rule of the Secrets tab: a secret value must never reach the
+// The one rule of the Access tab: a secret value must never reach the
 // clipboard. y copies the reference — the name of the secret, not the secret.
 func TestSecretsYankCopiesTheReferenceOnly(t *testing.T) {
 	secrets := &stubSecrets{rules: []authz.Rule{
@@ -303,11 +326,54 @@ func TestSettingsPopupOffersServiceSettings(t *testing.T) {
 	if !strings.Contains(plainView(m), "Show hidden ports") {
 		t.Fatalf("the service's setting is not in the popup:\n%s", plainView(m))
 	}
-	send(m, "down")
+	// Walk to the row rather than counting presses: the popup also lists a
+	// toggle per service, and this test is about the seam, not the order.
+	if !moveMenuTo(m, "Show hidden ports") {
+		t.Fatalf("the setting is not a menu row")
+	}
 	send(m, "enter")
 	if value != "true" {
 		t.Errorf("the setting was not written through the service: %q", value)
 	}
+	// And back again: left steps the other way, so an overshoot costs one key
+	// rather than a lap of the options.
+	send(m, "left")
+	if value != "false" {
+		t.Errorf("left did not step the setting back: %q", value)
+	}
+}
+
+// The services are switchable from the popup as well as from their tab: `c` is
+// where people look for "turn that off for this box".
+func TestSettingsPopupTogglesAService(t *testing.T) {
+	store := newStubStore()
+	services := []service.Service{stubService{meta: service.Meta{ID: "1password", Title: "1Password"}}}
+	m := newTestModel(t, deps{tunnels: newStub(), services: services, store: store, host: "bedev"})
+
+	send(m, "c")
+	if !moveMenuTo(m, "1Password") {
+		t.Fatalf("no row for the service:\n%s", plainView(m))
+	}
+	send(m, "enter")
+	if store.enabled["1password"] {
+		t.Error("the popup did not switch the service off")
+	}
+	send(m, "enter")
+	if !store.enabled["1password"] {
+		t.Error("the popup did not switch it back on")
+	}
+}
+
+// moveMenuTo walks the settings popup to the row whose title contains want.
+func moveMenuTo(m *Model, want string) bool {
+	items := m.menuItems()
+	for range items {
+		if strings.Contains(items[m.menu.cursor].title, want) {
+			return true
+		}
+		send(m, "down")
+	}
+	return false
 }
 
 // configurableService is a stub service that also exposes settings.
@@ -450,7 +516,7 @@ func TestClickingTheKeyBarRunsTheTabsOwnAction(t *testing.T) {
 	click(m, revoke.x0, m.height-1)
 
 	if len(secrets.revoked) != 1 {
-		t.Errorf("clicking r on the Secrets tab revoked %v", secrets.revoked)
+		t.Errorf("clicking r on the Access tab revoked %v", secrets.revoked)
 	}
 }
 
@@ -506,7 +572,7 @@ func TestRevokeWorksOnAGrant(t *testing.T) {
 	}
 	// Assert on the rows, not the frame: the success toast names the subject
 	// too, and would happily satisfy a substring check on the whole view.
-	for _, row := range m.secretRows {
+	for _, row := range m.accessRows {
 		if row.isGrant && row.grant.Subject == "op://Personal/Docker/PAT" {
 			t.Error("the revoked grant is still listed")
 		}
@@ -563,5 +629,87 @@ func TestLiveRefusalReadsAsARefusal(t *testing.T) {
 	}
 	if strings.Contains(view, "grant  ") {
 		t.Errorf("a deny grant must not be labelled as a grant:\n%s", view)
+	}
+}
+
+// b opens the selected port in a browser. o and space do too, but b is the
+// letter people guess and the one the key bar has room to advertise.
+func TestBOpensThePortInABrowser(t *testing.T) {
+	var opened string
+	m := newTestModel(t, deps{
+		tunnels: newStub(row(3000, 3000, "node vite")),
+		openURL: func(_ context.Context, url string) error { opened = url; return nil },
+	})
+	send(m, "down")
+	send(m, "b")
+	if opened != "http://127.0.0.1:3000" {
+		t.Errorf("b opened %q", opened)
+	}
+}
+
+// A port whose protocol nobody has established asks before opening, rather than
+// guessing and handing the browser a page that will not load.
+func TestBAsksForTheProtocolWhenItIsUnknown(t *testing.T) {
+	unknown := row(8080, 8080, "python3 -m http.server")
+	unknown.Scheme = tunnels.SchemeUnknown
+	var opened string
+	m := newTestModel(t, deps{
+		tunnels: newStub(unknown),
+		openURL: func(_ context.Context, url string) error { opened = url; return nil },
+	})
+	send(m, "down")
+	send(m, "b")
+	if !m.protocolPrompt {
+		t.Fatal("b did not ask which protocol to use")
+	}
+	send(m, "s")
+	if opened != "https://127.0.0.1:8080" {
+		t.Errorf("choosing https opened %q", opened)
+	}
+}
+
+// D rewrites an allow you regret as a deny, which is the edit people want in a
+// hurry: not just "stop allowing this" but "and stop asking me too".
+func TestDenyTightensTheSelectedRule(t *testing.T) {
+	secrets := &stubSecrets{rules: []authz.Rule{
+		{Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: authz.ActionAllow},
+	}}
+	m := newTestModel(t, deps{tunnels: newStub(), secrets: oneSource(secrets)})
+	send(m, "3")
+	send(m, "down")
+	send(m, "D")
+
+	if len(secrets.denied) != 1 {
+		t.Fatalf("D did not rewrite the rule, denied = %v", secrets.denied)
+	}
+	if secrets.rules[0].Action != authz.ActionDeny {
+		t.Errorf("the rule is still %q", secrets.rules[0].Action)
+	}
+}
+
+// It only ever tightens, and it never pretends to edit a file devtun did not
+// write. The global rules are listed so you can see what is deciding; changing
+// one there would be rewriting something you typed.
+func TestDenyRefusesWhatItCannotTighten(t *testing.T) {
+	secrets := &stubSecrets{
+		live:   []authz.Grant{{Host: "bedev", Subject: "op://Personal/Docker/PAT"}},
+		global: []authz.Rule{{Host: "*", Subject: "op://Private/**", Action: authz.ActionAllow}},
+	}
+	m := newTestModel(t, deps{tunnels: newStub(), secrets: oneSource(secrets)})
+	send(m, "3")
+
+	// The grant is listed first, the global rule last.
+	send(m, "down")
+	send(m, "D")
+	if len(secrets.denied) != 0 {
+		t.Errorf("D rewrote a live grant as a rule")
+	}
+	send(m, "down")
+	send(m, "D")
+	if len(secrets.denied) != 0 {
+		t.Errorf("D rewrote a rule from the config file")
+	}
+	if !strings.Contains(plainView(m), "edit it there") {
+		t.Errorf("nothing said why:\n%s", plainView(m))
 	}
 }

@@ -404,6 +404,28 @@ func (s *Store) Revoke(index int) error {
 	return s.saveLocked()
 }
 
+// Deny turns the host rule at index into a refusal, keeping its subject and
+// its note.
+//
+// It only tightens. An allow becomes a deny; a deny is already the stricter
+// answer and is left alone. The reverse — turning a deny into an allow with one
+// keystroke on whichever row the cursor happens to be on — is exactly the
+// accident the deny-beats-allow rule exists to prevent, so loosening stays a
+// deliberate act: revoke the deny, or edit the file.
+func (s *Store) Deny(index int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if index < 0 || index >= len(s.hostRules) {
+		return fmt.Errorf("no rule at index %d (there are %d)", index, len(s.hostRules))
+	}
+	if s.hostRules[index].Action == ActionDeny {
+		return nil
+	}
+	s.hostRules[index].Action = ActionDeny
+	s.hostRules[index].Added = time.Now().UTC().Truncate(time.Second)
+	return s.saveLocked()
+}
+
 // ForgetGrants drops every live grant, which is the "lock it back up" action.
 func (s *Store) ForgetGrants() int {
 	s.mu.Lock()
