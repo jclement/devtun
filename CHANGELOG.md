@@ -20,6 +20,20 @@ this is 0.x, a minor bump may break something.
 
 ### Added
 
+- **`--web`: the board in a browser.** The same port table, rules, grants and
+  security log, served on loopback and streamed with server-sent events. It runs
+  alongside whichever interface owns the terminal rather than instead of it.
+
+  It can hide a port, unhide one, revoke a rule or a grant, and ask for a
+  reconnect — all of which either narrow what the remote can do or change what
+  you are looking at. It cannot approve anything: a page that could has to be
+  right about tokens, origins, rebinding and replay at once, and the cost of
+  being subtly wrong there is somebody's secret.
+
+  A port on 127.0.0.1 is not private, so: a token on every request (in the URL
+  once, then a cookie), a Host header that has to name loopback — which is what
+  stops DNS rebinding, and holds even when bound to 0.0.0.0 — and an Origin
+  check on anything that changes something. The page is served from the binary.
 - **A GPG agent bridge.** `git commit -S` on the remote signs with the key on
   your laptop, over GnuPG's *extra socket* — the restricted variant meant to be
   forwarded, which refuses the commands that manage keys rather than use them.

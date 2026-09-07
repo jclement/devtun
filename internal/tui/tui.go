@@ -53,6 +53,10 @@ type Options struct {
 	// running behind the browser and a secret request would otherwise sit
 	// unanswered on a screen nobody is on.
 	Prompt prompt.Backend
+	// WebURL is where the browser interface is, when one was asked for. It is
+	// announced through the log once the program is running, because it is
+	// carrying a token and a line printed before then would scroll the frame.
+	WebURL string
 	// NoDissolve turns off the exit animation, for a terminal or a person that
 	// would rather not have one.
 	NoDissolve bool
@@ -109,6 +113,15 @@ func Run(ctx context.Context, o Options) error {
 
 	stop := forwardEvents(o.Bus, program)
 	defer stop()
+
+	// After the forwarder is subscribed, or the one line telling somebody where
+	// the browser interface is would be the one line they never see.
+	if o.WebURL != "" && o.Bus != nil {
+		o.Bus.Emit(event.Event{
+			Time: time.Now(), Service: "web", Class: event.Lifecycle, Level: event.Info,
+			Kind: "listening", Text: "the board is also at " + o.WebURL,
+		})
+	}
 
 	if o.Session != nil {
 		go func() {

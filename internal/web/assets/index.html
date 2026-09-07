@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>devtun</title>
+<style>
+  /* One file, no CDN, no build step. The page is served from a socket on your
+     own machine and has to work with the network unplugged. */
+  :root {
+    color-scheme: light dark;
+    --bg: #16161e; --panel: #1a1b26; --line: #2f334d; --text: #c0caf5;
+    --muted: #565f89; --ok: #9ece6a; --warn: #e0af68; --err: #f7768e;
+    --net: #7dcfff; --sec: #bb9af7; --life: #7aa2f7;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f5f8; --panel: #fff; --line: #d8dbe6; --text: #22242e;
+      --muted: #6b7089; --net: #1f7fa8; --sec: #7a4fc4; --life: #2f5fd0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 var(--mono);
+  }
+  header {
+    display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap;
+    padding: .75rem 1rem; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: var(--bg); z-index: 2;
+  }
+  h1 { font-size: 1rem; margin: 0; letter-spacing: .04em; }
+  h1 b { color: var(--net); }
+  .dot { width: .6rem; height: .6rem; border-radius: 50%; display: inline-block; }
+  .dot.connected { background: var(--ok); }
+  .dot.connecting, .dot.reconnecting { background: var(--warn); }
+  .dot.failed, .dot.disconnected { background: var(--err); }
+  .grow { flex: 1; }
+  .muted { color: var(--muted); }
+  main { padding: 1rem; display: grid; gap: 1rem; max-width: 1100px; }
+  section { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; }
+  section > h2 {
+    font-size: .8rem; text-transform: uppercase; letter-spacing: .1em;
+    margin: 0; padding: .6rem .8rem; color: var(--muted);
+    border-bottom: 1px solid var(--line);
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .4rem .8rem; white-space: nowrap; }
+  th { color: var(--muted); font-weight: normal; font-size: .8rem; }
+  tbody tr { border-top: 1px solid var(--line); }
+  td.wide { white-space: normal; word-break: break-word; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  a { color: var(--net); }
+  button {
+    font: inherit; font-size: .8rem; color: var(--text); background: transparent;
+    border: 1px solid var(--line); border-radius: 5px; padding: .1rem .45rem; cursor: pointer;
+  }
+  button:hover { border-color: var(--net); color: var(--net); }
+  button.danger:hover { border-color: var(--err); color: var(--err); }
+  .pill { font-size: .75rem; padding: 0 .35rem; border-radius: 4px; border: 1px solid var(--line); }
+  .allow { color: var(--ok); } .deny { color: var(--err); }
+  #log { max-height: 22rem; overflow-y: auto; padding: .4rem .8rem; }
+  #log div { display: flex; gap: .6rem; }
+  #log time { color: var(--muted); }
+  #log .svc { width: 6rem; flex: none; }
+  .security .svc, .security .txt { color: var(--sec); }
+  .network .svc { color: var(--net); }
+  .lifecycle .svc { color: var(--life); }
+  .diagnostic { color: var(--muted); }
+  .warn .txt { color: var(--warn); } .error .txt { color: var(--err); }
+  footer { padding: 0 1rem 2rem; }
+  .empty { padding: .8rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>dev<b>tun</b></h1>
+  <span><span class="dot" id="dot"></span> <span id="state">connecting</span></span>
+  <span class="muted" id="host"></span>
+  <span class="muted" id="counts"></span>
+  <span class="grow"></span>
+  <button id="reconnect">reconnect now</button>
+</header>
+
+<main>
+  <section>
+    <h2>Tunnels</h2>
+    <table>
+      <thead><tr>
+        <th>local</th><th>remote</th><th>process</th><th>via</th>
+        <th class="num">conns</th><th class="num">in</th><th class="num">out</th><th></th>
+      </tr></thead>
+      <tbody id="ports"></tbody>
+    </table>
+    <div class="empty" id="ports-empty">nothing forwarded yet</div>
+  </section>
+
+  <section>
+    <h2>Access — rules and live grants</h2>
+    <table><tbody id="rules"></tbody></table>
+    <div class="empty" id="rules-empty">nothing is open — every request is asked about</div>
+  </section>
+
+  <section>
+    <h2>Activity</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<footer class="muted">
+  <span id="version"></span> ·
+  approvals are answered where devtun is running — this page shows them, it does not decide them
+</footer>
+
+<script>
+// The page is a thin renderer over two endpoints: a state snapshot it polls,
+// and an event stream it listens to. No framework, because the whole thing is
+// one table and a log, and a build step would be a worse trade than the fifty
+// lines below.
+const $ = (id) => document.getElementById(id);
+
+async function api(path, method = "GET") {
+  const response = await fetch(path, { method, credentials: "same-origin" });
+  if (!response.ok) throw new Error(await response.text());
+  return response.headers.get("content-type")?.includes("json") ? response.json() : null;
+}
+
+function bytes(n) {
+  if (n < 1024) return n + " B";
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = n / 1024, i = 0;
+  while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+  return value.toFixed(value < 10 ? 1 : 0) + " " + units[i];
+}
+
+function cell(text, className) {
+  const td = document.createElement("td");
+  td.textContent = text ?? "";
+  if (className) td.className = className;
+  return td;
+}
+
+function renderPorts(state) {
+  const body = $("ports");
+  body.replaceChildren();
+  for (const port of state.ports ?? []) {
+    const tr = document.createElement("tr");
+
+    const local = document.createElement("td");
+    if (port.url) {
+      const link = document.createElement("a");
+      link.href = port.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = port.local || "—";
+      local.append(link);
+    } else {
+      local.textContent = port.local || "—";
+    }
+    tr.append(local);
+
+    tr.append(cell((port.remapped ? "≠ " : "← ") + port.remote));
+    tr.append(cell(port.label ? port.label + " · " + port.proc : port.proc, "wide"));
+    tr.append(cell(port.scheme === "unknown" ? "?" : port.scheme, "muted"));
+    tr.append(cell(port.conns, "num"));
+    tr.append(cell(bytes(port.in), "num"));
+    tr.append(cell(bytes(port.out), "num"));
+
+    const actions = document.createElement("td");
+    const hidden = port.mode === "hidden";
+    const hide = document.createElement("button");
+    hide.textContent = hidden ? "unhide" : "hide";
+    hide.onclick = async () => {
+      await api(`/api/ports/${port.remote}/mode?mode=${hidden ? "auto" : "hidden"}`, "POST");
+      refresh();
+    };
+    actions.append(hide);
+    tr.append(actions);
+
+    if (port.status !== "active") tr.classList.add("diagnostic");
+    body.append(tr);
+  }
+  $("ports-empty").hidden = (state.ports ?? []).length > 0;
+}
+
+function renderRules(state) {
+  const body = $("rules");
+  body.replaceChildren();
+
+  for (const grant of state.grants ?? []) {
+    const tr = document.createElement("tr");
+    tr.append(cell(grant.action === "deny" ? "refuse" : "grant", grant.action === "deny" ? "deny" : "warn"));
+    tr.append(cell(grant.source, "muted"));
+    tr.append(cell(grant.host, "muted"));
+    tr.append(cell(grant.hostWide ? "anything from " + grant.host : grant.subject, "wide"));
+    tr.append(cell(grant.expires ? "until " + new Date(grant.expires).toLocaleTimeString() : "this session", "muted"));
+
+    const actions = document.createElement("td");
+    const revoke = document.createElement("button");
+    revoke.className = "danger";
+    revoke.textContent = "revoke";
+    revoke.onclick = async () => {
+      await api(`/api/grants/revoke?source=${encodeURIComponent(grant.source)}` +
+        `&host=${encodeURIComponent(grant.host)}&subject=${encodeURIComponent(grant.subject)}`, "POST");
+      refresh();
+    };
+    actions.append(revoke);
+    tr.append(actions);
+    body.append(tr);
+  }
+
+  for (const rule of state.rules ?? []) {
+    const tr = document.createElement("tr");
+    tr.append(cell(rule.action, rule.action === "deny" ? "deny" : "allow"));
+    tr.append(cell(rule.source, "muted"));
+    tr.append(cell(rule.host, "muted"));
+    tr.append(cell(rule.subject, "wide"));
+    tr.append(cell(rule.global ? "from your config" : rule.note ?? "", "muted"));
+
+    const actions = document.createElement("td");
+    if (!rule.global) {
+      const revoke = document.createElement("button");
+      revoke.className = "danger";
+      revoke.textContent = "revoke";
+      revoke.onclick = async () => {
+        await api(`/api/rules/revoke?source=${encodeURIComponent(rule.source)}&index=${rule.index}`, "POST");
+        refresh();
+      };
+      actions.append(revoke);
+    }
+    tr.append(actions);
+    body.append(tr);
+  }
+
+  const total = (state.grants ?? []).length + (state.rules ?? []).length;
+  $("rules-empty").hidden = total > 0;
+}
+
+function renderHeader(state) {
+  const connection = state.connection ?? {};
+  $("dot").className = "dot " + (connection.state ?? "");
+  $("state").textContent = connection.detail ? connection.state + " — " + connection.detail : (connection.state ?? "");
+  $("host").textContent = state.host ?? "";
+  const parts = [];
+  if ((state.ports ?? []).length) parts.push((state.ports ?? []).length + " fwd");
+  if (state.hidden) parts.push(state.hidden + " hidden");
+  if (connection.uptime) parts.push(connection.uptime);
+  $("counts").textContent = parts.join(" · ");
+  $("version").textContent = "devtun " + (state.version ?? "");
+  document.title = state.host ? `devtun · ${state.host}` : "devtun";
+}
+
+async function refresh() {
+  try {
+    const state = await api("/api/state");
+    renderHeader(state);
+    renderPorts(state);
+    renderRules(state);
+  } catch (err) {
+    $("state").textContent = "the devtun session has gone away";
+    $("dot").className = "dot failed";
+  }
+}
+
+function line(e) {
+  const div = document.createElement("div");
+  div.className = [e.class, e.level].filter(Boolean).join(" ");
+  const time = document.createElement("time");
+  time.textContent = new Date(e.time).toLocaleTimeString();
+  const svc = document.createElement("span");
+  svc.className = "svc";
+  svc.textContent = e.service ?? "";
+  const text = document.createElement("span");
+  text.className = "txt";
+  text.textContent = e.text ?? "";
+  div.append(time, svc, text);
+  return div;
+}
+
+function stream() {
+  const log = $("log");
+  const source = new EventSource("/api/events");
+  source.onmessage = (message) => {
+    const e = JSON.parse(message.data);
+    if (e.class === "diagnostic" && !location.hash.includes("verbose")) return;
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    log.append(line(e));
+    while (log.childElementCount > 500) log.firstElementChild.remove();
+    if (atBottom) log.scrollTop = log.scrollHeight;
+    // Anything that changes what is open changes the board too.
+    if (e.kind === "opened" || e.kind === "closed" || e.class === "security") refresh();
+  };
+}
+
+$("reconnect").onclick = () => api("/api/reconnect", "POST").then(refresh);
+
+// The token arrives in the URL and is swapped for a cookie on the first
+// request; taking it out of the address bar means a screenshot of this page is
+// not a way in.
+if (location.search.includes("t=")) {
+  refresh().then(() => history.replaceState(null, "", location.pathname + location.hash));
+} else {
+  refresh();
+}
+stream();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

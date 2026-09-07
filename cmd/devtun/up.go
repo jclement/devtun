@@ -29,6 +29,7 @@ import (
 	"github.com/jclement/devtun/internal/tui"
 	"github.com/jclement/devtun/internal/tunnels"
 	"github.com/jclement/devtun/internal/ui"
+	"github.com/jclement/devtun/internal/web"
 )
 
 // historyLimit is how many events the bus retains for a renderer that attaches
@@ -75,6 +76,8 @@ type upFlags struct {
 
 	// gate overrides whether gated services ask before acting, for this run.
 	gate string
+	// web, when set, serves the board over HTTP as well. "on" picks a port.
+	web string
 
 	// presentation and behaviour
 	tui        bool
@@ -129,6 +132,7 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	fl.BoolVarP(&f.verbose, "verbose", "v", false, "include diagnostic events")
 	fl.StringVar(&f.setup, "setup", "ask", "the remote shell rc: ask, auto, never")
 	fl.StringVar(&f.gate, "gate", "", "browser: ask before each site, or auto (default: your config)")
+	fl.StringVar(&f.web, "web", "", "also serve the board in a browser (\"on\", or an address like 127.0.0.1:8765)")
 	fl.BoolVar(&f.noInstall, "no-install", false, "never upload the remote helper")
 	fl.StringSliceVar(&f.only, "only", nil, "run only these services, e.g. tunnels,browser")
 }
@@ -225,6 +229,21 @@ func runUp(ctx context.Context, f upFlags) error {
 		return sess.Prepare(ctx)
 	}
 
+	// The web interface runs *alongside* whichever interface owns the terminal,
+	// rather than instead of it. Approvals stay where they already are — a page
+	// that could approve would have to be right about tokens, origins and
+	// rebinding all at once, and the cost of being subtly wrong there is
+	// somebody's secret.
+	var webURL string
+	if f.web != "" {
+		url, stop, err := serveWeb(ctx, f, bus, sess, tunnelSvc, services, dest.Label())
+		if err != nil {
+			return err
+		}
+		defer stop()
+		webURL = url
+	}
+
 	if useTUI {
 		return tui.Run(ctx, tui.Options{
 			Session:    sess,
@@ -235,11 +254,110 @@ func runUp(ctx context.Context, f upFlags) error {
 			Version:    buildinfo.Version(),
 			Store:      store,
 			Prompt:     backend,
+			WebURL:     webURL,
 			NoDissolve: f.noDissolve,
 		})
 	}
-	return runHeadless(ctx, f, sess, bus, dest)
+	return runHeadless(ctx, f, sess, bus, dest, webURL)
 }
+
+// serveWeb starts the browser interface and returns where it is.
+//
+// It returns the URL rather than announcing it, because *where* to say so
+// differs: under the interface stdout belongs to Bubble Tea and a stray line
+// there scrolls the frame — the bug that ate the header once already — while in
+// log mode stderr is exactly right. The URL carries the token, so it goes where
+// a person is looking and not into a log they may be piping to a file.
+func serveWeb(
+	ctx context.Context, f upFlags, bus *event.Bus, sess *session.Session,
+	tunnelSvc *tunnels.Service, services []service.Service, label string,
+) (string, func(), error) {
+	addr := strings.TrimSpace(f.web)
+	if addr == "on" || addr == "true" {
+		addr = ""
+	}
+	server, err := web.New(web.Options{
+		Addr:     addr,
+		Host:     label,
+		Version:  buildinfo.Version(),
+		Tunnels:  webTunnels(tunnelSvc),
+		Services: services,
+		Bus:      bus,
+		Status:   sess.Status,
+		Retry:    sess.RetryNow,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Bind before returning, so a port already in use is an error at startup
+	// rather than a line in a log nobody is reading yet.
+	ready := make(chan error, 1)
+	webCtx, cancel := context.WithCancel(ctx)
+	go func() { ready <- server.Run(webCtx) }()
+
+	// Run fills in the URL as soon as it has bound; give it that moment.
+	deadline := time.Now().Add(2 * time.Second)
+	for server.URL() == "" {
+		select {
+		case err := <-ready:
+			cancel()
+			return "", nil, err
+		default:
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			return "", nil, errors.New("the web interface did not start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return server.URL(), cancel, nil
+}
+
+// webTunnels adapts the tunnels service for the web interface, and returns a
+// nil interface rather than a typed nil pointer when there is none.
+func webTunnels(svc *tunnels.Service) web.Tunnels {
+	if svc == nil {
+		return nil
+	}
+	return webTunnelAdapter{svc: svc}
+}
+
+// webTunnelAdapter joins the two halves of the tunnels service, exactly as the
+// interface's own adapter does: the Manager owns the live table and does not
+// exist until the first connection, while the Service owns the preferences.
+type webTunnelAdapter struct{ svc *tunnels.Service }
+
+func (a webTunnelAdapter) States() []tunnels.State {
+	if mgr := a.svc.Manager(); mgr != nil {
+		return mgr.States()
+	}
+	return nil
+}
+
+func (a webTunnelAdapter) SetMode(port int, mode tunnels.Mode) tunnels.Mode {
+	if mgr := a.svc.Manager(); mgr != nil {
+		return mgr.SetMode(port, mode)
+	}
+	return mode
+}
+
+func (a webTunnelAdapter) SetScheme(port int, scheme tunnels.Scheme) tunnels.Scheme {
+	if mgr := a.svc.Manager(); mgr != nil {
+		return mgr.SetScheme(port, scheme)
+	}
+	return scheme
+}
+
+func (a webTunnelAdapter) Hidden() int {
+	if mgr := a.svc.Manager(); mgr != nil {
+		return mgr.Hidden()
+	}
+	return 0
+}
+
+func (a webTunnelAdapter) ViewPrefs() tunnels.ViewPrefs     { return a.svc.ViewPrefs() }
+func (a webTunnelAdapter) SetViewPrefs(p tunnels.ViewPrefs) { a.svc.SetViewPrefs(p) }
 
 // wantsTUI decides between the interface and a stream of events.
 //
@@ -255,7 +373,7 @@ func wantsTUI(f upFlags, isTTY bool) bool {
 
 // runHeadless is log mode: the events go to a writer and the session owns the
 // process until it is interrupted.
-func runHeadless(ctx context.Context, f upFlags, sess *session.Session, bus *event.Bus, dest *sshx.Destination) error {
+func runHeadless(ctx context.Context, f upFlags, sess *session.Session, bus *event.Bus, dest *sshx.Destination, webURL string) error {
 	var renderer render.Renderer
 	switch {
 	case f.jsonOut || (!ui.IsTTY() && !f.plain):
@@ -267,6 +385,13 @@ func runHeadless(ctx context.Context, f upFlags, sess *session.Session, bus *eve
 
 	if !f.jsonOut {
 		fmt.Fprintln(os.Stderr, ui.Banner.Render("devtun")+" "+ui.Muted.Render("connecting to "+dest.String()+"…"))
+	}
+	// To stderr and after the renderer is attached: the URL carries the token,
+	// so it belongs where a person is looking rather than in a log they may be
+	// piping to a file, and announcing it before anything is subscribed is how
+	// it went missing the first time.
+	if webURL != "" {
+		fmt.Fprintln(os.Stderr, ui.Banner.Render("devtun")+" "+ui.Muted.Render("the board is also at ")+ui.Host.Render(webURL))
 	}
 	return sess.Run(ctx)
 }

@@ -319,6 +319,27 @@ Close the lid, change wifi, drop off the VPN. devtun probes the link every 15 se
 
 Reconnection backs off 1s → 30s and resets after a connection holds for a minute. Local port assignments, live grants and approvals belong to the process rather than the connection, so a reconnect is invisible: your browser tabs keep working and you are not re-asked for a secret you approved a minute ago.
 
+## The board in a browser
+
+```sh
+devtun --web on bedev              # a port the kernel picks
+devtun --web 127.0.0.1:8765 bedev  # ...or one you can bookmark
+```
+
+It prints a URL with a token in it. Open that once and the token becomes a cookie, so it stops appearing in your address bar — and in screenshots of it.
+
+The page shows the same board the interface draws: the port table with its live counters, every rule and grant that is currently deciding, and the security log streaming in. You can hide a port, unhide it, revoke a rule, revoke a grant, and ask for a reconnect. It runs *alongside* whichever interface owns your terminal rather than instead of it, so `--web` and the TUI are a fine combination — one on the second monitor, one in the pane.
+
+**It cannot approve anything, deliberately.** A page that could approve has to be right about tokens, origins, rebinding and replay all at once, and the cost of being subtly wrong there is one of your secrets. Approvals stay where they were: the interface's modal, a desktop dialog, or the terminal.
+
+Three things keep the port honest, because a port on `127.0.0.1` is not private — every process on your machine can reach it, and so can a web page you have open:
+
+- a **token**, on every request;
+- the **Host** header has to name loopback, which is what stops DNS rebinding — a hostname somebody else controls, pointed at 127.0.0.1. This holds even if you bind to `0.0.0.0`, so the board stays local whatever address you give it;
+- an **Origin** check on anything that changes something, so a page you happened to be reading cannot post to it.
+
+The page is served from the binary — no CDN, no build step, works on a train.
+
 ## When something isn't working
 
 ```sh
@@ -404,6 +425,7 @@ The ones you'll actually use:
 | `--cache` | hold fetched secrets in memory (see below) |
 | `--prompt` | `auto`, `tui`, `dialog`, `deny` — overrides `prompt:` in your config |
 | `--setup` | the remote rc: `ask`, `auto`, `never` |
+| `--web` | also serve the board in a browser: `on`, or an address |
 | `--wait` | keep retrying until the box finishes booting |
 | `-i`, `-l`, `-p`, `-J` | as `ssh(1)` — and they work on `doctor` and `install` too |
 
