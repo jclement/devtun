@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -225,9 +226,32 @@ const (
 	BackendDeny Backend = "deny"
 )
 
+// Valid reports whether the backend names an interface devtun knows. It exists
+// so a typo in a config file is caught when devtun starts rather than at the
+// moment somebody's script asks for a secret.
+func (b Backend) Valid() bool {
+	switch b {
+	case BackendAuto, BackendTUI, BackendDialog, BackendDeny, "":
+		return true
+	default:
+		return false
+	}
+}
+
 // New builds the prompter for a backend, falling back where the requested one
 // is unavailable on this platform or in this session.
-func New(backend Backend) (Prompter, error) {
+func New(backend Backend) (Prompter, error) { return NewWithFallback(backend, nil) }
+
+// NewWithFallback is New for a caller that has a better answer than the
+// terminal for a dialog that cannot be drawn.
+//
+// The interface passes its own modal: under the TUI the terminal is the alt
+// screen, and a huh form there would draw over the thing it is asking about.
+// A nil fallback means the terminal.
+func NewWithFallback(backend Backend, fallback Prompter) (Prompter, error) {
+	if fallback == nil {
+		fallback = &TUI{}
+	}
 	switch backend {
 	case BackendDeny:
 		return Serialize(DenyAll{}), nil
@@ -235,12 +259,17 @@ func New(backend Backend) (Prompter, error) {
 		return Serialize(&TUI{}), nil
 	case BackendDialog:
 		if !dialogAvailable() {
-			return nil, fmt.Errorf("the native dialog backend is not available on this platform")
+			return nil, fmt.Errorf("no desktop dialog program here: devtun looked for %s. "+
+				"install one, or use --prompt tui to be asked in the terminal", strings.Join(chooserNames(), ", "))
 		}
-		return Serialize(&Dialog{}), nil
+		// There is still a fallback for the day the dialog cannot be drawn — a
+		// locked screen, a broken helper. A prompt that fails is a prompt that
+		// denies, and denying because a GUI would not start is not an answer
+		// anybody gave.
+		return Serialize(&Dialog{fallback: fallback}), nil
 	case BackendAuto, "":
 		if dialogAvailable() {
-			return Serialize(&Dialog{fallback: &TUI{}}), nil
+			return Serialize(&Dialog{fallback: fallback}), nil
 		}
 		return Serialize(&TUI{}), nil
 	default:

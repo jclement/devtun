@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -190,13 +191,14 @@ func TestLocalBinaryPrefersTheCrossBuiltDist(t *testing.T) {
 	if err := os.MkdirAll("dist", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join("dist", "devtun-linux-arm64")
+	remote := notThisPlatform()
+	want := filepath.Join("dist", "devtun-"+remote.OS+"-"+remote.Arch)
 	if err := os.WriteFile(want, []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	syncer := &shimSyncer{}
-	got, err := syncer.localBinary(context.Background(), service.Facts{OS: "linux", Arch: "arm64"})
+	got, err := syncer.localBinary(context.Background(), remote)
 	if err != nil {
 		t.Fatalf("localBinary: %v", err)
 	}
@@ -225,6 +227,7 @@ func TestLocalBinaryExplainsHowToBuildOne(t *testing.T) {
 // task in a repository they have never cloned.
 func TestAHelperIsDownloadedWhenThereIsNoOtherWayToGetOne(t *testing.T) {
 	t.Chdir(t.TempDir())
+	remote := notThisPlatform()
 
 	var askedOS, askedArch string
 	syncer := &shimSyncer{
@@ -236,16 +239,30 @@ func TestAHelperIsDownloadedWhenThereIsNoOtherWayToGetOne(t *testing.T) {
 		},
 	}
 
-	got, err := syncer.localBinary(context.Background(), service.Facts{OS: "linux", Arch: "arm64"})
+	got, err := syncer.localBinary(context.Background(), remote)
 	if err != nil {
 		t.Fatalf("localBinary: %v", err)
 	}
 	if got != "/tmp/fetched-devtun" {
 		t.Errorf("want the downloaded helper, got %q", got)
 	}
-	if askedOS != "linux" || askedArch != "arm64" {
-		t.Errorf("downloaded for %s/%s, want linux/arm64", askedOS, askedArch)
+	if askedOS != remote.OS || askedArch != remote.Arch {
+		t.Errorf("downloaded for %s/%s, want %s/%s", askedOS, askedArch, remote.OS, remote.Arch)
 	}
+}
+
+// notThisPlatform names a remote that the workstation cannot simply upload
+// itself to, which is the whole of what these two tests are about.
+//
+// It has to be computed rather than written down: linux/arm64 is a perfectly
+// ordinary machine to run the suite on, and there the running test binary is a
+// valid helper — so the download branch was never reached and the assertions
+// passed on a Mac while failing in a container.
+func notThisPlatform() service.Facts {
+	if runtime.GOOS == "linux" && runtime.GOARCH == "arm64" {
+		return service.Facts{OS: "linux", Arch: "amd64"}
+	}
+	return service.Facts{OS: "linux", Arch: "arm64"}
 }
 
 // A development build has no release to take a helper from, and should say the
@@ -254,7 +271,7 @@ func TestNoFetcherStillGivesTheDeveloperMessage(t *testing.T) {
 	t.Chdir(t.TempDir())
 	syncer := &shimSyncer{Events: event.Discard}
 
-	_, err := syncer.localBinary(context.Background(), service.Facts{OS: "linux", Arch: "arm64"})
+	_, err := syncer.localBinary(context.Background(), notThisPlatform())
 
 	if err == nil {
 		t.Fatal("want an error when there is no way to get a helper")

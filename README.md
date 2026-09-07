@@ -231,6 +231,40 @@ The first time a new secret is asked for, devtun asks you:
 
 Narrowest first, and every approval sits above every refusal, so overshooting downward can never land on a "yes". Walking away, pressing escape, or letting it time out all mean *No*. Under `--tui` this is a modal inside the interface — the thing neither predecessor could do, because a terminal form and a full-screen TUI cannot share a terminal.
 
+### Where you get asked
+
+Three places, and it is a setting rather than only a flag, because the right
+answer is a property of the machine you sit at:
+
+| `prompt:` | asks |
+|---|---|
+| `tui` | in the interface's modal, or as a form in the terminal in log mode |
+| `dialog` | in a **desktop dialog**, raised in front of whatever you are doing |
+| `auto` | the dialog if this machine can draw one, otherwise the terminal (default) |
+| `deny` | nobody. Everything not already covered by a rule is refused |
+
+```yaml
+# ~/.config/devtun/config.yaml
+prompt: dialog          # everywhere
+
+# ~/.config/devtun/hosts/bedev.yaml
+prompt: tui             # ...except this box, which I only touch from a terminal
+```
+
+`--prompt` beats both, because the command line is about this run.
+
+There is no bundled GUI toolkit and there is not going to be one: every Go
+option that draws its own window wants cgo, and devtun is a static binary you
+copy to three operating systems. What every desktop already has is a program
+whose whole job is to ask a question, so devtun uses that — **osascript** on
+macOS, **zenity**, **kdialog** or **yad** on a Linux desktop, **PowerShell's
+Windows Forms** on Windows. None is a dependency: with none of them installed,
+`auto` is the terminal and `dialog` tells you which programs it looked for.
+
+A dialog that cannot be drawn — a locked screen, a broken helper, a box you are
+on over SSH — falls back to asking in the terminal or in the interface. It never
+becomes a silent yes, and it never becomes a silent no either.
+
 **"No" and "Never" are different answers.** *No* refuses this request and leaves no trace. *No, and stop asking* refuses for the rest of the session — the answer for something you keep declining, which previously had no expression at all: the only way to make the prompt stop was to say yes. *Never* writes a deny rule.
 
 **Deny always wins**, at every level: a refusal beats an approval whether it was typed into a file, written by *Never*, or clicked as *stop asking*. Among answers of the same kind the written one wins. So a rule you wrote to block something cannot be undone by clicking through a prompt later — and a standing allow rule does not quietly re-open something you just said no to. That asymmetry is deliberate: an approval given by mistake costs you one secret, a refusal given by mistake costs you a moment's confusion, and the two should not be equally easy to reverse by accident.
@@ -261,7 +295,7 @@ Reconnection backs off 1s → 30s and resets after a connection holds for a minu
 
 ```
 ~/.config/devtun/
-  config.yaml          global — hide list, deny rules, account routing
+  config.yaml          global — hide list, deny rules, account routing, prompt
   hosts/bedev.yaml     per host — services, ports, approvals
 ```
 
@@ -269,6 +303,7 @@ One file per host, because the per-host state *is* the interesting state: it's w
 
 ```yaml
 # hosts/bedev.yaml
+prompt: dialog
 services:
   1password: {enabled: true}
   ssh-agent: {enabled: true}
@@ -297,7 +332,7 @@ The ones you'll actually use:
 | `--min-port` / `--max-port` | the window (default `1024`–`65535`) |
 | `--same-port` | never remap; a busy local port is an error |
 | `--cache` | hold fetched secrets in memory (see below) |
-| `--prompt` | `auto`, `tui`, `dialog`, `deny` |
+| `--prompt` | `auto`, `tui`, `dialog`, `deny` — overrides `prompt:` in your config |
 | `--setup` | the remote rc: `ask`, `auto`, `never` |
 | `--wait` | keep retrying until the box finishes booting |
 | `-i`, `-l`, `-p`, `-J` | as `ssh(1)` |

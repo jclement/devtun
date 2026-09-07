@@ -70,6 +70,12 @@ type Global struct {
 	// Setup is the default answer to editing a remote shell rc: ask, auto or
 	// never.
 	Setup string `yaml:"setup,omitempty"`
+	// Prompt is how approvals are asked for: auto, tui, dialog or deny. It is
+	// here because it is a property of the machine you sit at — a desktop with
+	// zenity installed, a laptop where devtun always runs in a window behind
+	// the browser — and re-typing --prompt dialog every time is how a setting
+	// that matters gets left off.
+	Prompt string `yaml:"prompt,omitempty"`
 	// Services gives per-service defaults applied to a host that has not said
 	// otherwise — chiefly whether a service is enabled at all.
 	Services map[string]ServiceState `yaml:"services,omitempty"`
@@ -124,8 +130,12 @@ type ServiceState struct {
 
 // Host is one box's configuration.
 type Host struct {
-	Services map[string]ServiceState         `yaml:"services,omitempty"`
-	Data     map[string]map[string]yaml.Node `yaml:",inline"`
+	Services map[string]ServiceState `yaml:"services,omitempty"`
+	// Prompt overrides the global approval interface for this host. A box you
+	// only ever touch from a terminal and one whose secrets you want a dialog
+	// in front of are different situations, and this is where they differ.
+	Prompt string                          `yaml:"prompt,omitempty"`
+	Data   map[string]map[string]yaml.Node `yaml:",inline"`
 }
 
 // Store holds the global file and every host file that has been opened, and
@@ -258,6 +268,25 @@ func (s *Store) Enabled(label, serviceID string, fallback bool) bool {
 	}
 	if state, ok := s.global.Services[serviceID]; ok && state.Enabled != nil {
 		return *state.Enabled
+	}
+	return fallback
+}
+
+// Prompt is how approvals are asked for on a host: the host file wins, then
+// the global file, then the fallback the caller was going to use anyway.
+//
+// An empty string at either level means "not configured", which is why this
+// cannot be a bool or an enum with a zero value: unset and "auto" have to stay
+// distinguishable so a host can be left alone by the global setting.
+func (s *Store) Prompt(label, fallback string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if v := strings.TrimSpace(s.host(label).Prompt); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(s.global.Prompt); v != "" {
+		return v
 	}
 	return fallback
 }

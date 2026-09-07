@@ -2,14 +2,14 @@ package main
 
 import (
 	"context"
-	"github.com/jclement/devtun/internal/hostcfg"
-	"github.com/jclement/devtun/internal/prompt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jclement/devtun/internal/hostcfg"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/tunnels"
 )
@@ -174,7 +174,7 @@ func TestModeSelection(t *testing.T) {
 // at that.
 func TestTheAssembledRegistry(t *testing.T) {
 	store := hostcfg.Open(t.TempDir())
-	services, tunnelSvc, opSvc, agentSvc, err := buildServices(defaults(), store, false)
+	services, tunnelSvc, opSvc, agentSvc, err := buildServices(defaults(), store, prompt.BackendDeny, false)
 	if err != nil {
 		t.Fatalf("buildServices: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestTheAssembledRegistry(t *testing.T) {
 // nothing and devtun starts with no services at all.
 func TestOnlyAcceptsEveryServiceName(t *testing.T) {
 	store := hostcfg.Open(t.TempDir())
-	services, _, _, _, err := buildServices(defaults(), store, false)
+	services, _, _, _, err := buildServices(defaults(), store, prompt.BackendDeny, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,11 +261,60 @@ func TestABrokenHideListIsFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, _, _, err := buildServices(defaults(), hostcfg.Open(dir), false)
+	_, _, _, _, err := buildServices(defaults(), hostcfg.Open(dir), prompt.BackendDeny, false)
 	if err == nil {
 		t.Fatal("an unparseable hide list must not be read as 'hide nothing'")
 	}
 	if !strings.Contains(err.Error(), "hide") {
 		t.Errorf("the error should name the setting, got %v", err)
+	}
+}
+
+// How approvals are asked for is a property of the machine you sit at, so it
+// lives in config — and the flag still wins, because the command line is about
+// this run.
+func TestPromptBackendResolution(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("prompt: dialog\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "hosts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hosts", "quiet.yaml"), []byte("prompt: tui\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := hostcfg.Open(dir)
+
+	if got := promptBackend(defaults(), store, "bedev"); got != prompt.BackendDialog {
+		t.Errorf("a host with no setting = %q, want the global dialog", got)
+	}
+	if got := promptBackend(defaults(), store, "quiet"); got != prompt.BackendTUI {
+		t.Errorf("a host that says tui = %q, want tui", got)
+	}
+
+	flags := defaults()
+	flags.promptBackend = "deny"
+	if got := promptBackend(flags, store, "bedev"); got != prompt.BackendDeny {
+		t.Errorf("--prompt lost to the config file: %q", got)
+	}
+
+	// And with nothing configured anywhere, auto — which is what makes the
+	// empty flag default readable as "not set" rather than as a choice.
+	if got := promptBackend(defaults(), hostcfg.Open(t.TempDir()), "bedev"); got != prompt.BackendAuto {
+		t.Errorf("an unconfigured machine = %q, want auto", got)
+	}
+}
+
+// A configured backend that this machine cannot do must fail at startup with
+// something a person can act on, rather than at the moment a secret is asked
+// for.
+func TestAnUnknownPromptBackendIsRefusedUpFront(t *testing.T) {
+	_, _, _, _, err := buildServices(defaults(), hostcfg.Open(t.TempDir()), prompt.Backend("gui"), false)
+	if err == nil {
+		t.Fatal("an unknown prompt backend was accepted")
+	}
+	if !strings.Contains(err.Error(), "gui") {
+		t.Errorf("the error does not name the setting: %v", err)
 	}
 }

@@ -112,7 +112,10 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	fl.DurationVar(&f.interval, "interval", 2*time.Second, "how often to scan the remote for new ports")
 
 	fl.BoolVar(&f.noAgent, "no-agent", false, "do not forward your SSH agent")
-	fl.StringVar(&f.promptBackend, "prompt", "auto", "approvals: auto, tui, dialog, deny")
+	// No default: an empty value means "whatever the config says, else auto",
+	// and a flag defaulting to auto could not be told apart from someone
+	// typing it — which would make the config setting unreachable.
+	fl.StringVar(&f.promptBackend, "prompt", "", "approvals: auto, tui, dialog, deny (default: your config, else auto)")
 	fl.StringVar(&f.account, "account", "", "pin 1Password requests to one account")
 	fl.StringVar(&f.opPath, "op", "", "path to the 1Password CLI")
 	fl.BoolVar(&f.cache, "cache", false, "hold fetched secret values in memory")
@@ -171,8 +174,10 @@ func runUp(ctx context.Context, f upFlags) error {
 	// without being asked: a TUI written into a pipe is line noise.
 	useTUI := wantsTUI(f, ui.IsTTY())
 
+	backend := promptBackend(f, store, dest.Label())
+
 	bus := event.NewBus(historyLimit)
-	services, tunnelSvc, opSvc, agentSvc, err := buildServices(f, store, useTUI)
+	services, tunnelSvc, opSvc, agentSvc, err := buildServices(f, store, backend, useTUI)
 	if err != nil {
 		return err
 	}
@@ -213,6 +218,7 @@ func runUp(ctx context.Context, f upFlags) error {
 			Host:       dest.Label(),
 			Version:    buildinfo.Version(),
 			Store:      store,
+			Prompt:     backend,
 			NoDissolve: f.noDissolve,
 		})
 	}
@@ -291,7 +297,7 @@ func resolveDestination(f upFlags) (*sshx.Destination, sshx.Options, error) {
 // Tunnels comes first because the browser bridge resolves ports through it, and
 // because it is the one that needs nothing on the remote box: if everything
 // else fails, forwarding still works, which is very often why devtun was run.
-func buildServices(f upFlags, store *hostcfg.Store, useTUI bool) ([]service.Service, *tunnels.Service, *onepassword.Service, *sshagent.Service, error) {
+func buildServices(f upFlags, store *hostcfg.Store, backend prompt.Backend, useTUI bool) ([]service.Service, *tunnels.Service, *onepassword.Service, *sshagent.Service, error) {
 	policy, err := tunnelPolicy(f)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -310,7 +316,7 @@ func buildServices(f upFlags, store *hostcfg.Store, useTUI bool) ([]service.Serv
 		GlobalHide: hide,
 	})
 
-	prompter, err := buildPrompter(f, useTUI)
+	prompter, err := buildPrompter(backend, useTUI)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -409,17 +415,39 @@ func tunnelPolicy(f upFlags) (tunnels.Policy, error) {
 	return policy, nil
 }
 
-// buildPrompter chooses how approvals are asked for.
+// promptBackend resolves how approvals are asked for.
 //
-// Under the TUI the question has to be a modal inside it — a huh form or an
-// osascript dialog would fight the alternate screen. The TUI installs its own
-// prompter, so this returns nil there and lets it do so.
-func buildPrompter(f upFlags, useTUI bool) (prompt.Prompter, error) {
+// The flag wins, then the host file, then the global file, then auto. It is a
+// config setting and not only a flag because it describes the machine you sit
+// at — a desktop with zenity installed, or a laptop where devtun always runs in
+// a window behind the browser — and a setting you must remember to type is one
+// you will be missing on the day it mattered.
+func promptBackend(f upFlags, store *hostcfg.Store, label string) prompt.Backend {
+	if v := strings.TrimSpace(f.promptBackend); v != "" {
+		return prompt.Backend(v)
+	}
+	return prompt.Backend(store.Prompt(label, string(prompt.BackendAuto)))
+}
+
+// buildPrompter chooses how approvals are asked for outside the interface.
+//
+// Under the TUI the question is a modal inside it — a huh form in the terminal
+// would draw over the thing it is asking about — so this returns nil there and
+// lets the interface install its own. The exception is a desktop dialog, which
+// the interface handles itself: it is a separate window and does not touch the
+// terminal at all, and wanting one is precisely the case where devtun's window
+// is not the one you are looking at.
+func buildPrompter(backend prompt.Backend, useTUI bool) (prompt.Prompter, error) {
 	if useTUI {
+		// The value still has to be checked here. Under the interface nothing
+		// else parses it, and a typo in a config file that surfaced only when
+		// a secret was asked for would surface as a refusal nobody understood.
+		if !backend.Valid() {
+			return nil, fmt.Errorf("unknown prompt backend %q (want auto, tui, dialog or deny)", backend)
+		}
 		return nil, nil
 	}
-	backend := prompt.Backend(f.promptBackend)
-	if !ui.IsInteractive() && backend == prompt.BackendAuto {
+	if !ui.IsInteractive() && (backend == prompt.BackendAuto || backend == "") {
 		// Nobody can answer, and the zero value of a decision is no.
 		backend = prompt.BackendDeny
 	}

@@ -296,6 +296,26 @@ What differs between brokers is only what a subject *is* and how to describe it
 to a human — which is why `prompt.Request` carries the wording (the noun, the
 scope, the detail rows, where the cursor starts) and everything else is shared.
 
+**7c. The dialog is somebody else's program.** devtun raises a desktop dialog
+where it can, because the window devtun runs in is usually not the window you are
+looking at, and an approval nobody sees is an approval that times out into a
+refusal for the wrong reason.
+
+It draws that dialog with whatever the machine already has — osascript, zenity,
+kdialog, yad, PowerShell's Windows Forms — behind a `chooser` interface that
+deals only in labels. No Go GUI toolkit is bundled and none will be: they all
+want cgo, and devtun is a static binary that ships to three operating systems
+from one build. Dealing in labels rather than in `Choice` values is the other
+half of that decision — a chooser that understood what the options meant would
+be a second place for the wording of a security question to drift, and the
+wording *is* the question.
+
+Two behaviours are load-bearing and each has a test. A cancelled dialog is an
+answer and must never reach the fallback prompter, or "no" becomes "no, and then
+you are asked again". A dialog that could not be *shown* is not an answer at
+all, and must reach the fallback rather than becoming either a yes or a no on
+the user's behalf.
+
 **8. The zero value of every decision is "no".** `prompt.ChoiceDeny` is the zero
 `Choice`, so a prompt that times out, is interrupted, fails to render, or has
 nobody to render to all end the same way — not by convention but by the type's

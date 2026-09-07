@@ -18,6 +18,7 @@ package tui
 
 import (
 	"context"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -45,6 +46,12 @@ type Options struct {
 	Host     string
 	Version  string
 	Store    *hostcfg.Store
+	// Prompt is how approvals are asked for. The modal is the default and the
+	// right answer for someone looking at this window; BackendDialog says to
+	// raise a desktop dialog instead, which is what you want when devtun is
+	// running behind the browser and a secret request would otherwise sit
+	// unanswered on a screen nobody is on.
+	Prompt prompt.Backend
 	// NoDissolve turns off the exit animation, for a terminal or a person that
 	// would rather not have one.
 	NoDissolve bool
@@ -89,9 +96,10 @@ func Run(ctx context.Context, o Options) error {
 	// service built with no prompter refuses by construction, which is the
 	// right default and exactly why forgetting to install one is silent.
 	// Asking "can you be prompted?" means a fifth broker cannot be forgotten.
+	approver := approverFor(o.Prompt, prompter, o.Bus)
 	for _, svc := range o.Services {
 		if p, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
-			p.SetPrompter(prompter)
+			p.SetPrompter(approver)
 		}
 	}
 	if o.Session != nil {
@@ -278,4 +286,37 @@ func retryOf(s *session.Session) func() {
 		return nil
 	}
 	return s.RetryNow
+}
+
+// approverFor picks the prompter the brokers are given.
+//
+// The modal is the default and the right answer for somebody looking at this
+// window. The other two are deliberate settings: a desktop dialog for when
+// devtun's window is not the one you are looking at, and deny for a session
+// that must answer nothing at all — which has to hold here too, or a modal
+// anyone walking past could approve would quietly undo it.
+func approverFor(backend prompt.Backend, modal prompt.Prompter, bus *event.Bus) prompt.Prompter {
+	switch backend {
+	case prompt.BackendDeny:
+		return prompt.Serialize(prompt.DenyAll{})
+	case prompt.BackendDialog:
+		dialog, err := prompt.NewWithFallback(prompt.BackendDialog, modal)
+		if err != nil {
+			// Not fatal: the interface can ask perfectly well itself, and
+			// ending a session over a missing zenity would be absurd. Say so
+			// once, in the log everybody can see.
+			if bus != nil {
+				bus.Emit(event.Event{
+					Time: time.Now(), Service: "session", Class: event.Security, Level: event.Warn,
+					Kind: "prompt", Text: "asking in the interface instead: " + err.Error(),
+				})
+			}
+			return modal
+		}
+		// The modal stays the dialog's fallback, so a dialog that cannot be
+		// drawn on the day asks here rather than refusing on the user's behalf.
+		return dialog
+	default:
+		return modal
+	}
 }

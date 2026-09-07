@@ -32,6 +32,21 @@ this is 0.x, a minor bump may break something.
 
 ### Added
 
+- **Desktop approval dialogs on every platform, and a `prompt:` setting to ask
+  for them.** macOS had one; Linux and Windows had a terminal form. devtun now
+  raises a dialog with whatever the machine has — osascript, zenity, kdialog,
+  yad, or PowerShell's Windows Forms — because devtun's window is usually not
+  the one you are looking at, and a secret request that sits unnoticed behind a
+  browser is a prompt that has failed at its job. No GUI toolkit is bundled and
+  none will be: they all want cgo, and this is a static binary that runs on
+  three operating systems.
+
+  `prompt: dialog` in `config.yaml`, or in a host file for one box; `--prompt`
+  still wins. Under the interface a dialog replaces the modal when asked for,
+  and the modal remains its fallback for the day the dialog cannot be drawn — a
+  prompt that cannot be shown must not become an answer nobody gave. `deny` is
+  now honoured under the interface too, where the modal used to be installed
+  over it.
 - **`D` on the Access tab rewrites a rule as a deny.** Revoking an allow you
   regret leaves devtun asking about it again; often what you mean is "and stop
   asking". It only tightens — a deny becoming an allow under the cursor is the

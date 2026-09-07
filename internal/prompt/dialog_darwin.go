@@ -1,114 +1,30 @@
-// Native macOS approval dialog.
-//
-// This is the one place the 1Password service shells out to something platform-
-// specific, and
-// it is deliberately optional: everything works with the terminal prompt alone.
-// It earns its keep because devtun usually runs in a window you are not
-// looking at, and a dialog that comes to the front is the difference between
-// noticing an unexpected secret request and clicking past it.
+// The macOS chooser: osascript.
 //
 // AppleScript's `choose from list` is used rather than `display dialog` because
-// the latter caps out at three buttons and there are five answers worth giving.
+// the latter caps out at three buttons and there are more answers than that
+// worth giving.
 package prompt
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
-// denySentinel is what the script prints when the dialog is cancelled. A
-// sentinel rather than an exit code keeps a cancelled dialog distinguishable
-// from osascript failing to run at all.
-const denySentinel = "__DEVTUN_DENY__"
+// choosers is what this platform can ask with, best first.
+func choosers() []chooser { return []chooser{osascriptChooser{}} }
 
-// Dialog asks with a native desktop dialog, falling back to another prompter if
-// the dialog cannot be shown (no window server on a headless login, say).
-type Dialog struct {
-	fallback Prompter
-}
+type osascriptChooser struct{}
 
-// dialogAvailable reports whether the native dialog can be used on this build.
-func dialogAvailable() bool {
-	_, err := exec.LookPath("osascript")
-	return err == nil
-}
+func (osascriptChooser) name() string { return "osascript" }
 
-// Ask shows the dialog and maps the selected label back to a Choice.
-// dialogTitle names the window after what is being asked for, since a dialog
-// that says "1Password" while asking about an SSH key is worse than one with no
-// title at all.
-func dialogTitle(request Request) string {
-	switch request.SubjectNoun() {
-	case "key":
-		return "devtun — SSH agent"
-	default:
-		return "devtun — 1Password"
-	}
-}
+// available only asks whether osascript exists. Unlike the Unix helpers there
+// is no display variable to check: on macOS a GUI session either exists or the
+// dialog fails immediately, and immediately is cheap.
+func (osascriptChooser) available() bool { return haveProgram("osascript") }
 
-func (d *Dialog) Ask(ctx context.Context, request Request) (Choice, error) {
-	labels, choices := dialogOptions(request)
-
-	script := buildChooserScript(
-		dialogTitle(request),
-		dialogPrompt(request),
-		labels,
-	)
-
-	command := exec.CommandContext(ctx, "osascript", "-e", script)
-	output, err := command.Output()
-	if err != nil {
-		if ctx.Err() != nil {
-			return ChoiceDeny, ctx.Err()
-		}
-		if d.fallback != nil {
-			return d.fallback.Ask(ctx, request)
-		}
-		return ChoiceDeny, fmt.Errorf("showing approval dialog: %w", err)
-	}
-
-	selected := strings.TrimSpace(string(output))
-	if selected == denySentinel || selected == "" {
-		return ChoiceDeny, nil
-	}
-	for i, label := range labels {
-		if label == selected {
-			return choices[i], nil
-		}
-	}
-	// An answer we cannot map is not an answer. Refusing is the safe reading.
-	return ChoiceDeny, errors.New("unrecognised answer from approval dialog")
-}
-
-// dialogOptions is the shared menu minus Deny, which the dialog expresses as
-// its cancel button — so closing it, pressing Escape and clicking Deny all mean
-// the same thing.
-func dialogOptions(request Request) (labels []string, choices []Choice) {
-	for _, item := range MenuFor(request) {
-		if item.Choice == ChoiceDeny {
-			continue
-		}
-		labels = append(labels, item.Label)
-		choices = append(choices, item.Choice)
-	}
-	return labels, choices
-}
-
-// dialogPrompt is the body text. It stays short: a dialog nobody reads is worse
-// than no dialog, and the detail is available in the proxy's log either way.
-func dialogPrompt(request Request) string {
-	lines := []string{
-		fmt.Sprintf("%s is asking for:", request.Host),
-		"",
-		request.Subject,
-	}
-	if caller := describeCaller(request); caller != "" {
-		lines = append(lines, "", caller+"  (unverified)")
-	}
-	return strings.Join(lines, "\n")
+func (osascriptChooser) ask(ctx context.Context, title, prompt string, labels []string) (string, error) {
+	return runChooser(ctx, "osascript", "-e", buildChooserScript(title, prompt, labels))
 }
 
 // buildChooserScript assembles the AppleScript. Cancelling the dialog — by the
