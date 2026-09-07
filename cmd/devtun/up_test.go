@@ -181,7 +181,10 @@ func TestTheAssembledRegistry(t *testing.T) {
 	}
 
 	t.Run("every service is present and uniquely named", func(t *testing.T) {
-		want := map[string]bool{"tunnels": false, "1password": false, "ssh-agent": false, "browser": false}
+		want := map[string]bool{
+			"tunnels": false, "1password": false, "ssh-agent": false,
+			"gpg-agent": false, "browser": false,
+		}
 		for _, svc := range services {
 			id := svc.Meta().ID
 			seen, known := want[id]
@@ -198,6 +201,21 @@ func TestTheAssembledRegistry(t *testing.T) {
 			if !seen {
 				t.Errorf("service %q was not registered", id)
 			}
+		}
+	})
+
+	// A service that has to be asked for is one nobody finds unless it is on
+	// the Services tab saying so. Registered and off is the only combination
+	// that works; omitted-until-configured is a feature with no way in.
+	t.Run("an opt-in service is registered rather than omitted", func(t *testing.T) {
+		var found bool
+		for _, svc := range services {
+			if svc.Meta().ID == "gpg-agent" {
+				found = svc.Meta().OptIn
+			}
+		}
+		if !found {
+			t.Error("the GPG bridge is either missing or not marked opt-in")
 		}
 	})
 

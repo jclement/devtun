@@ -39,6 +39,14 @@ type Meta struct {
 	Class event.Class
 	// Short is a one-line description for `devtun services`.
 	Short string
+	// OptIn marks a service that does not run until a host asks for it.
+	//
+	// Almost nothing should set this: a service you have to discover before it
+	// works is a service most people never find. It is for the one that changes
+	// how *other* tools on the remote behave — the GPG bridge sets GNUPGHOME,
+	// which every gpg on that box then obeys — where turning it on ought to be
+	// a decision somebody made rather than a thing that happened to them.
+	OptIn bool
 }
 
 // Support is the answer to "can this service work on this host". A service that

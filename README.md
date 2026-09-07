@@ -29,16 +29,17 @@ Four problems, four workarounds, none of which survive closing your laptop lid.
 
 ## What devtun does
 
-One SSH connection. Four services on top of it:
+One SSH connection. Five services on top of it:
 
 | | |
 |---|---|
 | **tunnels** | Every port the box opens appears on your localhost, on the same port number. Start Vite on `127.0.0.1:3000` over there; open `http://127.0.0.1:3000` here. Service appears, tunnel appears. |
 | **1password** | The box's `op` calls come back to your unlocked vault, one approval at a time, scoped to the secrets you say yes to. The vault never leaves your laptop. |
 | **ssh-agent** | The box signs with your keys — `git push`, `ssh` onward — one approved signature at a time, and you can grant it *this key, for github.com, for ten minutes*. Your keys never leave your laptop. |
+| **gpg-agent** | `git commit -S` over there signs with the key over here, through GnuPG's own restricted socket. Off until you ask for it. |
 | **browser** | URLs the box wants opened open on **your** machine, with the port rewritten to wherever that tunnel actually landed. |
 
-They share the connection, the reconnect logic, the config file, and one screen. Turn any of them off; add a fifth later.
+They share the connection, the reconnect logic, the config file, and one screen. Every one is on or off per host; adding a sixth is a package that implements one interface.
 
 The result is a remote machine that behaves remarkably like localhost. Your agents keep running when you close the lid. Your dev box stays isolated from your personal environment. Your laptop stays cool and quiet. And the tools you actually need are still in reach.
 
@@ -218,6 +219,22 @@ devtun offers to add it with the first one. `--no-agent` turns the service off.
 constantly, and approving each one individually is how you end up switching the
 whole thing off by lunchtime.
 
+## Signing commits with the key that never leaves your laptop
+
+`git commit -S` on a dev box needs a private key. The choices are to copy your key there — the thing a YubiKey exists to make impossible — or to stop signing, which is what most people quietly do.
+
+devtun forwards **gpg-agent** instead, using GnuPG's own *extra socket*: the restricted variant meant to be handed to somewhere less trusted, which refuses the commands that manage keys rather than use them.
+
+```sh
+# hosts/bedev.yaml — or press e on the Services tab
+services:
+  gpg-agent: {enabled: true}
+```
+
+It is **off until you turn it on**, and it is the only service that is, because it is the only one that changes how other tools on that box behave: it gives the remote a `GNUPGHOME` of devtun's own under `~/.devtun/gnupg`, links the forwarded socket in as `S.gpg-agent`, and imports your **public** keys there — gpg needs the public half to know what it is signing with, and the public half is public. Unset one variable and the box is exactly as it was.
+
+**This one doesn't add a prompt, on purpose.** gpg-agent already asks: an uncached signature raises pinentry on your machine, and the passphrase or the touch on your token *is* the approval. A second prompt in front of it would ask the same question twice, and that is how people learn to click through both. What devtun adds is the record — every connection that box makes to your agent is a line in the security log, including the cached signatures that raise no dialog at all.
+
 ## Approvals
 
 The first time a new secret is asked for, devtun asks you:
@@ -350,6 +367,8 @@ The remote half runs the *same* code a session does — the same connector, the 
 
 One file per host, because the per-host state *is* the interesting state: it's what you hand-edit, diff, and copy to another laptop.
 
+**Every service is on or off per host, and that's the main dial.** Press `e` on the Services tab, or toggle it in the `c` popup, or write it in the host file — all three land in the same place, and it applies from the next connection. `--only tunnels,browser` does it for one run. A box that has no business signing with your keys simply doesn't get the agent; you don't have to say no to it every day.
+
 ```yaml
 # hosts/bedev.yaml
 prompt: dialog
@@ -361,6 +380,8 @@ ssh-agent:
   rules:
     - {subject: "** → github.com", action: allow}
     - {subject: "** → **", action: deny}     # nowhere else, from this box
+browser:
+  gate: ask                                  # ask before each site (off by default)
 tunnels:
   hide: ["32768-60999"]                    # never, on this box
   ports:

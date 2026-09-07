@@ -69,7 +69,7 @@ func (m *Model) reloadServices() {
 		}
 		rows = append(rows, serviceRow{
 			meta:    meta,
-			enabled: m.serviceEnabled(meta.ID),
+			enabled: m.serviceEnabled(meta),
 			state:   m.svcState[meta.ID],
 		})
 	}
@@ -77,13 +77,15 @@ func (m *Model) reloadServices() {
 }
 
 // serviceEnabled reports whether a service is switched on for this host.
-// Without a config store — a --no-config run, or a test — everything is on,
-// which is the same default the session applies.
-func (m *Model) serviceEnabled(id string) bool {
+//
+// The default is the service's own — on, unless it is one that has to be asked
+// for. Without a config store (a --no-config run, or a test) that default is
+// all there is, which is the same answer the session arrives at.
+func (m *Model) serviceEnabled(meta service.Meta) bool {
 	if m.d.store == nil {
-		return true
+		return !meta.OptIn
 	}
-	return m.d.store.Enabled(m.d.host, id, true)
+	return m.d.store.Enabled(m.d.host, meta.ID, !meta.OptIn)
 }
 
 func (m *Model) servicesView() string {

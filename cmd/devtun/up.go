@@ -16,6 +16,7 @@ import (
 	"github.com/jclement/devtun/internal/browser"
 	"github.com/jclement/devtun/internal/buildinfo"
 	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/gpgagent"
 	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/onepassword"
 	"github.com/jclement/devtun/internal/prompt"
@@ -388,9 +389,15 @@ func buildServices(f upFlags, store *hostcfg.Store, backend prompt.Backend, useT
 		Ask:           gateDefault(f),
 	})
 
-	all := []service.Service{tunnelSvc, opSvc, agentSvc, browserSvc}
+	// The GPG bridge is registered like the rest and starts off: it is the one
+	// service that changes how other tools on the remote behave, so a host has
+	// to ask for it. Registered rather than omitted, because a service you
+	// cannot see on the Services tab is one nobody ever turns on.
+	gpgSvc := gpgagent.New(gpgagent.Options{})
+
+	all := []service.Service{tunnelSvc, opSvc, agentSvc, gpgSvc, browserSvc}
 	if f.noAgent {
-		all = []service.Service{tunnelSvc, opSvc, browserSvc}
+		all = []service.Service{tunnelSvc, opSvc, gpgSvc, browserSvc}
 	}
 	return filterServices(all, f.only), tunnelSvc, nil
 }

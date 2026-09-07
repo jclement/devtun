@@ -68,7 +68,7 @@ func (m *Model) menuItems() []menuItem {
 			title: meta.Glyph + " " + meta.Title,
 			help:  m.serviceHelp(meta.ID, meta.Short),
 			owner: "services",
-			get:   func() string { return strconv.FormatBool(m.serviceEnabled(meta.ID)) },
+			get:   func() string { return strconv.FormatBool(m.serviceEnabled(meta)) },
 			set: func(v string) {
 				if m.d.store == nil {
 					return

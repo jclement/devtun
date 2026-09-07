@@ -221,7 +221,9 @@ func (s *Session) attachAll(
 		// "session" would be invisible to them.
 		sink := s.opts.Bus.For(meta.ID)
 
-		if !s.opts.Config.Enabled(label, meta.ID, true) {
+		// The fallback is the service's own default: on, unless it is one that
+		// changes how other tools on the box behave and should be asked for.
+		if !s.opts.Config.Enabled(label, meta.ID, !meta.OptIn) {
 			sink.Emit(event.Event{
 				Kind: "disabled", Class: event.Diagnostic, Level: event.Debug,
 				Text: meta.Title + " is switched off for " + label,

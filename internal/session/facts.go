@@ -31,7 +31,7 @@ const factsTimeout = 15 * time.Second
 
 // tools every service between them wants to know about. One list, so the probe
 // stays a single round trip no matter how many services are enabled.
-var probedTools = []string{"op", "ss", "lsof", "netstat", "nc", "socat", "python3", "docker", "git"}
+var probedTools = []string{"op", "ss", "lsof", "netstat", "nc", "socat", "python3", "docker", "git", "gpg"}
 
 // probedEnv is the short list of environment variables worth asking the user's
 // own shell about. It is an allowlist on purpose: a remote environment commonly

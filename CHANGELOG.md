@@ -20,6 +20,22 @@ this is 0.x, a minor bump may break something.
 
 ### Added
 
+- **A GPG agent bridge.** `git commit -S` on the remote signs with the key on
+  your laptop, over GnuPG's *extra socket* — the restricted variant meant to be
+  forwarded, which refuses the commands that manage keys rather than use them.
+  devtun gives the box a `GNUPGHOME` of its own under `~/.devtun/gnupg`, links
+  the socket in as `S.gpg-agent`, and imports your public keys there; the secret
+  half never leaves this machine, which is the whole point.
+
+  It adds no prompt, deliberately: gpg-agent already asks, and the passphrase or
+  the touch on a token *is* the approval. What devtun adds is the record — every
+  connection that box makes to your agent, including the cached signatures that
+  raise no dialog at all.
+
+  It is the first service that is **off until a host turns it on** (`OptIn` on
+  its Meta), because it is the only one that changes how other tools on that box
+  behave. Registered rather than omitted, so it is visible on the Services tab
+  with everything else — a feature you have to already know about has no way in.
 - **The browser bridge can be gated**, with `gate: ask` in a host file or the
   global config (or `--gate ask` for one run). Off by default: the dial for that
   service is the service itself, on or off per host, and a prompt for a window a

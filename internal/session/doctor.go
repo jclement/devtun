@@ -133,8 +133,12 @@ func (s *Session) diagnoseServices(
 ) {
 	for _, svc := range s.opts.Services {
 		meta := svc.Meta()
-		if !s.opts.Config.Enabled(label, meta.ID, true) {
-			out.Off(meta.ID, "switched off for "+label)
+		if !s.opts.Config.Enabled(label, meta.ID, !meta.OptIn) {
+			why := "switched off for " + label
+			if meta.OptIn {
+				why = "off until you turn it on for " + label + " (press e on the Services tab)"
+			}
+			out.Off(meta.ID, why)
 			continue
 		}
 		h := &host{
@@ -171,7 +175,7 @@ func (s *Session) diagnoseSetup(
 	h := &host{label: s.opts.Connector.Label(), facts: facts, paths: paths, events: event.Discard, client: conn}
 	for _, svc := range s.opts.Services {
 		advisor, ok := svc.(service.Advisor)
-		if !ok || !s.opts.Config.Enabled(h.label, svc.Meta().ID, true) {
+		if !ok || !s.opts.Config.Enabled(h.label, svc.Meta().ID, !svc.Meta().OptIn) {
 			continue
 		}
 		for _, line := range advisor.SetupLines(h) {
