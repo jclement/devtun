@@ -311,3 +311,57 @@ func runHeadless(t *testing.T, model tea.Model) (*tea.Program, chan struct{}) {
 	t.Cleanup(func() { program.Kill() })
 	return program, done
 }
+
+// A service built with no prompter refuses by construction, which is the right
+// default and exactly why forgetting to install one is silent: under the
+// interface every signature was refused in the instant it was requested, and no
+// prompt ever appeared. Finding brokers by interface means a fifth cannot be
+// forgotten.
+func TestEveryPromptableServiceGetsTheModal(t *testing.T) {
+	installed := map[string]bool{}
+	services := []service.Service{
+		&promptableStub{id: "1password", seen: installed},
+		&promptableStub{id: "ssh-agent", seen: installed},
+		&unpromptableStub{id: "tunnels"},
+	}
+
+	prompter := NewPrompter()
+	for _, svc := range services {
+		if p, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
+			p.SetPrompter(prompter)
+		}
+	}
+
+	for _, want := range []string{"1password", "ssh-agent"} {
+		if !installed[want] {
+			t.Errorf("%s never got the approval modal, so it would refuse everything silently", want)
+		}
+	}
+	if len(installed) != 2 {
+		t.Errorf("installed on %v, want exactly the two brokers", installed)
+	}
+}
+
+type promptableStub struct {
+	id   string
+	seen map[string]bool
+}
+
+func (s *promptableStub) Meta() service.Meta { return service.Meta{ID: s.id} }
+func (s *promptableStub) Probe(context.Context, service.Host) service.Support {
+	return service.Supported()
+}
+func (s *promptableStub) Attach(context.Context, service.Host) (service.Instance, error) {
+	return nil, nil
+}
+func (s *promptableStub) SetPrompter(prompt.Prompter) { s.seen[s.id] = true }
+
+type unpromptableStub struct{ id string }
+
+func (s *unpromptableStub) Meta() service.Meta { return service.Meta{ID: s.id} }
+func (s *unpromptableStub) Probe(context.Context, service.Host) service.Support {
+	return service.Supported()
+}
+func (s *unpromptableStub) Attach(context.Context, service.Host) (service.Instance, error) {
+	return nil, nil
+}

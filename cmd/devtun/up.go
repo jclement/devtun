@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -336,7 +337,10 @@ func buildServices(f upFlags, store *hostcfg.Store, useTUI bool) ([]service.Serv
 		DefaultTTL:    f.ttl,
 		PromptTimeout: f.promptTimeout,
 		AuthSock:      f.authSock,
-		KnownHosts:    f.knownHosts,
+		// Defaulted, not just passed through: without a known_hosts file the
+		// agent can only name a destination by its host-key fingerprint, and
+		// "sign for SHA256:BIFkz…" is not a question anybody can answer.
+		KnownHosts: knownHostsFiles(f),
 	})
 
 	browserSvc := browser.New(browser.Options{
@@ -415,6 +419,23 @@ func buildPrompter(f upFlags, useTUI bool) (prompt.Prompter, error) {
 		backend = prompt.BackendDeny
 	}
 	return prompt.New(backend)
+}
+
+// knownHostsFiles are the files consulted to put a name on a signing
+// destination. The flag wins when given; otherwise the usual places, which is
+// where a person's hosts actually are.
+func knownHostsFiles(f upFlags) []string {
+	if len(f.knownHosts) > 0 {
+		return f.knownHosts
+	}
+	var out []string
+	if home, err := os.UserHomeDir(); err == nil {
+		out = append(out,
+			filepath.Join(home, ".ssh", "known_hosts"),
+			filepath.Join(home, ".ssh", "known_hosts2"),
+		)
+	}
+	return append(out, "/etc/ssh/ssh_known_hosts")
 }
 
 func cacheTTL(f upFlags) time.Duration {

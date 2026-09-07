@@ -24,6 +24,7 @@ import (
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/onepassword"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/sshagent"
@@ -78,8 +79,20 @@ func Run(ctx context.Context, o Options) error {
 	prompter := NewPrompter()
 	prompter.Attach(program)
 	defer prompter.Detach()
-	if o.Secrets != nil {
-		o.Secrets.SetPrompter(prompter)
+
+	// Every service that asks a human gets the modal, found by interface
+	// rather than by name.
+	//
+	// This was a list of one, and the SSH agent broker was not on it — so
+	// under the interface, which is the default, every signature was refused
+	// in the same instant it was requested and no prompt ever appeared. A
+	// service built with no prompter refuses by construction, which is the
+	// right default and exactly why forgetting to install one is silent.
+	// Asking "can you be prompted?" means a fifth broker cannot be forgotten.
+	for _, svc := range o.Services {
+		if p, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
+			p.SetPrompter(prompter)
+		}
 	}
 	if o.Session != nil {
 		o.Session.SetAskSetup(prompter.AskSetup)
