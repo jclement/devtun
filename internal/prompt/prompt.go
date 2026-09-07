@@ -260,7 +260,7 @@ func NewWithFallback(backend Backend, fallback Prompter) (Prompter, error) {
 	case BackendDialog:
 		if !dialogAvailable() {
 			return nil, fmt.Errorf("no desktop dialog program here: devtun looked for %s. "+
-				"install one, or use --prompt tui to be asked in the terminal", strings.Join(chooserNames(), ", "))
+				"install one, or use --prompt tui to be asked in the terminal", strings.Join(ChooserNames(), ", "))
 		}
 		// There is still a fallback for the day the dialog cannot be drawn — a
 		// locked screen, a broken helper. A prompt that fails is a prompt that

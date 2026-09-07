@@ -16,7 +16,7 @@ import (
 // case where you want that to have happened already — baking an image, or
 // proving the cross-built binary runs there before you rely on it.
 func newInstallCommand(shared *upFlags) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "install <destination>",
 		Short: "Put the devtun helper on a remote host and stop",
 		Long: `Uploads the helper, creates its symlinks, and reports what the remote shell
@@ -35,6 +35,8 @@ that platform actually runs there.`,
 			return runUp(cmd.Context(), flags)
 		},
 	}
+	shared.registerConnection(cmd.Flags())
+	return cmd
 }
 
 // newHostsCommand lists what devtun remembers.

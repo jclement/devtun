@@ -314,3 +314,50 @@ func TestTheHelperIsDownloadedWhenThereIsNothingLocal(t *testing.T) {
 		t.Fatalf("the downloaded helper does not run on the box: %v\n%s\n%s", err, out, s.transcript())
 	}
 }
+
+// doctor is the command people run when something is wrong, so it has to be
+// right about a real box rather than about a mock of one: the same connection,
+// the same probe, the same Probe call on each service.
+//
+// It must also change nothing. The box here has no helper installed and no
+// devtun lines in its shell rc, and it must still have none afterwards — a
+// diagnostic that fixes things while looking at them cannot be trusted to tell
+// you what was wrong.
+func TestDoctorReportsTheBoxWithoutChangingIt(t *testing.T) {
+	box := start(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	if _, err := box.ssh("rm -rf ~/.devtun"); err != nil {
+		t.Fatalf("clearing the helper: %v", err)
+	}
+
+	report := box.doctor(ctx, t)
+
+	// The section is titled with the label decisions are recorded against —
+	// the ssh_config alias where there is one, and host:port here.
+	remote := report.remoteSection(t)
+	for _, name := range []string{"ssh", "helper", "tunnels", "shell setup"} {
+		if remote.find(name) == nil {
+			t.Errorf("doctor did not check %q:\n%s", name, report.raw)
+		}
+	}
+	if got := remote.find("ssh"); got.Status != "ok" {
+		t.Errorf("ssh check = %+v", got)
+	}
+	// No helper on the box, and doctor says so rather than installing one.
+	if got := remote.find("helper"); got.Status != "warn" || !strings.Contains(got.Detail, "not installed") {
+		t.Errorf("helper check = %+v", got)
+	}
+	if out, err := box.ssh("test -e ~/.devtun/devtun-shim && echo present || echo absent"); err != nil ||
+		!strings.Contains(out, "absent") {
+		t.Errorf("doctor installed the helper: %v %q", err, out)
+	}
+
+	// And the local half is there too, since half the reasons 1Password does
+	// not work are on this side.
+	local := report.section("this machine")
+	if local == nil || local.find("1password") == nil {
+		t.Errorf("no local checks in the report:\n%s", report.raw)
+	}
+}

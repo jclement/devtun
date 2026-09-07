@@ -58,3 +58,12 @@ func launcher() (string, []string) {
 		return "", nil
 	}
 }
+
+// OpenerName is the program a URL would be handed to on this machine, empty
+// when there is none. It is what `devtun doctor` reports: "the browser service
+// is running" and "a URL can actually be opened here" are different claims, and
+// on a bare Linux box without xdg-open only the first one is true.
+func OpenerName() string {
+	name, _ := launcher()
+	return name
+}

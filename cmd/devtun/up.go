@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/browser"
@@ -90,15 +91,8 @@ type upFlags struct {
 
 func (f *upFlags) register(cmd *cobra.Command) {
 	fl := cmd.Flags()
+	f.registerConnection(fl)
 
-	fl.StringVarP(&f.user, "user", "l", "", "remote username")
-	fl.IntVarP(&f.port, "port", "p", 0, "SSH port")
-	fl.StringArrayVarP(&f.identityFiles, "identity", "i", nil, "private key (repeatable; implies IdentitiesOnly, like ssh(1))")
-	fl.StringVarP(&f.proxyJump, "jump", "J", "", "jump host")
-	fl.StringVar(&f.authSock, "auth-sock", "", "SSH agent socket")
-	fl.StringArrayVar(&f.knownHosts, "known-hosts", nil, "known_hosts file (repeatable)")
-	fl.StringVar(&f.hostKeyMode, "host-key", "", "unknown host keys: ask, accept-new, yes, no")
-	fl.DurationVar(&f.connectTimeout, "connect-timeout", 20*time.Second, "SSH connection timeout")
 	fl.BoolVar(&f.wait, "wait", false, "keep retrying until the first connection succeeds")
 	fl.BoolVar(&f.noReconnect, "no-reconnect", false, "make a dropped connection fatal")
 
@@ -117,7 +111,6 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	// typing it — which would make the config setting unreachable.
 	fl.StringVar(&f.promptBackend, "prompt", "", "approvals: auto, tui, dialog, deny (default: your config, else auto)")
 	fl.StringVar(&f.account, "account", "", "pin 1Password requests to one account")
-	fl.StringVar(&f.opPath, "op", "", "path to the 1Password CLI")
 	fl.BoolVar(&f.cache, "cache", false, "hold fetched secret values in memory")
 	fl.DurationVar(&f.cacheTTL, "cache-ttl", 0, "how long a cached secret is kept (default: the grant)")
 	fl.DurationVar(&f.ttl, "ttl", 0, "lifetime of temporary approvals (default 5m)")
@@ -132,8 +125,28 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	fl.BoolVarP(&f.verbose, "verbose", "v", false, "include diagnostic events")
 	fl.StringVar(&f.setup, "setup", "ask", "the remote shell rc: ask, auto, never")
 	fl.BoolVar(&f.noInstall, "no-install", false, "never upload the remote helper")
-	fl.StringVar(&f.shimBinary, "shim-binary", "", "helper binary to upload to the remote")
 	fl.StringSliceVar(&f.only, "only", nil, "run only these services, e.g. tunnels,browser")
+}
+
+// registerConnection registers the flags for reaching a box, on whichever
+// command needs them.
+//
+// They are a group of their own because the subcommands that connect —
+// `install`, `doctor` — have to accept them *after* the subcommand name.
+// `devtun doctor -i key -p 2222 bedev` is what a person types, and a diagnostic
+// that rejects its own flags when somebody is already stuck is worse than no
+// diagnostic.
+func (f *upFlags) registerConnection(fl *pflag.FlagSet) {
+	fl.StringVarP(&f.user, "user", "l", "", "remote username")
+	fl.IntVarP(&f.port, "port", "p", 0, "SSH port")
+	fl.StringArrayVarP(&f.identityFiles, "identity", "i", nil, "private key (repeatable; implies IdentitiesOnly, like ssh(1))")
+	fl.StringVarP(&f.proxyJump, "jump", "J", "", "jump host")
+	fl.StringVar(&f.authSock, "auth-sock", "", "SSH agent socket")
+	fl.StringArrayVar(&f.knownHosts, "known-hosts", nil, "known_hosts file (repeatable)")
+	fl.StringVar(&f.hostKeyMode, "host-key", "", "unknown host keys: ask, accept-new, yes, no")
+	fl.DurationVar(&f.connectTimeout, "connect-timeout", 20*time.Second, "SSH connection timeout")
+	fl.StringVar(&f.shimBinary, "shim-binary", "", "helper binary to upload to the remote")
+	fl.StringVar(&f.opPath, "op", "", "path to the 1Password CLI")
 }
 
 // runUp is the whole of `devtun <host>`.

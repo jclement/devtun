@@ -32,6 +32,21 @@ this is 0.x, a minor bump may break something.
 
 ### Added
 
+- **`devtun doctor`.** With no arguments it checks this machine — the config it
+  reads, the 1Password CLI, which agent it would forward and what that agent is
+  holding, whether a URL can actually be opened, and where an approval would
+  appear. Given a host it also connects and checks that end: the helper, the
+  login shell, and whether each service can run there.
+
+  It changes nothing — no helper installed, no rc file edited — because a
+  diagnostic that fixes things while looking at them cannot tell you what was
+  wrong. The remote half is the session's own code path, so what doctor
+  verifies is what a real connection does rather than a second implementation
+  that can drift from it.
+- The connection flags (`-i`, `-l`, `-p`, `-J`, `--host-key`, …) now work after
+  a subcommand as well as before it: `devtun doctor -i key -p 2222 bedev`. A
+  command for people who are already stuck should not reject the flags they
+  reach for.
 - **Desktop approval dialogs on every platform, and a `prompt:` setting to ask
   for them.** macOS had one; Linux and Windows had a terminal form. devtun now
   raises a dialog with whatever the machine has — osascript, zenity, kdialog,

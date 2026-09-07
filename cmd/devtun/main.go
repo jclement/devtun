@@ -44,8 +44,10 @@ func main() {
 	ui.Init()
 	if err := newRootCommand().ExecuteContext(ctx); err != nil {
 		// Cobra has already printed usage errors; anything else is ours to
-		// report, and a cancelled context is a Ctrl-C rather than a fault.
-		if !errors.Is(err, context.Canceled) {
+		// report, and a cancelled context is a Ctrl-C rather than a fault. A
+		// silent error is a command — doctor — that has already said its piece
+		// and only wants the exit status.
+		if !errors.Is(err, context.Canceled) && !exitQuietly(err) {
 			fmt.Fprintln(os.Stderr, ui.Error.Render("devtun: "+err.Error()))
 		}
 		os.Exit(1)
@@ -94,6 +96,7 @@ without being asked.
 		newVersionCommand(),
 		newUpdateCommand(),
 		newInstallCommand(&flags),
+		newDoctorCommand(&flags),
 		newHostsCommand(),
 	)
 	return root

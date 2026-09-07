@@ -1,6 +1,8 @@
 # devtun
 
-**Your remote dev box, but it behaves like localhost.** Ports, secrets, and the browser — over one SSH connection.
+**Remote power. Local feel.**
+
+Your development machine does the work. Your laptop stays cool, quiet, and free to be closed. Ports, secrets, SSH keys and browser windows come to you over one SSH connection.
 
 ```sh
 devtun bedev
@@ -8,30 +10,39 @@ devtun bedev
 
 That's the setup.
 
+![How devtun came to exist, in eight panels](origin.png)
+
 ---
 
 ## The problem
 
-You moved development to a real machine, because your laptop fan sounds like a leaf blower and the build takes nine minutes. Sensible. Then:
+Agentic development means more parallel sessions, more background processes, and more things that need to keep running. A dedicated dev VM or workstation is a better place for all of that: powerful, isolated, always on, and not currently trying to take off from your desk.
+
+So you move development to a real machine. Sensible. Then:
 
 - `npm run dev` announces `http://localhost:5173/`. **Local** — to the machine you are not sitting at.
-- `op read op://Personal/Docker/PAT` fails, because your vault is on your laptop and signing that box in to 1Password means leaving a session on a machine you rebuild every March.
+- `op read op://Personal/Docker/PAT` fails, because your vault is on your laptop, and signing that box in to 1Password means leaving a session on a machine you rebuild every March.
+- `git push` needs your SSH key. `ssh -A` will lend it the *whole agent*, silently, to anyone with root there, for as long as you are connected. You will never find out.
 - `gh auth login` tries to open a browser and gets "Couldn't find a suitable web browser."
 
-Three problems, three workarounds, none of which survive closing your laptop lid.
+Four problems, four workarounds, none of which survive closing your laptop lid.
 
 ## What devtun does
 
-One SSH connection. Three services on top of it:
+One SSH connection. Four services on top of it:
 
 | | |
 |---|---|
-| **tunnels** | Every port the box opens appears on your localhost, on the same port number. Service appears, tunnel appears. |
-| **1password** | The box's `op` calls come back to your unlocked vault, one approval at a time. The vault never leaves your laptop. |
-| **ssh-agent** | The box signs with your keys — `git push`, `ssh` to another host — one approved signature at a time. Your keys never leave your laptop. |
-| **browser** | URLs the box wants opened open on your machine, with the port rewritten to wherever that tunnel actually landed. |
+| **tunnels** | Every port the box opens appears on your localhost, on the same port number. Start Vite on `127.0.0.1:3000` over there; open `http://127.0.0.1:3000` here. Service appears, tunnel appears. |
+| **1password** | The box's `op` calls come back to your unlocked vault, one approval at a time, scoped to the secrets you say yes to. The vault never leaves your laptop. |
+| **ssh-agent** | The box signs with your keys — `git push`, `ssh` onward — one approved signature at a time, and you can grant it *this key, for github.com, for ten minutes*. Your keys never leave your laptop. |
+| **browser** | URLs the box wants opened open on **your** machine, with the port rewritten to wherever that tunnel actually landed. |
 
-They share the connection, the reconnect logic, the config file, and one screen. Turn any of them off; add a fourth later.
+They share the connection, the reconnect logic, the config file, and one screen. Turn any of them off; add a fifth later.
+
+The result is a remote machine that behaves remarkably like localhost. Your agents keep running when you close the lid. Your dev box stays isolated from your personal environment. Your laptop stays cool and quiet. And the tools you actually need are still in reach.
+
+Combined with **VS Code Remote**, **herdr**, or whatever you drive your agents with, remote development stops being a compromise.
 
 ## Install
 
@@ -291,6 +302,44 @@ Close the lid, change wifi, drop off the VPN. devtun probes the link every 15 se
 
 Reconnection backs off 1s → 30s and resets after a connection holds for a minute. Local port assignments, live grants and approvals belong to the process rather than the connection, so a reconnect is invisible: your browser tabs keep working and you are not re-asked for a secret you approved a minute ago.
 
+## When something isn't working
+
+```sh
+devtun doctor           # this machine: config, op, your agent, a browser, approvals
+devtun doctor bedev     # ...and that box: the helper, the shell, every service
+```
+
+It checks nothing twice and changes nothing at all — no helper installed, no rc file edited, no config written. A diagnostic that fixes things while looking at them can't tell you what was wrong.
+
+```
+this machine
+  ✓ devtun       devtun v0.1.6 (3d9db54, 2026-09-07T04:44:51Z)
+  ✓ config       /Users/jsc/.config/devtun · 3 host(s)
+  ✓ approvals    auto — a desktop dialog, drawn with osascript
+  ! 1password    op 2.39.0 at /opt/homebrew/bin/op, but no account answered
+    → run `op account add`, or sign in to the app and enable the CLI integration
+  ✓ ssh-agent    1 key(s) via /Users/jsc/.gnupg/S.gpg-agent.ssh
+  ✓ browser      URLs open with open
+
+bedev
+  ✓ ssh          connected to jsc@bedev (linux/amd64)
+  ✓ shell        /usr/bin/zsh · /home/jsc/.zshrc
+  ! helper       not installed yet
+    → it is installed automatically on the next connection, from the v0.1.6 release
+  ✓ tunnels      forward every port the remote box opens onto localhost
+  ✓ ssh-agent    forward your SSH agent, one approved signature at a time
+  ! shell setup  2 line(s) missing from the login shell
+    → add to /home/jsc/.zshrc:
+    → export PATH="/home/jsc/.devtun/bin:$PATH"
+    → export SSH_AUTH_SOCK="/home/jsc/.devtun/devtun-agent.sock"
+
+13 ok · 3 to look at
+```
+
+The remote half runs the *same* code a session does — the same connector, the same one-shot probe, the same question put to each service. A doctor that asked its own questions would drift from the thing it is checking, and the failure it missed would be the one that only happens on a real connection.
+
+`--json` gives you the whole report as one object (and is automatic when the output isn't a terminal). It exits non-zero only if something is actually broken: a box without the 1Password CLI is an ordinary box, not a failure.
+
 ## Configuration
 
 ```
@@ -335,7 +384,7 @@ The ones you'll actually use:
 | `--prompt` | `auto`, `tui`, `dialog`, `deny` — overrides `prompt:` in your config |
 | `--setup` | the remote rc: `ask`, `auto`, `never` |
 | `--wait` | keep retrying until the box finishes booting |
-| `-i`, `-l`, `-p`, `-J` | as `ssh(1)` |
+| `-i`, `-l`, `-p`, `-J` | as `ssh(1)` — and they work on `doctor` and `install` too |
 
 `ssh_config` is honoured for `HostName`, `User`, `Port`, `IdentityFile`, `IdentitiesOnly`, `IdentityAgent`, `ProxyJump` and `StrictHostKeyChecking` — so `devtun bedev` works if `ssh bedev` works.
 

@@ -66,9 +66,10 @@ func DialogBackend() string {
 	return ""
 }
 
-// chooserNames lists what this platform would look for, so an error can say
-// what to install rather than only that something is missing.
-func chooserNames() []string {
+// ChooserNames lists the dialog programs this platform would look for, so an
+// error — or `devtun doctor` — can say what to install rather than only that
+// something is missing.
+func ChooserNames() []string {
 	var names []string
 	for _, c := range choosers() {
 		names = append(names, c.name())

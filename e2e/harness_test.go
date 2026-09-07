@@ -13,6 +13,8 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -362,4 +364,108 @@ func run(t *testing.T, name string, args ...string) string {
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
 	return string(out)
+}
+
+// doctorReport is `devtun doctor --json`, parsed.
+type doctorReport struct {
+	Sections []struct {
+		Title  string `json:"title"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+			Fix    string `json:"fix"`
+		} `json:"checks"`
+	} `json:"sections"`
+	raw string
+}
+
+type doctorSection struct {
+	report *doctorReport
+	index  int
+}
+
+type doctorCheck struct {
+	Name   string
+	Status string
+	Detail string
+	Fix    string
+}
+
+func (r *doctorReport) section(title string) *doctorSection {
+	for i, s := range r.Sections {
+		if s.Title == title {
+			return &doctorSection{report: r, index: i}
+		}
+	}
+	return nil
+}
+
+// remoteSection is the one section that is not "this machine": the box.
+func (r *doctorReport) remoteSection(t *testing.T) *doctorSection {
+	t.Helper()
+	for i, s := range r.Sections {
+		if s.Title != "this machine" {
+			return &doctorSection{report: r, index: i}
+		}
+	}
+	t.Fatalf("no section for the box:\n%s", r.raw)
+	return nil
+}
+
+func (s *doctorSection) find(name string) *doctorCheck {
+	if s == nil {
+		return nil
+	}
+	for _, c := range s.report.Sections[s.index].Checks {
+		if c.Name == name {
+			return &doctorCheck{Name: c.Name, Status: c.Status, Detail: c.Detail, Fix: c.Fix}
+		}
+	}
+	return nil
+}
+
+// doctor runs `devtun doctor <box>` and parses the report.
+//
+// Deliberately the whole command rather than the package underneath: doctor's
+// job is to be run by a person who is stuck, and "the command works" is the
+// claim — including that it exits with something a script can read.
+func (b *box) doctor(ctx context.Context, t *testing.T) *doctorReport {
+	t.Helper()
+	// doctor's own flag set rather than devtunArgs: it takes the connection
+	// flags and nothing else, which is the point of them being a group.
+	args := []string{
+		"doctor",
+		"--host-key", "no",
+		"-i", b.keyPath,
+		"-p", b.port,
+		"--shim-binary", b.helper,
+		"--json",
+		"dev@127.0.0.1",
+	}
+	cmd := exec.CommandContext(ctx, b.devtun, args...)
+	cmd.Env = append(os.Environ(),
+		"XDG_CONFIG_HOME="+t.TempDir(),
+		"DEVTUN_E2E=1",
+		"PATH="+b.stubBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"SSH_AUTH_SOCK="+b.agentSock,
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("running doctor: %v\n%s\n%s", err, out, stderr.String())
+		}
+		// A failing check is a legitimate outcome and still prints a report.
+	}
+	if len(out) == 0 {
+		t.Fatalf("doctor printed nothing; stderr:\n%s", stderr.String())
+	}
+	report := &doctorReport{raw: string(out)}
+	if err := json.Unmarshal(out, report); err != nil {
+		t.Fatalf("doctor did not print JSON: %v\n%s", err, out)
+	}
+	return report
 }

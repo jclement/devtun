@@ -82,7 +82,7 @@ func TestUnixChoosersNeedADisplay(t *testing.T) {
 // The first pick is zenity, which is the one most likely to be installed and to
 // look like the rest of the desktop.
 func TestZenityIsPreferred(t *testing.T) {
-	names := chooserNames()
+	names := ChooserNames()
 	if len(names) == 0 || names[0] != "zenity" {
 		t.Errorf("chooser order = %v, want zenity first", names)
 	}

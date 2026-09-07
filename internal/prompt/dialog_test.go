@@ -195,10 +195,10 @@ func TestHaveProgramUsesTheLookPathSeam(t *testing.T) {
 // Every platform must offer at least a name to put in the "install one of
 // these" error, or that error tells the user nothing.
 func TestChooserNamesAreNeverEmpty(t *testing.T) {
-	if len(chooserNames()) == 0 {
+	if len(ChooserNames()) == 0 {
 		t.Fatal("chooserNames returned nothing")
 	}
-	for _, name := range chooserNames() {
+	for _, name := range ChooserNames() {
 		if strings.TrimSpace(name) == "" {
 			t.Error("a chooser has no name")
 		}
