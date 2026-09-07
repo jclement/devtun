@@ -3,6 +3,31 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Changed
+
+- **The authorisation apparatus is one thing, `authz.Gate`.** The store, the
+  prompter, the broker and the ritual of adopting a host's own rules on the
+  first attach existed twice — once for the vault, once for the agent — as near
+  copies that had already drifted once. Services now hold a Gate and disagree
+  about the only thing they actually disagree about: what a subject is.
+- **The Access tab finds brokers by interface**, in registry order, rather than
+  by naming the two services the interface happens to import. That is the same
+  lesson as the prompter: a list written by hand is a list a fifth service is
+  forgotten from, and a broker missing from that tab is access nobody can see or
+  take back.
+
+### Added
+
+- **The browser bridge can be gated**, with `gate: ask` in a host file or the
+  global config (or `--gate ask` for one run). Off by default: the dial for that
+  service is the service itself, on or off per host, and a prompt for a window a
+  command you just typed asked for is a prompt that gets answered without being
+  read. When it is on, the subject is the *site* — one "always" answer covers
+  the dozen redirects of a login flow — and its rules appear on the Access tab
+  beside the others.
+
 ## v0.1.6
 
 ### Fixed

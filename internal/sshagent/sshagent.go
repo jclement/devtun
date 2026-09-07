@@ -52,9 +52,6 @@ var (
 	_ agent.ExtendedAgent   = (*gate)(nil)
 )
 
-// rulesKey is where this host's own rules live in its config document.
-const rulesKey = "rules"
-
 // Options is everything the caller decides for this service. Nothing here is
 // read from a file by this package: where the settings live is the caller's
 // business, as it is for the 1Password broker.
@@ -89,32 +86,25 @@ type Options struct {
 // does not re-ask for a key you approved a minute ago, and a session grant
 // lasts as long as devtun does.
 type Service struct {
-	opts     Options
-	store    *authz.Store
-	prompter prompt.Prompter
-	names    *hostNames
+	opts  Options
+	gate  *authz.Gate
+	names *hostNames
 
-	mu      sync.Mutex
-	host    service.Host
-	adopted bool // the host's own rules have been loaded
+	mu   sync.Mutex
+	host service.Host
 }
 
 // New builds the service. It touches nothing — no agent, no file, no socket —
 // so it is safe to construct for a host that turns out not to support it.
 func New(opts Options) *Service {
-	prompter := opts.Prompter
-	if prompter == nil {
-		prompter = prompt.Serialize(prompt.DenyAll{})
-	}
 	return &Service{
 		opts: opts,
-		store: authz.NewStore(authz.Config{
+		gate: authz.NewGate(authz.Config{
 			DefaultTTL:    opts.DefaultTTL,
 			PromptTimeout: opts.PromptTimeout,
 			Rules:         opts.Rules,
-		}),
-		prompter: prompter,
-		names:    newHostNames(opts.KnownHosts),
+		}, opts.Prompter),
+		names: newHostNames(opts.KnownHosts),
 	}
 }
 
@@ -127,12 +117,7 @@ func New(opts Options) *Service {
 // --tui would be refused with no way to say yes.
 //
 // Call it before the session starts; it is not safe afterwards.
-func (s *Service) SetPrompter(p prompt.Prompter) {
-	if p == nil {
-		p = prompt.DenyAll{}
-	}
-	s.prompter = prompt.Serialize(p)
-}
+func (s *Service) SetPrompter(p prompt.Prompter) { s.gate.SetPrompter(p) }
 
 // Meta is the service's static identity.
 func (s *Service) Meta() service.Meta {
@@ -206,51 +191,38 @@ func (s *Service) Attach(_ context.Context, h service.Host) (service.Instance, e
 	defer s.mu.Unlock()
 
 	s.host = h
-	if !s.adopted {
-		var rules []authz.Rule
-		// GetLocal, not Get: the global rules arrived through Options, and Get
-		// falls through to the global section when the host has no rules of its
-		// own — so "allow always", which writes the whole slice back, would
-		// copy them into the host file where deleting one globally no longer
-		// reaches them.
-		if _, err := h.Config().GetLocal(rulesKey, &rules); err != nil {
-			// Rules that cannot be read include denies, so carrying on without
-			// them would silently widen access. Refusing to attach is the only
-			// safe reading of an unparseable policy.
-			return nil, fmt.Errorf("reading the SSH agent rules for %s: %w", h.Label(), err)
-		}
-		s.store.AdoptHostRules(rules, configSaver{h.Config()})
-		s.adopted = true
+	if err := s.gate.Adopt(h.Label(), h.Config(), "SSH agent"); err != nil {
+		return nil, err
 	}
 	return &instance{}, nil
 }
 
 // Forget drops every live grant, which is the "lock it back up" action.
-func (s *Service) Forget() int { return s.store.ForgetGrants() }
+func (s *Service) Forget() int { return s.gate.ForgetGrants() }
 
 // Rules exposes the rules devtun wrote for this host, for a caller that lists
 // or revokes them.
-func (s *Service) Rules() []authz.Rule { return s.store.Rules() }
+func (s *Service) Rules() []authz.Rule { return s.gate.Rules() }
 
 // Revoke removes the host rule at index, as numbered by Rules.
-func (s *Service) Revoke(index int) error { return s.store.Revoke(index) }
+func (s *Service) Revoke(index int) error { return s.gate.Revoke(index) }
 
 // Deny turns the host rule at index into a refusal. It only tightens: see
 // authz.Store.Deny.
-func (s *Service) Deny(index int) error { return s.store.Deny(index) }
+func (s *Service) Deny(index int) error { return s.gate.Deny(index) }
 
 // GlobalRules are the rules from the top-level config: visible so a person can
 // see everything that is deciding, and not removable here because devtun did
 // not write them.
-func (s *Service) GlobalRules() []authz.Rule { return s.store.GlobalRules() }
+func (s *Service) GlobalRules() []authz.Rule { return s.gate.GlobalRules() }
 
 // Grants lists the allowances a prompt created and that have not yet lapsed —
 // which keys may currently sign, for where, without asking again.
-func (s *Service) Grants() []authz.Grant { return s.store.Grants() }
+func (s *Service) Grants() []authz.Grant { return s.gate.Grants() }
 
 // RevokeGrant drops a single live grant, reporting whether it was there.
 func (s *Service) RevokeGrant(host, subject string) bool {
-	return s.store.RevokeGrant(host, subject)
+	return s.gate.RevokeGrant(host, subject)
 }
 
 // authSock is the local agent to forward.
@@ -302,15 +274,3 @@ func (*instance) Run(ctx context.Context) error {
 // Close releases remote state, of which there is none — the socket is removed
 // by the session that published it.
 func (*instance) Close() error { return nil }
-
-// configSaver persists the host's rules through the service's slice of the host
-// config. Set marks the document dirty rather than writing it out; the session
-// saves once, on exit, which is the same bargain every other service makes.
-type configSaver struct {
-	config service.Config
-}
-
-// SaveRules stores the whole rule set under the service's "rules" key.
-func (c configSaver) SaveRules(rules []authz.Rule) error {
-	return c.config.Set(rulesKey, rules)
-}

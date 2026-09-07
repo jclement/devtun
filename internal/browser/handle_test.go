@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/shim"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -42,10 +44,11 @@ func exchange(t *testing.T, svc *Service, request openRequest) openResponse {
 func TestHandleConnOpensARewrittenURL(t *testing.T) {
 	var opened string
 	svc := New(Options{
-		Tunnels: &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174, Remapped: false}}},
-		Open:    func(_ context.Context, u string) error { opened = u; return nil },
-		Poll:    time.Millisecond,
-		Wait:    50 * time.Millisecond,
+		Prompter: allowOnce{},
+		Tunnels:  &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174, Remapped: false}}},
+		Open:     func(_ context.Context, u string) error { opened = u; return nil },
+		Poll:     time.Millisecond,
+		Wait:     50 * time.Millisecond,
 	})
 
 	got := exchange(t, svc, openRequest{URL: "http://localhost:5173/app"})
@@ -62,10 +65,11 @@ func TestHandleConnOpensARewrittenURL(t *testing.T) {
 // the far side prints it so the human can open the URL themselves.
 func TestHandleConnReportsARefusalRatherThanHangingUp(t *testing.T) {
 	svc := New(Options{
-		Tunnels: &fakeTunnels{},
-		Open:    func(context.Context, string) error { return nil },
-		Poll:    time.Millisecond,
-		Wait:    50 * time.Millisecond,
+		Prompter: allowOnce{},
+		Tunnels:  &fakeTunnels{},
+		Open:     func(context.Context, string) error { return nil },
+		Poll:     time.Millisecond,
+		Wait:     50 * time.Millisecond,
 	})
 
 	got := exchange(t, svc, openRequest{URL: "http://localhost:9999/"})
@@ -82,10 +86,11 @@ func TestHandleConnReportsARefusalRatherThanHangingUp(t *testing.T) {
 // something to swallow into a success.
 func TestHandleConnReportsALaunchFailure(t *testing.T) {
 	svc := New(Options{
-		Tunnels: &fakeTunnels{states: []tunnels.State{{RemotePort: 3000, LocalPort: 3000}}},
-		Open:    func(context.Context, string) error { return errNoBrowser },
-		Poll:    time.Millisecond,
-		Wait:    50 * time.Millisecond,
+		Prompter: allowOnce{},
+		Tunnels:  &fakeTunnels{states: []tunnels.State{{RemotePort: 3000, LocalPort: 3000}}},
+		Open:     func(context.Context, string) error { return errNoBrowser },
+		Poll:     time.Millisecond,
+		Wait:     50 * time.Millisecond,
 	})
 
 	got := exchange(t, svc, openRequest{URL: "http://localhost:3000/"})
@@ -100,7 +105,7 @@ func TestHandleConnReportsALaunchFailure(t *testing.T) {
 
 func TestAttachAndCloseAreQuiet(t *testing.T) {
 	svc := New(Options{Open: func(context.Context, string) error { return nil }})
-	inst, err := svc.Attach(context.Background(), stubHost{})
+	inst, err := svc.Attach(context.Background(), newStubHost())
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -124,11 +129,54 @@ func TestAttachAndCloseAreQuiet(t *testing.T) {
 }
 
 // stubHost is the smallest thing satisfying service.Host: this service uses
-// only the label and the event sink.
-type stubHost struct{ service.Host }
+// the label, the event sink, and its slice of the host's config.
+type stubHost struct {
+	service.Host
+	config *stubConfig
+}
+
+func newStubHost() stubHost { return stubHost{config: &stubConfig{docs: map[string]any{}}} }
 
 func (stubHost) Label() string      { return "bedev" }
 func (stubHost) Events() event.Sink { return event.Discard }
+
+func (h stubHost) Config() service.Config {
+	if h.config == nil {
+		return &stubConfig{docs: map[string]any{}}
+	}
+	return h.config
+}
+
+// stubConfig is an in-memory config document.
+type stubConfig struct{ docs map[string]any }
+
+func (c *stubConfig) Get(key string, v any) (bool, error) { return c.GetLocal(key, v) }
+
+func (c *stubConfig) GetLocal(key string, v any) (bool, error) {
+	doc, ok := c.docs[key]
+	if !ok {
+		return false, nil
+	}
+	switch target := v.(type) {
+	case *string:
+		text, ok := doc.(string)
+		if !ok {
+			return false, nil
+		}
+		*target = text
+	case *[]authz.Rule:
+		rules, ok := doc.([]authz.Rule)
+		if !ok {
+			return false, nil
+		}
+		*target = rules
+	default:
+		return false, nil
+	}
+	return true, nil
+}
+
+func (c *stubConfig) Set(key string, v any) error { c.docs[key] = v; return nil }
 
 var errNoBrowser = errNoBrowserType{}
 
@@ -141,10 +189,11 @@ func (errNoBrowserType) Error() string { return "no browser on this machine" }
 func TestOpeningIsReported(t *testing.T) {
 	bus := event.NewBus(8)
 	svc := New(Options{
-		Tunnels: &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174}}},
-		Open:    func(context.Context, string) error { return nil },
-		Poll:    time.Millisecond,
-		Wait:    50 * time.Millisecond,
+		Prompter: allowOnce{},
+		Tunnels:  &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174}}},
+		Open:     func(context.Context, string) error { return nil },
+		Poll:     time.Millisecond,
+		Wait:     50 * time.Millisecond,
 	})
 	if _, err := svc.Attach(context.Background(), busHost{bus: bus}); err != nil {
 		t.Fatal(err)
@@ -174,10 +223,11 @@ func TestOpeningIsReported(t *testing.T) {
 func TestRefusalIsReported(t *testing.T) {
 	bus := event.NewBus(8)
 	svc := New(Options{
-		Tunnels: &fakeTunnels{},
-		Open:    func(context.Context, string) error { return nil },
-		Poll:    time.Millisecond,
-		Wait:    20 * time.Millisecond,
+		Prompter: allowOnce{},
+		Tunnels:  &fakeTunnels{},
+		Open:     func(context.Context, string) error { return nil },
+		Poll:     time.Millisecond,
+		Wait:     20 * time.Millisecond,
 	})
 	if _, err := svc.Attach(context.Background(), busHost{bus: bus}); err != nil {
 		t.Fatal(err)
@@ -200,3 +250,189 @@ type busHost struct {
 
 func (h busHost) Label() string      { return "bedev" }
 func (h busHost) Events() event.Sink { return h.bus.For("browser") }
+
+func (h busHost) Config() service.Config { return &stubConfig{docs: map[string]any{}} }
+
+// gating -------------------------------------------------------------------
+
+// denyAll refuses everything, standing in for a person who says no.
+type denyAll struct{}
+
+func (denyAll) Ask(context.Context, prompt.Request) (prompt.Choice, error) {
+	return prompt.ChoiceDeny, nil
+}
+
+// recorder remembers the question it was asked, so the wording can be checked:
+// the wording is the thing somebody is deciding on.
+type recorder struct {
+	mu      sync.Mutex
+	request prompt.Request
+	answer  prompt.Choice
+}
+
+func (r *recorder) Ask(_ context.Context, request prompt.Request) (prompt.Choice, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.request = request
+	return r.answer, nil
+}
+
+func (r *recorder) seen() prompt.Request {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.request
+}
+
+// A window appearing on your laptop because a process on another machine asked
+// for it is a thing to be asked about, and refusing means it does not open.
+func TestARefusedSiteIsNotOpened(t *testing.T) {
+	opened := 0
+	svc := New(Options{
+		Prompter: denyAll{},
+		Tunnels:  &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174}}},
+		Open:     func(context.Context, string) error { opened++; return nil },
+	})
+	if _, err := svc.Attach(context.Background(), asking()); err != nil {
+		t.Fatal(err)
+	}
+
+	got := exchange(t, svc, openRequest{URL: "https://github.com/login"})
+	if got.OK {
+		t.Error("a refused request reported success")
+	}
+	if opened != 0 {
+		t.Error("a refused URL was opened anyway")
+	}
+	if !strings.Contains(got.Error, "refused") {
+		t.Errorf("the remote was not told why: %q", got.Error)
+	}
+}
+
+// The question names the site, not the URL — a grant on github.com covers the
+// dozen redirects an OAuth flow makes, where a grant on one URL would ask again
+// at every one of them.
+func TestTheQuestionIsAboutTheSite(t *testing.T) {
+	asker := &recorder{answer: prompt.ChoiceAllowOnce}
+	svc := New(Options{
+		Prompter: asker,
+		Tunnels:  &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174}}},
+		Open:     func(context.Context, string) error { return nil },
+	})
+	if _, err := svc.Attach(context.Background(), asking()); err != nil {
+		t.Fatal(err)
+	}
+
+	exchange(t, svc, openRequest{URL: "https://github.com/login/oauth?code=abc"})
+	request := asker.seen()
+	if request.Subject != "github.com" {
+		t.Errorf("subject = %q, want the site", request.Subject)
+	}
+	if request.Host != "bedev" {
+		t.Errorf("host = %q, want the box that asked", request.Host)
+	}
+	if request.SubjectNoun() != "site" {
+		t.Errorf("the menu would call it a %q", request.SubjectNoun())
+	}
+	// The whole URL is still shown: the site is what is decided, the URL is
+	// what is being opened, and the person deciding needs both.
+	var urls int
+	for _, row := range request.Rows {
+		if row.Label == "url" && strings.Contains(row.Value, "code=abc") {
+			urls++
+		}
+	}
+	if urls != 1 {
+		t.Errorf("the full URL was not shown: %+v", request.Rows)
+	}
+
+	// A dev server on the box is identified by its port, so approving one for
+	// the afternoon does not approve whatever else that box starts.
+	exchange(t, svc, openRequest{URL: "http://localhost:5173/app"})
+	if got := asker.seen().Subject; got != "localhost:5173" {
+		t.Errorf("a loopback URL asked about %q", got)
+	}
+}
+
+// Saying yes once is enough: an "always" answer is a rule, and the rule decides
+// the next time without anybody being asked.
+func TestAnAlwaysAnswerStopsTheAsking(t *testing.T) {
+	asker := &recorder{answer: prompt.ChoiceAllowSecretAlways}
+	svc := New(Options{
+		Prompter: asker,
+		Tunnels:  &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174}}},
+		Open:     func(context.Context, string) error { return nil },
+	})
+	host := asking()
+	if _, err := svc.Attach(context.Background(), host); err != nil {
+		t.Fatal(err)
+	}
+
+	exchange(t, svc, openRequest{URL: "https://github.com/login"})
+	if len(svc.Rules()) != 1 {
+		t.Fatalf("no rule was written: %+v", svc.Rules())
+	}
+
+	// The prompter would say no from here on; policy has to answer instead.
+	asker.answer = prompt.ChoiceDeny
+	if got := exchange(t, svc, openRequest{URL: "https://github.com/settings"}); !got.OK {
+		t.Errorf("the rule did not decide the second request: %q", got.Error)
+	}
+}
+
+// asking is a host with `gate: ask` set, which is what the gating tests are
+// about. It is not the default: the dial for this service is the service, on or
+// off per host, and a prompt for every window a command you just typed asked
+// for is a prompt that gets answered without being read.
+func asking() stubHost {
+	host := newStubHost()
+	host.config.docs[gateKey] = "ask"
+	return host
+}
+
+// The default is to open without asking. This is the check that says so, since
+// every other test here sets `gate: ask` explicitly.
+func TestByDefaultNobodyIsAsked(t *testing.T) {
+	asked := 0
+	svc := New(Options{
+		Prompter: promptFunc(func() (prompt.Choice, error) { asked++; return prompt.ChoiceDeny, nil }),
+		Tunnels:  &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174}}},
+		Open:     func(context.Context, string) error { return nil },
+	})
+	if _, err := svc.Attach(context.Background(), newStubHost()); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := exchange(t, svc, openRequest{URL: "http://localhost:5173/app"}); !got.OK {
+		t.Errorf("the default refused a URL: %q", got.Error)
+	}
+	if asked != 0 {
+		t.Error("the default asked")
+	}
+}
+
+// `gate: auto` is the explicit spelling of the default, for a config that has
+// `gate: ask` globally and one host that would rather not be asked.
+func TestGateAutoOpensWithoutAsking(t *testing.T) {
+	asked := 0
+	svc := New(Options{
+		Prompter: promptFunc(func() (prompt.Choice, error) { asked++; return prompt.ChoiceDeny, nil }),
+		Tunnels:  &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174}}},
+		Open:     func(context.Context, string) error { return nil },
+	})
+	host := newStubHost()
+	host.config.docs[gateKey] = "auto"
+	if _, err := svc.Attach(context.Background(), host); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := exchange(t, svc, openRequest{URL: "http://localhost:5173/app"}); !got.OK {
+		t.Errorf("gate: auto still refused: %q", got.Error)
+	}
+	if asked != 0 {
+		t.Error("gate: auto still asked")
+	}
+}
+
+type promptFunc func() (prompt.Choice, error)
+
+func (f promptFunc) Ask(context.Context, prompt.Request) (prompt.Choice, error) { return f() }

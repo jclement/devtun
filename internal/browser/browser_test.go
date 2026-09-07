@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/tunnels"
 )
 
@@ -46,10 +47,11 @@ func (f *fakeTunnels) TryLocalPort(remotePort, local int) error {
 
 func newService(tn Tunnels) *Service {
 	return New(Options{
-		Tunnels: tn,
-		Open:    func(context.Context, string) error { return nil },
-		Poll:    time.Millisecond,
-		Wait:    50 * time.Millisecond,
+		Prompter: allowOnce{},
+		Tunnels:  tn,
+		Open:     func(context.Context, string) error { return nil },
+		Poll:     time.Millisecond,
+		Wait:     50 * time.Millisecond,
 	})
 }
 
@@ -173,4 +175,12 @@ func TestProbeNeedsAWayToOpen(t *testing.T) {
 	if !newService(&fakeTunnels{}).Probe(context.Background(), nil).OK {
 		t.Error("with an opener it can")
 	}
+}
+
+// allowOnce approves whatever it is asked, so that the tests about rewriting
+// URLs are not also tests of the gate. The gate has its own below.
+type allowOnce struct{}
+
+func (allowOnce) Ask(context.Context, prompt.Request) (prompt.Choice, error) {
+	return prompt.ChoiceAllowOnce, nil
 }

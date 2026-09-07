@@ -72,6 +72,9 @@ type upFlags struct {
 	ttl           time.Duration
 	promptTimeout time.Duration
 
+	// gate overrides whether gated services ask before acting, for this run.
+	gate string
+
 	// presentation and behaviour
 	tui        bool
 	logMode    bool
@@ -124,6 +127,7 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	fl.BoolVar(&f.noColor, "no-color", false, "disable colour")
 	fl.BoolVarP(&f.verbose, "verbose", "v", false, "include diagnostic events")
 	fl.StringVar(&f.setup, "setup", "ask", "the remote shell rc: ask, auto, never")
+	fl.StringVar(&f.gate, "gate", "", "browser: ask before each site, or auto (default: your config)")
 	fl.BoolVar(&f.noInstall, "no-install", false, "never upload the remote helper")
 	fl.StringSliceVar(&f.only, "only", nil, "run only these services, e.g. tunnels,browser")
 }
@@ -190,7 +194,7 @@ func runUp(ctx context.Context, f upFlags) error {
 	backend := promptBackend(f, store, dest.Label())
 
 	bus := event.NewBus(historyLimit)
-	services, tunnelSvc, opSvc, agentSvc, err := buildServices(f, store, backend, useTUI)
+	services, tunnelSvc, err := buildServices(f, store, backend, useTUI)
 	if err != nil {
 		return err
 	}
@@ -225,8 +229,6 @@ func runUp(ctx context.Context, f upFlags) error {
 			Session:    sess,
 			Bus:        bus,
 			Tunnels:    tunnelSvc,
-			Secrets:    opSvc,
-			Agent:      agentSvc,
 			Services:   services,
 			Host:       dest.Label(),
 			Version:    buildinfo.Version(),
@@ -310,15 +312,15 @@ func resolveDestination(f upFlags) (*sshx.Destination, sshx.Options, error) {
 // Tunnels comes first because the browser bridge resolves ports through it, and
 // because it is the one that needs nothing on the remote box: if everything
 // else fails, forwarding still works, which is very often why devtun was run.
-func buildServices(f upFlags, store *hostcfg.Store, backend prompt.Backend, useTUI bool) ([]service.Service, *tunnels.Service, *onepassword.Service, *sshagent.Service, error) {
+func buildServices(f upFlags, store *hostcfg.Store, backend prompt.Backend, useTUI bool) ([]service.Service, *tunnels.Service, error) {
 	policy, err := tunnelPolicy(f)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	hide, err := tunnels.ParsePortSet(store.Global().Hide.Spec())
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("the `hide` list in your config: %w", err)
+		return nil, nil, fmt.Errorf("the `hide` list in your config: %w", err)
 	}
 
 	tunnelSvc := tunnels.New(tunnels.Options{
@@ -331,15 +333,15 @@ func buildServices(f upFlags, store *hostcfg.Store, backend prompt.Backend, useT
 
 	prompter, err := buildPrompter(backend, useTUI)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, err
 	}
 	rules, err := globalRules(store)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, err
 	}
 	accounts, err := globalAccounts(store, f.account)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, err
 	}
 	opSvc := onepassword.New(onepassword.Options{
 		Rules:         rules,
@@ -367,19 +369,45 @@ func buildServices(f upFlags, store *hostcfg.Store, backend prompt.Backend, useT
 		KnownHosts: knownHostsFiles(f),
 	})
 
+	// The browser can be gated, and is not by default. Its dial is the service
+	// itself — on or off, per host — because a window opening is usually the
+	// direct consequence of a command somebody just typed, and a prompt for
+	// each one is a prompt that gets answered without being read. `gate: ask`
+	// is there for anyone who wants a say in each one; the subject is the site,
+	// so one "always" answer covers the dozen redirects of a login flow.
 	browserSvc := browser.New(browser.Options{
 		// The service, not its Manager: the Manager does not exist until the
 		// first connection, so capturing it here would capture nil.
-		Tunnels: tunnelSvc,
-		Open:    ui.OpenURL,
-		Bind:    f.bind,
+		Tunnels:       tunnelSvc,
+		Open:          ui.OpenURL,
+		Bind:          f.bind,
+		Rules:         rules,
+		DefaultTTL:    f.ttl,
+		PromptTimeout: f.promptTimeout,
+		Prompter:      prompter,
+		Ask:           gateDefault(f),
 	})
 
 	all := []service.Service{tunnelSvc, opSvc, agentSvc, browserSvc}
 	if f.noAgent {
 		all = []service.Service{tunnelSvc, opSvc, browserSvc}
 	}
-	return filterServices(all, f.only), tunnelSvc, opSvc, agentSvc, nil
+	return filterServices(all, f.only), tunnelSvc, nil
+}
+
+// gateDefault turns --gate into the tri-state the services take: nil means
+// "whatever the config says, else the service's own default".
+func gateDefault(f upFlags) *bool {
+	switch strings.TrimSpace(f.gate) {
+	case "ask":
+		yes := true
+		return &yes
+	case "auto":
+		no := false
+		return &no
+	default:
+		return nil
+	}
 }
 
 // filterServices applies --only, which is how you run devtun as just one of

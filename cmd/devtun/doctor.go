@@ -225,7 +225,7 @@ func remoteChecks(ctx context.Context, report *doctor.Report, flags upFlags) err
 	// The registry is built exactly as a session builds it, so that what is
 	// probed is what would actually run — including the services switched off
 	// for this host, which doctor reports rather than hides.
-	services, _, _, _, err := buildServices(flags, store, backend, false)
+	services, _, err := buildServices(flags, store, backend, false)
 	if err != nil {
 		return err
 	}

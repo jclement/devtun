@@ -22,13 +22,12 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/hostcfg"
-	"github.com/jclement/devtun/internal/onepassword"
 	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
-	"github.com/jclement/devtun/internal/sshagent"
 	"github.com/jclement/devtun/internal/tunnels"
 	"github.com/jclement/devtun/internal/ui"
 )
@@ -37,11 +36,13 @@ import (
 // Bus and Session: a session running only tunnels has no 1Password service, and
 // the interface must be honest about that rather than fall over.
 type Options struct {
-	Session  *session.Session
-	Bus      *event.Bus
-	Tunnels  *tunnels.Service
-	Secrets  *onepassword.Service
-	Agent    *sshagent.Service
+	Session *session.Session
+	Bus     *event.Bus
+	Tunnels *tunnels.Service
+	// Services is the registry, in the order the session attaches them. The
+	// interface finds what it needs in here by interface — brokers for the
+	// Access tab, prompters, settings — rather than by naming services it
+	// happens to import, so a fifth one is wired up by existing.
 	Services []service.Service
 	Host     string
 	Version  string
@@ -65,7 +66,7 @@ func Run(ctx context.Context, o Options) error {
 
 	model := newModel(deps{
 		tunnels:  tunnelAdapter{svc: o.Tunnels},
-		secrets:  secretSources(o.Secrets, o.Agent),
+		secrets:  secretSources(o.Services),
 		store:    storeOf(o.Store),
 		services: o.Services,
 		status:   statusOf(o.Session),
@@ -243,29 +244,51 @@ func (a tunnelAdapter) SetViewPrefs(p tunnels.ViewPrefs) {
 
 // secretSources lists the brokers whose grants and rules the Access tab shows.
 //
-// A nil service is left out rather than listed as empty: a session running only
-// tunnels has no broker at all, and a tab offering to revoke nothing from a
-// thing that is not running would be a lie about what is happening.
-func secretSources(op *onepassword.Service, agent *sshagent.Service) []accessSource {
+// Found by interface, in registry order, rather than by naming the two services
+// this package happens to import. That is the same lesson as the prompter: a
+// list of services written down by hand is a list somebody adds a fifth service
+// to and forgets — and a broker missing from this tab is access nobody can see
+// or take back.
+//
+// A service that does not gate anything is left out rather than listed as
+// empty, since a tab offering to revoke nothing from something that never asks
+// would be a lie about what is happening.
+func secretSources(services []service.Service) []accessSource {
 	var out []accessSource
-	if op != nil {
-		out = append(out, accessSource{id: "1password", title: "1Password", ctrl: op})
-	}
-	if agent != nil {
-		out = append(out, accessSource{id: "ssh-agent", title: "SSH Agent", ctrl: cachelessBroker{agent}})
+	for _, svc := range services {
+		meta := svc.Meta()
+		switch broker := svc.(type) {
+		case secretsCtrl:
+			out = append(out, accessSource{id: meta.ID, title: meta.Title, ctrl: broker})
+		case cachelessCtrl:
+			// A broker with no cache to purge reports the zero it computed
+			// rather than the interface pretending every broker keeps one.
+			out = append(out, accessSource{id: meta.ID, title: meta.Title, ctrl: cachelessBroker{broker}})
+		}
 	}
 	return out
+}
+
+// cachelessCtrl is the same surface minus the two-number Forget: a broker that
+// never sees a secret has nothing to cache and nothing to purge.
+type cachelessCtrl interface {
+	Rules() []authz.Rule
+	GlobalRules() []authz.Rule
+	Revoke(index int) error
+	Deny(index int) error
+	Grants() []authz.Grant
+	RevokeGrant(host, subject string) bool
+	Forget() int
 }
 
 // cachelessBroker adapts a broker that has nothing to purge.
 //
 // The agent never holds a secret to cache: it does not see key material at any
-// point, it only asks the real agent to produce a signature. So it can forget
-// grants but has no second number to report, and reporting a zero it computed
-// is more honest than an interface pretending every broker keeps a cache.
-type cachelessBroker struct{ *sshagent.Service }
+// point, it only asks the real agent to produce a signature. The browser is the
+// same. So they can forget grants but have no second number to report.
+type cachelessBroker struct{ cachelessCtrl }
 
-func (b cachelessBroker) Forget() (grants, cached int) { return b.Service.Forget(), 0 }
+func (b cachelessBroker) Forget() (grants, cached int) { return b.cachelessCtrl.Forget(), 0 }
 
 func storeOf(s *hostcfg.Store) configStore {
 	if s == nil {

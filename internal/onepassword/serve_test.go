@@ -580,7 +580,7 @@ func TestCacheIsNeverServedWithoutReauthorising(t *testing.T) {
 		t.Fatal("the value was not cached, so this test would prove nothing")
 	}
 
-	h.service.store.ForgetGrants() // the authorisation goes; the entry stays
+	h.service.gate.ForgetGrants() // the authorisation goes; the entry stays
 	h.prompter.answer(prompt.ChoiceDeny)
 
 	response := h.exec(t, "read", "op://V/I/F")
@@ -909,19 +909,19 @@ func TestAnOversizedFrameIsRefused(t *testing.T) {
 // refused with no way to say yes.
 func TestSetPrompterReplacesTheDefaultRefusal(t *testing.T) {
 	svc := New(Options{})
+	request := prompt.Request{Host: "bedev", Subject: "op://V/I/F"}
 
-	if _, err := svc.prompter.Ask(context.Background(), prompt.Request{}); err == nil {
-		t.Fatal("a service built with no prompter should refuse")
+	// Through the gate rather than at the prompter field: what matters is that
+	// the request is refused, and reaching past the decision to inspect the
+	// thing that makes it would keep passing if the wiring came undone.
+	if svc.gate.Authorize(context.Background(), request).Allowed {
+		t.Fatal("a service built with no prompter allowed a request")
 	}
 
 	svc.SetPrompter(allowOncePrompter{})
 
-	choice, err := svc.prompter.Ask(context.Background(), prompt.Request{})
-	if err != nil {
-		t.Fatalf("Ask: %v", err)
-	}
-	if choice != prompt.ChoiceAllowOnce {
-		t.Errorf("want the installed prompter to answer, got %v", choice)
+	if !svc.gate.Authorize(context.Background(), request).Allowed {
+		t.Error("the installed prompter did not get to answer")
 	}
 }
 
@@ -930,9 +930,8 @@ func TestSetPrompterNilStillRefuses(t *testing.T) {
 	svc := New(Options{Prompter: allowOncePrompter{}})
 	svc.SetPrompter(nil)
 
-	choice, _ := svc.prompter.Ask(context.Background(), prompt.Request{})
-	if choice != prompt.ChoiceDeny {
-		t.Errorf("installing nil must refuse, got %v", choice)
+	if svc.gate.Authorize(context.Background(), prompt.Request{Host: "bedev", Subject: "op://V/I/F"}).Allowed {
+		t.Error("installing nil opened the door")
 	}
 }
 

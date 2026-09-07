@@ -35,7 +35,8 @@ import (
 	"github.com/jclement/devtun/internal/service"
 )
 
-// rulesKey is where the host's own rules live in its config document.
+// rulesKey is where the host's own rules live in its config document. The gate
+// writes it; this is here so the tests can name the same key.
 const rulesKey = "rules"
 
 // SecretRunner is the slice of the 1Password CLI this service needs. It is an
@@ -86,40 +87,32 @@ type Options struct {
 // policy: reconnecting does not re-ask for a secret you approved a minute ago,
 // and a session grant lasts as long as devtun does.
 type Service struct {
-	opts     Options
-	store    *authz.Store
-	guard    *opguard.Guard
-	cache    *vaultcache.Cache
-	prompter prompt.Prompter
+	opts  Options
+	gate  *authz.Gate
+	guard *opguard.Guard
+	cache *vaultcache.Cache
 
-	mu      sync.Mutex
-	runner  SecretRunner
-	host    service.Host
-	adopted bool // the host's own rules have been loaded
+	mu     sync.Mutex
+	runner SecretRunner
+	host   service.Host
 }
 
 // New builds the service. It touches nothing — no vault, no file, no network —
 // so it is safe to construct for a host that turns out not to support it.
 func New(opts Options) *Service {
-	prompter := opts.Prompter
-	if prompter == nil {
-		prompter = prompt.Serialize(prompt.DenyAll{})
-	}
-	store := authz.NewStore(authz.Config{
-		DefaultTTL:    opts.DefaultTTL,
-		PromptTimeout: opts.PromptTimeout,
-		Rules:         opts.Rules,
-	})
 	return &Service{
-		opts:  opts,
-		store: store,
+		opts: opts,
+		gate: authz.NewGate(authz.Config{
+			DefaultTTL:    opts.DefaultTTL,
+			PromptTimeout: opts.PromptTimeout,
+			Rules:         opts.Rules,
+		}, opts.Prompter),
 		guard: opguard.NewGuard(opguard.GuardConfig{
 			AllowCommands:    opts.AllowCommands,
 			AllowAllCommands: opts.AllowAllCommands,
 		}),
-		cache:    vaultcache.New(opts.CacheTTL),
-		prompter: prompter,
-		runner:   opts.Runner,
+		cache:  vaultcache.New(opts.CacheTTL),
+		runner: opts.Runner,
 	}
 }
 
@@ -132,15 +125,10 @@ func New(opts Options) *Service {
 // zero value of a decision is no — would be permanent, and every request under
 // --tui would be refused with no way to say yes.
 //
-// The prompter is wrapped in Serialize here as New does, so a caller cannot
-// accidentally install one that allows two questions to be asked at once.
+// The prompter is wrapped in Serialize by the gate, as New does, so a caller
+// cannot accidentally install one that allows two questions at once.
 // Call it before the session starts; it is not safe afterwards.
-func (s *Service) SetPrompter(p prompt.Prompter) {
-	if p == nil {
-		p = prompt.DenyAll{}
-	}
-	s.prompter = prompt.Serialize(p)
-}
+func (s *Service) SetPrompter(p prompt.Prompter) { s.gate.SetPrompter(p) }
 
 func (s *Service) Meta() service.Meta {
 	return service.Meta{
@@ -207,22 +195,8 @@ func (s *Service) Attach(_ context.Context, h service.Host) (service.Instance, e
 	defer s.mu.Unlock()
 
 	s.host = h
-	if !s.adopted {
-		var rules []authz.Rule
-		// GetLocal, not Get: the global rules were already loaded into this
-		// service through Options, and Get falls through to the global section
-		// when the host has no rules of its own. Reading them twice was
-		// harmless in itself, but "allow always" writes the whole slice back —
-		// so the global rules were copied into the host file, and deleting one
-		// globally left a stale copy still granting access.
-		if _, err := h.Config().GetLocal(rulesKey, &rules); err != nil {
-			// Rules that cannot be read include denies, so carrying on without
-			// them would silently widen access. Refusing to attach is the only
-			// safe reading of an unparseable policy.
-			return nil, fmt.Errorf("reading the 1Password rules for %s: %w", h.Label(), err)
-		}
-		s.store.AdoptHostRules(rules, configSaver{h.Config()})
-		s.adopted = true
+	if err := s.gate.Adopt(h.Label(), h.Config(), "1Password"); err != nil {
+		return nil, err
 	}
 	return instance{}, nil
 }
@@ -231,34 +205,34 @@ func (s *Service) Attach(_ context.Context, h service.Host) (service.Instance, e
 // "lock it back up" action, and the two have to happen together: a cached value
 // whose authorisation has been withdrawn is exactly what must not be served.
 func (s *Service) Forget() (grants, cached int) {
-	return s.store.ForgetGrants(), s.cache.Purge()
+	return s.gate.ForgetGrants(), s.cache.Purge()
 }
 
 // Rules exposes the rules devtun wrote for this host, for a caller that lists
 // or revokes them.
-func (s *Service) Rules() []authz.Rule { return s.store.Rules() }
+func (s *Service) Rules() []authz.Rule { return s.gate.Rules() }
 
 // Revoke removes the host rule at index, as numbered by Rules.
-func (s *Service) Revoke(index int) error { return s.store.Revoke(index) }
+func (s *Service) Revoke(index int) error { return s.gate.Revoke(index) }
 
 // Deny turns the host rule at index into a refusal. It only tightens: see
 // authz.Store.Deny.
-func (s *Service) Deny(index int) error { return s.store.Deny(index) }
+func (s *Service) Deny(index int) error { return s.gate.Deny(index) }
 
 // GlobalRules are the rules from the top-level config: visible so a person can
 // see everything that is deciding, and not removable here because devtun did
 // not write them.
-func (s *Service) GlobalRules() []authz.Rule { return s.store.GlobalRules() }
+func (s *Service) GlobalRules() []authz.Rule { return s.gate.GlobalRules() }
 
 // Grants lists the allowances a prompt created and that have not yet lapsed —
 // the access currently open in the user's name, as opposed to the rules on
 // disk. Forget() drops all of them at once; this is what makes it possible to
 // see one and drop just that one.
-func (s *Service) Grants() []authz.Grant { return s.store.Grants() }
+func (s *Service) Grants() []authz.Grant { return s.gate.Grants() }
 
 // RevokeGrant drops a single live grant, reporting whether it was there.
 func (s *Service) RevokeGrant(host, subject string) bool {
-	return s.store.RevokeGrant(host, subject)
+	return s.gate.RevokeGrant(host, subject)
 }
 
 // opRunner resolves the 1Password CLI once and keeps it. Probe runs on every
@@ -300,15 +274,3 @@ func (instance) Run(ctx context.Context) error {
 
 // Close releases remote state, of which there is none.
 func (instance) Close() error { return nil }
-
-// configSaver persists the host's rules through the service's slice of the host
-// config. Set marks the document dirty rather than writing it out; the session
-// saves once, on exit, which is the same bargain every other service makes.
-type configSaver struct {
-	config service.Config
-}
-
-// SaveRules stores the whole rule set under the service's "rules" key.
-func (c configSaver) SaveRules(rules []authz.Rule) error {
-	return c.config.Set(rulesKey, rules)
-}

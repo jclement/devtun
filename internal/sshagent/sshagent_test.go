@@ -157,7 +157,7 @@ func TestDenyRuleBeatsALiveGrant(t *testing.T) {
 	// rule added to block something must not be undoable by having clicked
 	// through a prompt earlier.
 	subject := subjectFor(h.key(), destination{hostKey: hostKey.PublicKey(), name: "github.com"})
-	h.svc.store.GrantSession(h.host.Label(), subject)
+	h.svc.gate.Store().GrantSession(h.host.Label(), subject)
 
 	if _, err := client.Sign(h.key(), payload); err == nil {
 		t.Fatal("a denied subject was signed because a grant was live")

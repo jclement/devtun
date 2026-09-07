@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
@@ -174,7 +175,7 @@ func TestModeSelection(t *testing.T) {
 // at that.
 func TestTheAssembledRegistry(t *testing.T) {
 	store := hostcfg.Open(t.TempDir())
-	services, tunnelSvc, opSvc, agentSvc, err := buildServices(defaults(), store, prompt.BackendDeny, false)
+	services, tunnelSvc, err := buildServices(defaults(), store, prompt.BackendDeny, false)
 	if err != nil {
 		t.Fatalf("buildServices: %v", err)
 	}
@@ -221,14 +222,35 @@ func TestTheAssembledRegistry(t *testing.T) {
 				brokers++
 			}
 		}
-		if brokers != 2 {
-			t.Errorf("found %d promptable brokers, want 1Password and the SSH agent", brokers)
+		// 1Password, the SSH agent, and the browser: every service that puts
+		// a question to a human. A count rather than a list of names, because
+		// the point is that nothing gated is missing one.
+		if brokers != 3 {
+			t.Errorf("found %d promptable brokers, want 1Password, the SSH agent and the browser", brokers)
 		}
 	})
 
-	t.Run("the concrete services are returned for the interface to drive", func(t *testing.T) {
-		if tunnelSvc == nil || opSvc == nil || agentSvc == nil {
-			t.Error("the interface needs all three to render its tabs")
+	t.Run("the tunnels service is returned for the interface to drive", func(t *testing.T) {
+		if tunnelSvc == nil {
+			t.Error("the interface renders its port table from this")
+		}
+	})
+
+	// Everything that gates something has to turn up on the Access tab, or it
+	// is access nobody can see or take back. The tab finds them by interface,
+	// so this is the check that the interface is actually implemented.
+	t.Run("every broker exposes its rules", func(t *testing.T) {
+		var brokers int
+		for _, svc := range services {
+			if _, ok := svc.(interface {
+				Rules() []authz.Rule
+				Grants() []authz.Grant
+			}); ok {
+				brokers++
+			}
+		}
+		if brokers != 3 {
+			t.Errorf("%d services expose rules, want the three that gate something", brokers)
 		}
 	})
 }
@@ -237,7 +259,7 @@ func TestTheAssembledRegistry(t *testing.T) {
 // nothing and devtun starts with no services at all.
 func TestOnlyAcceptsEveryServiceName(t *testing.T) {
 	store := hostcfg.Open(t.TempDir())
-	services, _, _, _, err := buildServices(defaults(), store, prompt.BackendDeny, false)
+	services, _, err := buildServices(defaults(), store, prompt.BackendDeny, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +283,7 @@ func TestABrokenHideListIsFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, _, _, err := buildServices(defaults(), hostcfg.Open(dir), prompt.BackendDeny, false)
+	_, _, err := buildServices(defaults(), hostcfg.Open(dir), prompt.BackendDeny, false)
 	if err == nil {
 		t.Fatal("an unparseable hide list must not be read as 'hide nothing'")
 	}
@@ -310,7 +332,7 @@ func TestPromptBackendResolution(t *testing.T) {
 // something a person can act on, rather than at the moment a secret is asked
 // for.
 func TestAnUnknownPromptBackendIsRefusedUpFront(t *testing.T) {
-	_, _, _, _, err := buildServices(defaults(), hostcfg.Open(t.TempDir()), prompt.Backend("gui"), false)
+	_, _, err := buildServices(defaults(), hostcfg.Open(t.TempDir()), prompt.Backend("gui"), false)
 	if err == nil {
 		t.Fatal("an unknown prompt backend was accepted")
 	}

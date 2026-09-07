@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/onepassword/opcli"
 	"github.com/jclement/devtun/internal/onepassword/opref"
@@ -238,7 +237,7 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 // that wants a secret it should not have would describe itself however it had
 // to.
 func (s *Service) authorize(ctx context.Context, l *link, subject string, argv []string) (allowed bool, reason string, until time.Time) {
-	asked := (&authz.Broker{Store: s.store, Prompter: s.prompter}).Authorize(ctx, prompt.Request{
+	asked := s.gate.Authorize(ctx, prompt.Request{
 		Host:    l.host,
 		Subject: subject,
 		Noun:    "secret",

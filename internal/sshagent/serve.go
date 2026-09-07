@@ -12,7 +12,6 @@ import (
 
 	"golang.org/x/crypto/ssh/agent"
 
-	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
@@ -133,7 +132,7 @@ func disconnected(ctx context.Context, err error) bool {
 // itself takes part — an agent connection carries no provenance at all, and
 // what little the protocol offers would be the remote box describing itself.
 func (s *Service) authorize(ctx context.Context, l *link, subject string, dest destination) (allowed bool, reason string) {
-	asked := (&authz.Broker{Store: s.store, Prompter: s.prompter}).Authorize(ctx, prompt.Request{
+	asked := s.gate.Authorize(ctx, prompt.Request{
 		Host:    l.host,
 		Subject: subject,
 		Noun:    "key",

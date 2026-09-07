@@ -24,7 +24,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/shim"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -42,6 +44,10 @@ var loopback = map[string]bool{
 	"localhost": true, "127.0.0.1": true, "::1": true,
 	"0.0.0.0": true, "::": true, "[::1]": true,
 }
+
+// gateKey is where this service's "ask or open" preference lives in the host's
+// config document.
+const gateKey = "gate"
 
 const (
 	// openTimeout bounds handing a URL to the platform opener.
@@ -80,15 +86,43 @@ type Options struct {
 	// noticed the port at all — so the common case is not "this port is not
 	// forwarded" but "ask again in a moment".
 	Wait time.Duration
+
+	// Rules are the global policy rules, applying to every host. The rules
+	// devtun writes when a prompt is answered "always" are per-host and live in
+	// the host's own config document.
+	Rules []authz.Rule
+	// DefaultTTL is how long a "for a while" grant lasts. Zero means five
+	// minutes.
+	DefaultTTL time.Duration
+	// PromptTimeout bounds how long an open request waits for a human. Zero
+	// means two minutes; the tool on the other end is blocked meanwhile, so it
+	// wants to be short rather than generous.
+	PromptTimeout time.Duration
+	// Prompter asks the human. Nil means nobody can be asked, which refuses
+	// everything a rule does not already allow.
+	Prompter prompt.Prompter
+	// Ask is the default answer to "must a person approve each site", used
+	// when neither the host nor the global config says.
+	//
+	// It is false. The dial for the browser bridge is the service itself —
+	// on or off, per host — and asking about every window on top of that is a
+	// prompt for something that is usually a direct consequence of a command
+	// you just typed. `gate: ask` in the config turns it on for anyone who
+	// wants a say in each one; the credential brokers, where a decision buys
+	// something a rule cannot express, ask by construction.
+	Ask *bool
 }
 
 // Service is the browser-bridge capability.
 type Service struct {
 	opts Options
+	gate *authz.Gate
 
 	mu     sync.Mutex
 	events event.Sink
 	label  string
+	// ask is this host's answer to "gate each site", resolved on attach.
+	ask bool
 }
 
 // New returns a browser service.
@@ -102,7 +136,40 @@ func New(opts Options) *Service {
 	if opts.Bind == "" {
 		opts.Bind = "127.0.0.1"
 	}
-	return &Service{opts: opts, events: event.Discard}
+	return &Service{
+		opts: opts,
+		gate: authz.NewGate(authz.Config{
+			DefaultTTL:    opts.DefaultTTL,
+			PromptTimeout: opts.PromptTimeout,
+			Rules:         opts.Rules,
+		}, opts.Prompter),
+		events: event.Discard,
+		ask:    askDefault(opts.Ask),
+	}
+}
+
+// askDefault resolves the built-in default for gating, which is off.
+func askDefault(configured *bool) bool {
+	if configured != nil {
+		return *configured
+	}
+	return false
+}
+
+// SetPrompter replaces how approvals are asked for. See authz.Gate.
+func (s *Service) SetPrompter(p prompt.Prompter) { s.gate.SetPrompter(p) }
+
+// The rules surface the interface's Access tab drives. The browser never sees
+// a secret, so it has nothing cached to purge and reports one number.
+func (s *Service) Rules() []authz.Rule       { return s.gate.Rules() }
+func (s *Service) GlobalRules() []authz.Rule { return s.gate.GlobalRules() }
+func (s *Service) Revoke(index int) error    { return s.gate.Revoke(index) }
+func (s *Service) Deny(index int) error      { return s.gate.Deny(index) }
+func (s *Service) Grants() []authz.Grant     { return s.gate.Grants() }
+func (s *Service) Forget() int               { return s.gate.ForgetGrants() }
+
+func (s *Service) RevokeGrant(host, subject string) bool {
+	return s.gate.RevokeGrant(host, subject)
 }
 
 // sink returns where to report, which is whichever host is attached now.
@@ -135,8 +202,20 @@ func (s *Service) Probe(context.Context, service.Host) service.Support {
 // shim and the socket are the session's business, and requests arrive through
 // HandleConn.
 func (s *Service) Attach(_ context.Context, h service.Host) (service.Instance, error) {
+	if err := s.gate.Adopt(h.Label(), h.Config(), "browser"); err != nil {
+		return nil, err
+	}
+	// Get, not GetLocal: `gate` is a preference, and a preference you set once
+	// globally should apply to every host that has not said otherwise. Rules
+	// are the opposite and are read with GetLocal, inside the gate.
+	ask := askDefault(s.opts.Ask)
+	var mode string
+	if ok, err := h.Config().Get(gateKey, &mode); ok && err == nil {
+		ask = mode == "ask"
+	}
+
 	s.mu.Lock()
-	s.events, s.label = h.Events(), h.Label()
+	s.events, s.label, s.ask = h.Events(), h.Label(), ask
 	s.mu.Unlock()
 	return &instance{}, nil
 }
@@ -179,7 +258,16 @@ func (s *Service) HandleConn(ctx context.Context, conn net.Conn, caller service.
 	// before it can reach a terminal. localize parses the original.
 	shown := event.SanitizeTo(request.URL, 200)
 
-	target, err := s.localize(ctx, request.URL)
+	// Ask before doing any of the work. A refused request should not spend five
+	// seconds waiting for a tunnel it is never going to open, and the question
+	// is about the site as it was asked for rather than the rewritten address —
+	// "bedev wants to open github.com" is a sentence somebody can answer.
+	err := s.approve(ctx, label, request.URL, caller, events)
+
+	var target string
+	if err == nil {
+		target, err = s.localize(ctx, request.URL)
+	}
 	if err == nil {
 		openCtx, cancel := context.WithTimeout(ctx, openTimeout)
 		err = s.opts.Open(openCtx, target)
@@ -210,6 +298,82 @@ func (s *Service) HandleConn(ctx context.Context, conn net.Conn, caller service.
 		response.Error = err.Error()
 	}
 	return shim.WriteFrame(conn, response)
+}
+
+// approve puts the site in front of a human, unless policy has already decided
+// or this host is configured not to ask.
+//
+// The subject is the site, not the URL: a grant on "github.com" covers the
+// dozen redirects an OAuth flow makes, where a grant on one URL would ask again
+// at each of them and teach the only lesson a security prompt must never teach
+// — that the way to make it stop is to keep saying yes.
+func (s *Service) approve(
+	ctx context.Context, label, raw string, caller service.Caller, events event.Sink,
+) error {
+	s.mu.Lock()
+	ask := s.ask
+	s.mu.Unlock()
+	if !ask {
+		return nil
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("not a URL: %q", raw)
+	}
+	subject := siteOf(parsed)
+
+	asked := s.gate.Authorize(ctx, prompt.Request{
+		Host:    label,
+		Subject: subject,
+		// "site", so the menu offers "Yes, this site — 5m" rather than
+		// describing a secret that is not involved.
+		Noun: "site",
+		Rows: []prompt.Row{
+			{Label: "url", Value: event.SanitizeTo(raw, 200)},
+			{Label: "caller", Value: callerName(caller)},
+		},
+	})
+	if asked.Note != "" {
+		events.Emit(event.Event{
+			Kind: "rule", Class: event.Security, Level: event.Info, Text: asked.Note,
+		})
+	}
+	if asked.Err != nil {
+		events.Emit(event.Event{
+			Kind: "rule-failed", Class: event.Security, Level: event.Warn,
+			Text: "the decision stands but could not be saved: " + asked.Err.Error(),
+		})
+	}
+	if !asked.Allowed {
+		return fmt.Errorf("refused: %s", asked.Reason)
+	}
+	return nil
+}
+
+// siteOf names what is being decided.
+//
+// A loopback URL is one of the dev box's own servers, so the port is the
+// identifying part and belongs in the subject: approving "localhost:3000" for
+// the afternoon should not also approve whatever else that box starts. A public
+// URL is identified by its host, and a non-default port is part of that.
+func siteOf(u *url.URL) string {
+	host := strings.ToLower(strings.Trim(u.Hostname(), "[]"))
+	if isLoopbackHost(host) {
+		return fmt.Sprintf("localhost:%d", portOf(u))
+	}
+	if port := u.Port(); port != "" && portOf(u) != defaultPort(u.Scheme) {
+		return host + ":" + port
+	}
+	return host
+}
+
+// defaultPort is the port a scheme implies.
+func defaultPort(scheme string) int {
+	if scheme == "https" {
+		return 443
+	}
+	return 80
 }
 
 // localize rewrites a URL printed on the remote box into one that works here.
@@ -329,8 +493,5 @@ func portOf(u *url.URL) int {
 			return n
 		}
 	}
-	if u.Scheme == "https" {
-		return 443
-	}
-	return 80
+	return defaultPort(u.Scheme)
 }
