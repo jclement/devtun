@@ -2,6 +2,7 @@ package tunnels
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/jclement/devtun/internal/tunnels/probe"
@@ -276,7 +277,7 @@ func TestGlobalHideListAppliesWithoutBeingWrittenBack(t *testing.T) {
 	m := NewManager(NewAllocator("127.0.0.1", false), &fixedDialer{addr: echo.addr()}, ManagerOptions{
 		Policy:     DefaultPolicy(),
 		Settings:   store,
-		GlobalHide: []int{port},
+		GlobalHide: mustPortSet(t, strconv.Itoa(port)),
 	})
 	t.Cleanup(m.Close)
 	m.Sync(snapshotOf(port))

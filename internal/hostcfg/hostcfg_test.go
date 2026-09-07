@@ -1,6 +1,7 @@
 package hostcfg
 
 import (
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,5 +275,49 @@ func TestGetLocalDoesNotInheritFromGlobal(t *testing.T) {
 	viaLocal = nil
 	if found, _ := store.For("bedev", "1password").GetLocal("rules", &viaLocal); !found || len(viaLocal) != 1 {
 		t.Errorf("GetLocal should return the host's own rules, got %v", viaLocal)
+	}
+}
+
+// A box that binds services to port 0 gets whatever the kernel hands out, so
+// the noisy ports differ every restart and cannot be hidden one at a time. The
+// config has to be able to say what a person actually means.
+func TestHideAcceptsPortsRangesAndMixtures(t *testing.T) {
+	tests := map[string]string{
+		"hide: 5432":                         "5432",
+		"hide: [5432, 6379]":                 "5432,6379",
+		`hide: "32768-60999"`:                "32768-60999",
+		`hide: [5432, "32768-60999"]`:        "5432,32768-60999",
+		`hide: ["5432,6379", "32768-60999"]`: "5432,6379,32768-60999",
+	}
+	for input, want := range tests {
+		t.Run(input, func(t *testing.T) {
+			var g Global
+			if err := yaml.Unmarshal([]byte(input), &g); err != nil {
+				t.Fatalf("unmarshalling %q: %v", input, err)
+			}
+			if got := g.Hide.Spec(); got != want {
+				t.Errorf("Spec() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// A malformed hide list should say so rather than being silently empty: an
+// empty hide list forwards everything, which is the wrong direction to fail in.
+func TestAMalformedHideListIsReported(t *testing.T) {
+	var g Global
+	err := yaml.Unmarshal([]byte("hide:\n  key: value\n"), &g)
+	if err == nil {
+		t.Fatal("a mapping is not a hide list and should be refused")
+	}
+}
+
+func TestAnAbsentHideListIsEmpty(t *testing.T) {
+	var g Global
+	if err := yaml.Unmarshal([]byte("setup: ask\n"), &g); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.Hide.Spec(); got != "" {
+		t.Errorf("Spec() = %q, want empty", got)
 	}
 }

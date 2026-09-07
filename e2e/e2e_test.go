@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -277,4 +279,38 @@ func TestSSHAgentRefusesToBeModifiedFromTheRemote(t *testing.T) {
 		t.Fatalf("the remote deleted a key from the workstation's agent\n%s", s.transcript())
 	}
 	s.await("the refusal to be recorded", 20*time.Second, kind("ssh-agent", "refused"))
+}
+
+// The helper is downloaded when there is nothing local to upload — the path a
+// release install always takes, and the one every other test here avoids by
+// passing --shim-binary.
+//
+// That avoidance is why two releases shipped unable to install a helper at
+// all. A test that supplies the thing under test proves only that the rest
+// works, so this one deliberately supplies nothing and lets devtun go to the
+// network for it.
+func TestTheHelperIsDownloadedWhenThereIsNothingLocal(t *testing.T) {
+	if os.Getenv("DEVTUN_E2E_NETWORK") == "" {
+		t.Skip("set DEVTUN_E2E_NETWORK=1 to run the test that downloads from GitHub")
+	}
+	box := start(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Built the way a release is, because devtun refuses to download a helper
+	// for a build with no release to take one from — and a cache directory of
+	// its own, so a helper left by an earlier run cannot make this pass
+	// without downloading anything.
+	version := latestRelease(t, repoRoot(t))
+	devtun := buildAs(t, repoRoot(t), runtime.GOOS, runtime.GOARCH, strings.TrimPrefix(version, "v"))
+
+	s := box.runDevtunNoHelper(ctx, t.TempDir(), devtun)
+
+	s.await("the helper to be downloaded", 90*time.Second, kind("session", "shim-fetching"))
+	s.await("the helper to be installed", 90*time.Second, kind("session", "shim-installed"))
+
+	out, err := box.ssh("~/.devtun/devtun-shim --devtun-shim")
+	if err != nil || !strings.Contains(out, "devtun-shim") {
+		t.Fatalf("the downloaded helper does not run on the box: %v\n%s\n%s", err, out, s.transcript())
+	}
 }

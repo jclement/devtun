@@ -238,55 +238,23 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 // that wants a secret it should not have would describe itself however it had
 // to.
 func (s *Service) authorize(ctx context.Context, l *link, subject string, argv []string) (allowed bool, reason string, until time.Time) {
-	verdict := s.store.Decide(l.host, subject)
-	switch verdict.Action {
-	case authz.ActionAllow:
-		return true, verdict.Reason, verdict.Until
-	case authz.ActionDeny:
-		return false, verdict.Reason, time.Time{}
-	}
-
-	config := s.store.Config()
-	askCtx, cancel := context.WithTimeout(ctx, config.PromptTimeout)
-	defer cancel()
-
-	choice, err := s.prompter.Ask(askCtx, prompt.Request{
+	asked := (&authz.Broker{Store: s.store, Prompter: s.prompter}).Authorize(ctx, prompt.Request{
 		Host:    l.host,
 		Subject: subject,
 		Noun:    "secret",
 		Caller:  l.caller,
-		TTL:     config.DefaultTTL,
 		// The command is shown so an unusual request is visible: `op read` and
 		// `op item get` reach the same secret, but a shape you did not expect
 		// is worth seeing before approving it.
 		Rows: []prompt.Row{{Label: "command", Value: "op " + strings.Join(argv, " ")}},
 	})
-	// Belt and braces on the prompt deadline. A Prompter is meant to abandon
-	// its question when the context fires, but this is the one decision in
-	// devtun where trusting a collaborator to have got that right is not good
-	// enough: an answer that raced the deadline must not become an allow, and
-	// checking here costs nothing.
-	if askCtx.Err() != nil {
-		return false, fmt.Sprintf("no answer within %s", config.PromptTimeout), time.Time{}
+
+	if asked.Err != nil {
+		l.failed(subject, "could not save the rule: "+asked.Err.Error())
+	} else if asked.Note != "" {
+		l.event("saved", event.Info, asked.Note)
 	}
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return false, fmt.Sprintf("no answer within %s", config.PromptTimeout), time.Time{}
-		}
-		return false, err.Error(), time.Time{}
-	}
-	// A refusal is recorded too, now that the menu can express "stop asking"
-	// and "never". Only a plain No leaves no trace.
-	outcome := authz.Record(s.store, l.host, subject, choice, config.DefaultTTL)
-	if outcome.Err != nil {
-		l.failed(subject, "could not save the rule: "+outcome.Err.Error())
-	} else if outcome.Note != "" {
-		l.event("saved", event.Info, outcome.Note)
-	}
-	if !outcome.Allowed {
-		return false, "refused at the prompt", time.Time{}
-	}
-	return true, "approved: " + choice.String(), outcome.Until
+	return asked.Allowed, asked.Reason, asked.Until
 }
 
 // trimSecret drops the newline `op read` prints after a value. Callers are

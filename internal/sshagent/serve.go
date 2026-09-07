@@ -133,24 +133,12 @@ func disconnected(ctx context.Context, err error) bool {
 // itself takes part — an agent connection carries no provenance at all, and
 // what little the protocol offers would be the remote box describing itself.
 func (s *Service) authorize(ctx context.Context, l *link, subject string, dest destination) (allowed bool, reason string) {
-	verdict := s.store.Decide(l.host, subject)
-	switch verdict.Action {
-	case authz.ActionAllow:
-		return true, verdict.Reason
-	case authz.ActionDeny:
-		return false, verdict.Reason
-	}
-
-	config := s.store.Config()
-	askCtx, cancel := context.WithTimeout(ctx, config.PromptTimeout)
-	defer cancel()
-
-	choice, err := s.prompter.Ask(askCtx, prompt.Request{
+	asked := (&authz.Broker{Store: s.store, Prompter: s.prompter}).Authorize(ctx, prompt.Request{
 		Host:    l.host,
 		Subject: subject,
 		Noun:    "key",
-		// The scope is what a subject-wide grant will actually cover, and for
-		// a key that is the destination. "Allow this key for github.com this
+		// The scope is what a subject-wide grant will actually cover, and for a
+		// key that is the destination. "Allow this key for github.com this
 		// session" is a promise someone can weigh; "allow this key" is not.
 		Scope: dest.String(),
 		// A `git push` signs several times in a row. Landing the cursor on
@@ -159,34 +147,17 @@ func (s *Service) authorize(ctx context.Context, l *link, subject string, dest d
 		// narrowest-first order, only the starting point moves.
 		Prefer: prompt.ChoiceAllowSecretSession,
 		Rows:   dest.rows(),
-		TTL:    config.DefaultTTL,
+		// Nothing about the caller: an agent connection carries no provenance
+		// at all, and what little the protocol offers would be the remote box
+		// describing itself.
 	})
-	// Belt and braces on the prompt deadline, as the 1Password broker does. A
-	// Prompter is meant to abandon its question when the context fires, but an
-	// answer that raced the deadline must not become an allow, and checking
-	// here costs nothing.
-	if askCtx.Err() != nil {
-		return false, fmt.Sprintf("no answer within %s", config.PromptTimeout)
+
+	if asked.Err != nil {
+		l.failed(subject, "could not save the rule: "+asked.Err.Error())
+	} else if asked.Note != "" {
+		l.event("saved", event.Info, asked.Note)
 	}
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return false, fmt.Sprintf("no answer within %s", config.PromptTimeout)
-		}
-		return false, err.Error()
-	}
-	// Refusals are recorded too: "no, stop asking this session" is the answer
-	// that makes this service usable during a rebase you have decided not to
-	// sign for, and "never" is how you shut a destination for good.
-	outcome := authz.Record(s.store, l.host, subject, choice, config.DefaultTTL)
-	if outcome.Err != nil {
-		l.failed(subject, "could not save the rule: "+outcome.Err.Error())
-	} else if outcome.Note != "" {
-		l.event("saved", event.Info, outcome.Note)
-	}
-	if !outcome.Allowed {
-		return false, "refused at the prompt"
-	}
-	return true, "approved: " + choice.String()
+	return asked.Allowed, asked.Reason
 }
 
 // link is one connection's surroundings: the authenticated host it arrived

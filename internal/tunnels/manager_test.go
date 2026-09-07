@@ -165,6 +165,16 @@ func newTestManager(t *testing.T, policy Policy) (*Manager, *fixedDialer, *colle
 	return m, d, c
 }
 
+// mustPortSet parses a hide spec, failing the test rather than the manager.
+func mustPortSet(t *testing.T, spec string) PortSet {
+	t.Helper()
+	set, err := ParsePortSet(spec)
+	if err != nil {
+		t.Fatalf("ParsePortSet(%q): %v", spec, err)
+	}
+	return set
+}
+
 // stateFor returns the manager's row for a remote port.
 func stateFor(t *testing.T, m *Manager, port int) State {
 	t.Helper()
@@ -918,7 +928,7 @@ func TestGloballyHiddenPortsAreCounted(t *testing.T) {
 	echo := newEchoServer(t)
 	mgr := NewManager(NewAllocator("127.0.0.1", false), &fixedDialer{addr: echo.addr()}, ManagerOptions{
 		Policy:     DefaultPolicy(),
-		GlobalHide: []int{5432},
+		GlobalHide: mustPortSet(t, "5432"),
 		Events:     &collector{},
 	})
 	t.Cleanup(mgr.Close)

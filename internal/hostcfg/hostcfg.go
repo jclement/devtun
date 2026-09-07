@@ -61,7 +61,12 @@ type Global struct {
 	// Hide lists remote ports never to forward, on any host. Empty by
 	// default: this is the one place to say "never a database, anywhere",
 	// which is a policy the user holds, not something to bake into the binary.
-	Hide []int `yaml:"hide,omitempty"`
+	//
+	// Ranges are allowed, and they are the point rather than a nicety. A box
+	// that binds services to port 0 gets whatever the kernel hands out, so the
+	// noisy ports are different every restart and cannot be hidden one at a
+	// time — `32768-60999` says the thing a person actually means.
+	Hide PortSpec `yaml:"hide,omitempty"`
 	// Setup is the default answer to editing a remote shell rc: ask, auto or
 	// never.
 	Setup string `yaml:"setup,omitempty"`
@@ -72,6 +77,42 @@ type Global struct {
 	// file's. 1Password's deny rules live here.
 	Data map[string]map[string]yaml.Node `yaml:",inline"`
 }
+
+// PortSpec is a list of ports and ranges, in the same syntax as --exclude.
+//
+// It accepts what a person would naturally write: a bare number, a range, a
+// comma-separated string, or a list mixing all three. Being fussy about which
+// of those is "correct" would be a config file arguing with its reader.
+type PortSpec []string
+
+// UnmarshalYAML accepts a scalar or a sequence, of numbers or strings.
+func (p *PortSpec) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		var value string
+		if err := node.Decode(&value); err != nil {
+			return err
+		}
+		*p = PortSpec{value}
+		return nil
+	case yaml.SequenceNode:
+		out := make(PortSpec, 0, len(node.Content))
+		for _, item := range node.Content {
+			var value string
+			if err := item.Decode(&value); err != nil {
+				return fmt.Errorf("hide: %q is not a port or a range", item.Value)
+			}
+			out = append(out, value)
+		}
+		*p = out
+		return nil
+	}
+	return fmt.Errorf("hide: expected a port, a range, or a list of them")
+}
+
+// Spec renders the list in --exclude syntax, for a parser that already knows
+// how to read it.
+func (p PortSpec) Spec() string { return strings.Join(p, ",") }
 
 // ServiceState is whether a service runs on a host.
 type ServiceState struct {

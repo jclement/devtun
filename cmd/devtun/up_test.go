@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"github.com/jclement/devtun/internal/hostcfg"
+	"github.com/jclement/devtun/internal/prompt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -158,5 +162,110 @@ func TestModeSelection(t *testing.T) {
 				t.Errorf("wantsTUI = %v, want %v", got, test.wantTUI)
 			}
 		})
+	}
+}
+
+// The assembled registry, checked as a whole.
+//
+// Every bug that reached a release lived here rather than inside a package:
+// the SSH agent got no prompter, the helper had no way to be downloaded, the
+// hide list could not express a range. Each package was correct and well
+// tested; what was wrong was how they were wired together, and nothing looked
+// at that.
+func TestTheAssembledRegistry(t *testing.T) {
+	store := hostcfg.Open(t.TempDir())
+	services, tunnelSvc, opSvc, agentSvc, err := buildServices(defaults(), store, false)
+	if err != nil {
+		t.Fatalf("buildServices: %v", err)
+	}
+
+	t.Run("every service is present and uniquely named", func(t *testing.T) {
+		want := map[string]bool{"tunnels": false, "1password": false, "ssh-agent": false, "browser": false}
+		for _, svc := range services {
+			id := svc.Meta().ID
+			seen, known := want[id]
+			if !known {
+				t.Errorf("unexpected service %q", id)
+				continue
+			}
+			if seen {
+				t.Errorf("service %q appears twice; ids are config keys and event fields", id)
+			}
+			want[id] = true
+		}
+		for id, seen := range want {
+			if !seen {
+				t.Errorf("service %q was not registered", id)
+			}
+		}
+	})
+
+	t.Run("every service has the metadata the interface needs", func(t *testing.T) {
+		for _, svc := range services {
+			m := svc.Meta()
+			if m.Title == "" || m.Glyph == "" || m.Short == "" {
+				t.Errorf("%s is missing display metadata: %+v", m.ID, m)
+			}
+			if m.Class == "" {
+				t.Errorf("%s has no event class, so its events would render as lifecycle", m.ID)
+			}
+		}
+	})
+
+	// The bug that shipped: a broker with no prompter refuses everything
+	// silently, and only the 1Password service was being given one.
+	t.Run("every broker can be given a prompter", func(t *testing.T) {
+		var brokers int
+		for _, svc := range services {
+			if _, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
+				brokers++
+			}
+		}
+		if brokers != 2 {
+			t.Errorf("found %d promptable brokers, want 1Password and the SSH agent", brokers)
+		}
+	})
+
+	t.Run("the concrete services are returned for the interface to drive", func(t *testing.T) {
+		if tunnelSvc == nil || opSvc == nil || agentSvc == nil {
+			t.Error("the interface needs all three to render its tabs")
+		}
+	})
+}
+
+// --only must be able to name every service, or a flag silently selects
+// nothing and devtun starts with no services at all.
+func TestOnlyAcceptsEveryServiceName(t *testing.T) {
+	store := hostcfg.Open(t.TempDir())
+	services, _, _, _, err := buildServices(defaults(), store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, svc := range services {
+		id := svc.Meta().ID
+		if got := filterServices(services, []string{id}); len(got) != 1 {
+			t.Errorf("--only %s selected %d services", id, len(got))
+		}
+	}
+}
+
+// A hide list that will not parse must stop devtun rather than being read as
+// empty: an empty hide list forwards everything, which is the wrong direction.
+func TestABrokenHideListIsFatal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("hide: \"not-a-port\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, _, err := buildServices(defaults(), hostcfg.Open(dir), false)
+	if err == nil {
+		t.Fatal("an unparseable hide list must not be read as 'hide nothing'")
+	}
+	if !strings.Contains(err.Error(), "hide") {
+		t.Errorf("the error should name the setting, got %v", err)
 	}
 }

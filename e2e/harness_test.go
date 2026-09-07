@@ -92,15 +92,44 @@ func start(t *testing.T) *box {
 // build compiles the binary under test for one platform. It is built rather
 // than assumed so the suite tests this working tree, not whatever is on PATH.
 func build(t *testing.T, root, goos, goarch string) string {
+	return buildAs(t, root, goos, goarch, "")
+}
+
+// buildAs is build with a version stamped in.
+//
+// A plain `go build` leaves the version as "dev", and devtun deliberately
+// refuses to download a helper for a build that has no release to take one
+// from. So the one test that exercises downloading has to be built the way a
+// release is, with a real version — which also makes it faithful: what it runs
+// is what a person installs.
+func buildAs(t *testing.T, root, goos, goarch, version string) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "devtun-"+goos+"-"+goarch)
-	cmd := exec.Command("go", "build", "-o", out, "./cmd/devtun")
+	args := []string{"build", "-o", out}
+	if version != "" {
+		args = append(args, "-ldflags",
+			"-X github.com/jclement/devtun/internal/buildinfo.version="+version)
+	}
+	cmd := exec.Command("go", append(args, "./cmd/devtun")...)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building devtun for %s/%s: %v\n%s", goos, goarch, err, output)
 	}
 	return out
+}
+
+// latestRelease is the newest tag, which is the release a downloaded helper
+// will come from.
+func latestRelease(t *testing.T, root string) string {
+	t.Helper()
+	cmd := exec.Command("git", "describe", "--tags", "--abbrev=0")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Skipf("no release tag to download a helper from: %v", err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // waitForSSH blocks until sshd is answering, so a slow container start is not
@@ -283,6 +312,26 @@ func (b *box) keyFingerprint(t *testing.T) string {
 	}
 	t.Fatalf("no fingerprint in %q", out)
 	return ""
+}
+
+// runDevtunNoHelper starts devtun with no --shim-binary, so it must find a
+// helper for the remote platform on its own.
+func (b *box) runDevtunNoHelper(ctx context.Context, cacheDir, devtun string) *stream {
+	b.t.Helper()
+	args := []string{
+		"--host-key", "no", "-i", b.keyPath, "-p", b.port,
+		"--json", "--setup", "never", "--prompt", "deny",
+		"dev@127.0.0.1",
+	}
+	cmd := exec.CommandContext(ctx, devtun, args...)
+	cmd.Env = append(os.Environ(),
+		"XDG_CONFIG_HOME="+b.t.TempDir(),
+		"XDG_CACHE_HOME="+cacheDir,
+		"HOME="+cacheDir,
+		"PATH="+b.stubBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"SSH_AUTH_SOCK="+b.agentSock,
+	)
+	return newStream(b.t, cmd)
 }
 
 func requireDocker(t *testing.T) {

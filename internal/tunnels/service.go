@@ -62,7 +62,7 @@ type Options struct {
 	Grace int
 	// GlobalHide is devtun's top-level hide list, applied to every host. It
 	// reads as a per-port hide but is never written back to a host's file.
-	GlobalHide []int
+	GlobalHide PortSet
 	// Now is injectable for deterministic tests.
 	Now func() time.Time
 }

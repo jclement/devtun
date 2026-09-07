@@ -144,7 +144,7 @@ type Manager struct {
 	// host. It reads exactly like a per-host hide but is never written back to
 	// a host's file, so removing it from the global list restores the row
 	// everywhere at once.
-	globalHide map[int]bool
+	globalHide PortSet
 	showHidden bool
 
 	settings *Store
@@ -155,8 +155,10 @@ type ManagerOptions struct {
 	Policy Policy
 	// Settings, if set, persists the user's per-port decisions.
 	Settings *Store
-	// GlobalHide is the hide list that applies to every host.
-	GlobalHide []int
+	// GlobalHide is the hide list that applies to every host. It is a PortSet
+	// rather than a list of ports so a range can be written: the ports worth
+	// hiding on a box that binds to port 0 are different every restart.
+	GlobalHide PortSet
 	// Grace is how many consecutive scans a service may be absent before its
 	// tunnel is torn down. Two absorbs a single dropped scan without leaving
 	// dead listeners around.
@@ -181,19 +183,16 @@ func NewManager(alloc *Allocator, dialer Dialer, opts ManagerOptions) *Manager {
 		opts.Policy.MaxPort = 65535
 	}
 	m := &Manager{
-		alloc:      alloc,
-		dialer:     dialer,
-		grace:      opts.Grace,
-		now:        opts.Now,
-		events:     opts.Events,
-		policy:     opts.Policy,
-		entries:    map[int]*entry{},
-		globalHide: map[int]bool{},
-		settings:   opts.Settings,
+		alloc:    alloc,
+		dialer:   dialer,
+		grace:    opts.Grace,
+		now:      opts.Now,
+		events:   opts.Events,
+		policy:   opts.Policy,
+		entries:  map[int]*entry{},
+		settings: opts.Settings,
 	}
-	for _, p := range opts.GlobalHide {
-		m.globalHide[p] = true
-	}
+	m.globalHide = opts.GlobalHide
 	if opts.Settings != nil {
 		m.showHidden = opts.Settings.View().ShowHidden
 	}
@@ -344,7 +343,7 @@ func (m *Manager) wantLocked(e *entry) want {
 	case ModeHidden:
 		return want{skip: SkipHidden}
 	}
-	if m.globalHide[e.svc.Port] {
+	if m.globalHide.Contains(e.svc.Port) {
 		return want{skip: SkipHidden}
 	}
 	if m.policy.Paused && e.pausedKeep {

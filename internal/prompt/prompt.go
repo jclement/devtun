@@ -155,6 +155,13 @@ func (r Request) ScopeSuffix() string {
 	return " for " + r.Scope
 }
 
+// PrompterFunc adapts a function to a Prompter, for a caller that has one
+// answer to give and no state to keep.
+type PrompterFunc func(context.Context, Request) (Choice, error)
+
+// Ask calls f.
+func (f PrompterFunc) Ask(ctx context.Context, r Request) (Choice, error) { return f(ctx, r) }
+
 // ErrNoPrompter is returned when a decision is needed but nobody can be asked.
 var ErrNoPrompter = errors.New("no interactive terminal available to approve this request")
 

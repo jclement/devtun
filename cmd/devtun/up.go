@@ -297,12 +297,17 @@ func buildServices(f upFlags, store *hostcfg.Store, useTUI bool) ([]service.Serv
 		return nil, nil, nil, nil, err
 	}
 
+	hide, err := tunnels.ParsePortSet(store.Global().Hide.Spec())
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("the `hide` list in your config: %w", err)
+	}
+
 	tunnelSvc := tunnels.New(tunnels.Options{
 		Policy:     policy,
 		Bind:       f.bind,
 		SamePort:   f.samePort,
 		Interval:   f.interval,
-		GlobalHide: store.Global().Hide,
+		GlobalHide: hide,
 	})
 
 	prompter, err := buildPrompter(f, useTUI)

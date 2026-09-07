@@ -78,6 +78,15 @@ First attach to a busy box forwards a lot at once. A remote postgres on 5432 wil
 hide: [5432, 6379, 3306]
 ```
 
+Ranges work too, in the same syntax as `--exclude`. That matters more than it
+sounds: a box that binds a service to port 0 gets whatever the kernel hands out,
+so the noisy ports are different every restart and cannot be hidden one at a
+time.
+
+```yaml
+hide: [5432, "32768-60999"]     # postgres, and the whole ephemeral range
+```
+
 ## The interface
 
 ```sh
