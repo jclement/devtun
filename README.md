@@ -335,11 +335,13 @@ devtun --web on bedev              # a port the kernel picks
 devtun --web 127.0.0.1:8765 bedev  # ...or one you can bookmark
 ```
 
-It **opens in your browser by itself** (`--web-open=false` if you would rather it did not), and prints the URL as well. The URL carries a token; open it once and the token becomes a cookie, so it stops appearing in your address bar — and in screenshots of it.
+It **opens in your browser by itself** (`--web-open=false` if you would rather it did not), and prints the URL as well.
+
+**The URL works exactly once.** It carries a token that is traded for a session cookie on the first request and is then dead — so the copy left behind in your browser history, or in a URL-logging extension, is not a way back in. The tab that made the trade keeps working; a second attempt on the same link says so plainly rather than failing with a bare 401. Restart devtun for a fresh one.
 
 Under the interface, `w` opens the board and copies its URL to your clipboard — over OSC 52, so it works through SSH and tmux. That is the answer to "the URL is in the log and I cannot select it": the mouse belongs to the port table, so devtun hands you the link rather than making you drag across one.
 
-The page shows the same board the interface draws: the port table with its live counters, every rule and grant that is currently deciding, and the security log streaming in. You can hide a port, unhide it, revoke a rule, revoke a grant, and ask for a reconnect. It runs *alongside* whichever interface owns your terminal rather than instead of it, so `--web` and the TUI are a fine combination — one on the second monitor, one in the pane.
+The page shows the same board the interface draws: the port table with its live counters, the security log streaming in, and — in two separate panels, because they are two different kinds of thing — the **grants** that are live now and lapsing on their own, and the **rules** that are written down and stay until revoked. You can hide a port, show the hidden ones again, revoke a rule, revoke a grant, and ask for a reconnect. A rule that came from your config file says *edit your config file* instead of offering a button that would refuse. It runs *alongside* whichever interface owns your terminal rather than instead of it, so `--web` and the TUI are a fine combination — one on the second monitor, one in the pane.
 
 **It cannot approve anything, deliberately.** A page that could approve has to be right about tokens, origins, rebinding and replay all at once, and the cost of being subtly wrong there is one of your secrets. Approvals stay where they were: the interface's modal, a desktop dialog, or the terminal.
 

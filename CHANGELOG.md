@@ -44,6 +44,22 @@ found, each verified before it was fixed.
 
 ### Added
 
+- **The web board's URL is good for exactly one use.** It is traded for a
+  session cookie on the first request and is then dead, so the copy in your
+  browser history — which auto-opening now puts there, and which the page's own
+  address-bar tidy-up cannot reach — is not a way back in. The cookie is a
+  *different* secret from the token, which is the part that matters: were it the
+  same one, the token out of history would still work as a bearer credential and
+  the one-shot would buy nothing. A second attempt on a spent link says so
+  instead of failing with a bare 401.
+- **The web board is worth leaving open.** Grants and rules are two panels
+  rather than one list, each saying what kind of thing it holds — a grant is
+  live and lapsing, with a countdown; a rule is written down until revoked. A
+  rule from your config file says *edit your config file* rather than offering a
+  button that would refuse. `show N hidden` brings hidden ports back, which the
+  page had no way to do even though the endpoint existed. Losing the devtun
+  process is now visible and clears itself when it comes back, and a reconnected
+  event stream no longer silently duplicates every line it replays.
 - **A Config tab** — `c`, or `5`. The settings that had no interface at all now
   have one: where approvals appear (`prompt:`), which services run on this host,
   the per-host and global `hide:` lists, and whether devtun offers to edit the

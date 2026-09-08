@@ -23,13 +23,19 @@
 //
 // Loopback only, and a token. A port on 127.0.0.1 is not private: every process
 // on the machine can reach it, and a web page in your browser can too. So the
-// URL carries a token that becomes a cookie, every API call needs it, and two
-// header checks stand in the way of a browser being used as the way in:
+// URL carries a token that is traded — once — for a cookie, every API call
+// needs that cookie, and two header checks stand in the way of a browser being
+// used as the way in:
 //
 //   - the Host header has to be a loopback name, which is what stops DNS
 //     rebinding — a hostname somebody else controls, pointed at 127.0.0.1;
 //   - a mutating request has to come from this origin, which is what stops a
 //     page you happened to be reading from posting to it.
+//
+// The trade is one-way and happens once. devtun opens the browser itself, so
+// the tokened URL lands in history, where nothing this program does can reach
+// it; making it worthless after the page that was opened has swapped it is the
+// only thing that keeps history from being a way in tomorrow.
 package web
 
 import (
@@ -46,6 +52,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jclement/devtun/internal/authz"
@@ -58,10 +65,20 @@ import (
 //go:embed assets/*
 var assets embed.FS
 
-// cookieName carries the token once the first request has been made with it in
-// the URL, so a bookmarked link keeps working and the token stops appearing in
-// the address bar.
+// cookieName carries the credential the URL token was traded for, so the tab
+// that did the trade keeps working and the token stops appearing in the
+// address bar.
 const cookieName = "devtun"
+
+// exchangeWindow is how long the one trade stays open.
+//
+// One page load is not always one request: a browser may prerender the URL and
+// then navigate to it, or retry a navigation it dropped, and a token that died
+// on the first of those would leave the user staring at a refusal for a link
+// devtun itself had just opened. Everything the window has to cover happens in
+// the same second; the replay it must not cover — the same URL out of history
+// — happens minutes or days later.
+const exchangeWindow = 5 * time.Second
 
 // Tunnels is the slice of the tunnels service this needs.
 type Tunnels interface {
@@ -113,11 +130,20 @@ type Options struct {
 
 // Server is the HTTP interface to one session.
 type Server struct {
-	opts  Options
+	opts Options
+	// token is the one in the URL, good for a single trade.
 	token string
-	mux   *http.ServeMux
+	// session is what the cookie carries. It is deliberately not the token:
+	// were they the same, the token out of browser history could be replayed
+	// as a cookie and the trade would have bought nothing.
+	session string
+	mux     *http.ServeMux
 	// url is filled in once the listener is bound.
 	url string
+
+	mu sync.Mutex
+	// spentAt is when the token was traded. Zero until it has been.
+	spentAt time.Time
 }
 
 // New builds the server. Nothing is listening until Run.
@@ -127,16 +153,28 @@ func New(opts Options) (*Server, error) {
 	}
 	token := opts.Token
 	if token == "" {
-		var raw [32]byte
-		if _, err := rand.Read(raw[:]); err != nil {
-			return nil, fmt.Errorf("generating a token for the web interface: %w", err)
+		generated, err := randomToken()
+		if err != nil {
+			return nil, err
 		}
-		token = base64.RawURLEncoding.EncodeToString(raw[:])
+		token = generated
+	}
+	session, err := randomToken()
+	if err != nil {
+		return nil, err
 	}
 
-	s := &Server{opts: opts, token: token, mux: http.NewServeMux()}
+	s := &Server{opts: opts, token: token, session: session, mux: http.NewServeMux()}
 	s.routes()
 	return s, nil
+}
+
+func randomToken() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generating a token for the web interface: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 // URL is the address to open, token included. It is empty until Run has bound
@@ -217,7 +255,15 @@ func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "cross-origin request refused", http.StatusForbidden)
 			return
 		}
-		if !s.authorized(w, r) {
+		ok, spent := s.authorize(w, r)
+		if spent {
+			// The one refusal a person can do something about, so it says what
+			// to do rather than leaving them to guess at a 401.
+			http.Error(w, "devtun: this link has already been used — restart devtun for a new one",
+				http.StatusUnauthorized)
+			return
+		}
+		if !ok {
 			http.Error(w, "devtun: wrong or missing token", http.StatusUnauthorized)
 			return
 		}
@@ -225,27 +271,46 @@ func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// authorized accepts the token from the URL — once, setting a cookie — or from
-// the cookie thereafter.
-func (s *Server) authorized(w http.ResponseWriter, r *http.Request) bool {
-	if token := r.URL.Query().Get("t"); token != "" && s.matches(token) {
-		http.SetCookie(w, &http.Cookie{
-			Name:     cookieName,
-			Value:    token,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
-		})
-		return true
+// authorize accepts the cookie, or trades the URL token for one. It also
+// reports whether the refusal was a token that had already been traded, which
+// is the only one worth explaining.
+//
+// The cookie is tried first, and that ordering is the whole race guard: one
+// page load makes several requests — the page, the state, the stream — and only
+// the first carries ?t=. Every request behind it already has the cookie and
+// never reaches the trade at all, and neither does a reload of the bookmarked
+// URL by the tab that did the trading.
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (ok, spent bool) {
+	if cookie, err := r.Cookie(cookieName); err == nil && matches(cookie.Value, s.session) {
+		return true, false
 	}
-	cookie, err := r.Cookie(cookieName)
-	return err == nil && s.matches(cookie.Value)
+	token := r.URL.Query().Get("t")
+	if token == "" || !matches(token, s.token) {
+		return false, false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.spentAt.IsZero() && s.opts.Now().Sub(s.spentAt) > exchangeWindow {
+		return false, true
+	}
+	if s.spentAt.IsZero() {
+		s.spentAt = s.opts.Now()
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    s.session,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	return true, false
 }
 
 // matches compares in constant time. The comparison is not the weak point here,
 // but a timing-safe compare costs nothing and removes the argument.
-func (s *Server) matches(candidate string) bool {
-	return subtle.ConstantTimeCompare([]byte(candidate), []byte(s.token)) == 1
+func matches(candidate, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(want)) == 1
 }
 
 // loopbackHost reports whether the Host header names this machine.

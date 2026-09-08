@@ -10,14 +10,20 @@
   :root {
     color-scheme: light dark;
     --bg: #16161e; --panel: #1a1b26; --line: #2f334d; --text: #c0caf5;
-    --muted: #565f89; --ok: #9ece6a; --warn: #e0af68; --err: #f7768e;
+    --muted: #737aa2; --ok: #9ece6a; --warn: #e0af68; --err: #f7768e;
     --net: #7dcfff; --sec: #bb9af7; --life: #7aa2f7;
+    --bad-bg: #2b1a20; --ask-bg: #2a2333;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: light) {
+    /* Every colour is restated, not only the greys: the dark palette's green
+       and yellow are unreadable on white, which is what a half-done light mode
+       looks like. */
     :root {
       --bg: #f4f5f8; --panel: #fff; --line: #d8dbe6; --text: #22242e;
-      --muted: #6b7089; --net: #1f7fa8; --sec: #7a4fc4; --life: #2f5fd0;
+      --muted: #626884; --ok: #2f7d32; --warn: #8a5a00; --err: #c02a3f;
+      --net: #1f7fa8; --sec: #7a4fc4; --life: #2f5fd0;
+      --bad-bg: #fdeaed; --ask-bg: #f3edfd;
     }
   }
   * { box-sizing: border-box; }
@@ -30,81 +36,141 @@
     padding: .75rem 1rem; border-bottom: 1px solid var(--line);
     position: sticky; top: 0; background: var(--bg); z-index: 2;
   }
-  h1 { font-size: 1rem; margin: 0; letter-spacing: .04em; }
+  h1 { font-size: 1rem; margin: 0; letter-spacing: .04em; font-weight: 600; }
   h1 b { color: var(--net); }
-  .dot { width: .6rem; height: .6rem; border-radius: 50%; display: inline-block; }
+  h1 span { color: var(--muted); font-weight: normal; }
+  .dot {
+    width: .6rem; height: .6rem; border-radius: 50%; display: inline-block;
+    background: var(--muted); margin-right: .35rem;
+  }
   .dot.connected { background: var(--ok); }
   .dot.connecting, .dot.reconnecting { background: var(--warn); }
-  .dot.failed, .dot.disconnected { background: var(--err); }
+  .dot.disconnected, .dot.stopped, .dot.gone { background: var(--err); }
   .grow { flex: 1; }
   .muted { color: var(--muted); }
   main { padding: 1rem; display: grid; gap: 1rem; max-width: 1100px; }
   section { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; }
   section > h2 {
+    display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap;
     font-size: .8rem; text-transform: uppercase; letter-spacing: .1em;
     margin: 0; padding: .6rem .8rem; color: var(--muted);
     border-bottom: 1px solid var(--line);
   }
+  /* Rules and grants are two kinds of thing, not two colours of row, so each
+     gets its own panel and its own sentence saying which kind it is. */
+  .what { margin: 0; padding: .5rem .8rem; color: var(--muted); font-size: .8rem;
+    border-bottom: 1px solid var(--line); }
+  .scroll { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: .4rem .8rem; white-space: nowrap; }
+  th, td { text-align: left; padding: .4rem .8rem; white-space: nowrap; vertical-align: baseline; }
   th { color: var(--muted); font-weight: normal; font-size: .8rem; }
   tbody tr { border-top: 1px solid var(--line); }
   td.wide { white-space: normal; word-break: break-word; }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .port { font-variant-numeric: tabular-nums; }
+  /* The command is the widest thing on the page and the least important word
+     in it, so it gives way rather than pushing the counters off-screen. */
+  td.proc { max-width: 26rem; overflow: hidden; text-overflow: ellipsis; }
+  .cmd { color: var(--muted); }
+  tr.dim td { color: var(--muted); }
   a { color: var(--net); }
-  button {
+  button, .toggle {
     font: inherit; font-size: .8rem; color: var(--text); background: transparent;
-    border: 1px solid var(--line); border-radius: 5px; padding: .1rem .45rem; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 5px; padding: .15rem .5rem; cursor: pointer;
   }
-  button:hover { border-color: var(--net); color: var(--net); }
+  button:hover, .toggle:hover { border-color: var(--net); color: var(--net); }
   button.danger:hover { border-color: var(--err); color: var(--err); }
-  .pill { font-size: .75rem; padding: 0 .35rem; border-radius: 4px; border: 1px solid var(--line); }
-  .allow { color: var(--ok); } .deny { color: var(--err); }
-  #log { max-height: 22rem; overflow-y: auto; padding: .4rem .8rem; }
+  .toggle { display: inline-flex; align-items: center; gap: .35rem; text-transform: none; letter-spacing: 0; }
+  .tag {
+    font-size: .7rem; padding: 0 .3rem; border-radius: 4px; margin-left: .4rem;
+    border: 1px solid var(--line); color: var(--muted);
+  }
+  .allow { color: var(--ok); } .deny { color: var(--err); } .live { color: var(--warn); }
+  .banner { padding: .5rem 1rem; border-bottom: 1px solid var(--line); font-size: .85rem; }
+  .banner.bad { background: var(--bad-bg); color: var(--err); }
+  .banner.ask { background: var(--ask-bg); }
+  .banner b { color: var(--sec); }
+  #log { max-height: min(60vh, 22rem); overflow-y: auto; padding: .4rem .8rem; }
   #log div { display: flex; gap: .6rem; }
   #log time { color: var(--muted); }
   #log .svc { width: 6rem; flex: none; }
+  #log .txt { word-break: break-word; }
   .security .svc, .security .txt { color: var(--sec); }
   .network .svc { color: var(--net); }
   .lifecycle .svc { color: var(--life); }
   .diagnostic { color: var(--muted); }
+  /* Diagnostics are rendered and then hidden rather than dropped, so ticking
+     verbose shows what already happened instead of only what happens next. */
+  body:not(.verbose) #log .diagnostic { display: none; }
   .warn .txt { color: var(--warn); } .error .txt { color: var(--err); }
-  footer { padding: 0 1rem 2rem; }
-  .empty { padding: .8rem; color: var(--muted); }
+  footer { padding: 0 1rem 2rem; font-size: .8rem; }
+  .empty { padding: .8rem; margin: 0; color: var(--muted); }
+  @media (max-width: 640px) {
+    /* A phone gets the ports, what they are, and the buttons. The byte
+       counters are the first thing to go. */
+    .opt { display: none; }
+    main { padding: .5rem; }
+    th, td { padding: .4rem .5rem; }
+    #log .svc { width: 4.5rem; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>dev<b>tun</b></h1>
-  <span><span class="dot" id="dot"></span> <span id="state">connecting</span></span>
-  <span class="muted" id="host"></span>
+  <h1>dev<b>tun</b> <span id="host"></span></h1>
+  <span><span class="dot" id="dot"></span><span id="state">connecting…</span></span>
   <span class="muted" id="counts"></span>
   <span class="grow"></span>
-  <button id="reconnect">reconnect now</button>
+  <button id="reconnect" title="drop the connection and dial the box again">reconnect</button>
 </header>
+
+<div class="banner bad" id="offline" role="status" hidden></div>
+<div class="banner ask" id="waiting" role="status" hidden></div>
 
 <main>
   <section>
-    <h2>Tunnels</h2>
-    <table>
-      <thead><tr>
-        <th>local</th><th>remote</th><th>process</th><th>via</th>
-        <th class="num">conns</th><th class="num">in</th><th class="num">out</th><th></th>
-      </tr></thead>
-      <tbody id="ports"></tbody>
-    </table>
-    <div class="empty" id="ports-empty">nothing forwarded yet</div>
+    <h2>
+      Ports <span class="muted" id="ports-count"></span>
+      <span class="grow"></span>
+      <button id="hidden-toggle" hidden></button>
+    </h2>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th scope="col">here</th><th scope="col" id="remote-head">on the box</th>
+          <th scope="col">process</th>
+          <th scope="col" class="num">conns</th>
+          <th scope="col" class="num opt">in</th><th scope="col" class="num opt">out</th>
+          <th scope="col"></th>
+        </tr></thead>
+        <tbody id="ports"></tbody>
+      </table>
+    </div>
+    <p class="empty" id="ports-empty">nothing forwarded yet</p>
   </section>
 
   <section>
-    <h2>Access — rules and live grants</h2>
-    <table><tbody id="rules"></tbody></table>
-    <div class="empty" id="rules-empty">nothing is open — every request is asked about</div>
+    <h2>Grants <span class="muted" id="grants-count"></span></h2>
+    <p class="what">answered at a prompt and live only for now — they lapse on their own, and go when devtun stops</p>
+    <div class="scroll"><table><tbody id="grants"></tbody></table></div>
+    <p class="empty" id="grants-empty">nothing is granted right now</p>
   </section>
 
   <section>
-    <h2>Activity</h2>
+    <h2>Rules <span class="muted" id="rules-count"></span></h2>
+    <p class="what">written down and remembered — each one keeps deciding, without asking, until it is revoked</p>
+    <div class="scroll"><table><tbody id="rules"></tbody></table></div>
+    <p class="empty" id="rules-empty">nothing is written down — every request is asked about</p>
+  </section>
+
+  <section>
+    <h2>
+      Activity
+      <span class="grow"></span>
+      <label class="toggle"><input type="checkbox" id="verbose"> verbose</label>
+    </h2>
     <div id="log"></div>
+    <p class="empty" id="log-empty">waiting for something to happen</p>
   </section>
 </main>
 
@@ -116,14 +182,48 @@
 <script>
 // The page is a thin renderer over two endpoints: a state snapshot it polls,
 // and an event stream it listens to. No framework, because the whole thing is
-// one table and a log, and a build step would be a worse trade than the fifty
-// lines below.
+// three tables and a log, and a build step would be a worse trade.
+//
+// Both endpoints are needed, and neither replaces the other: connection counts
+// and byte counters move with traffic and emit no event, so they can only be
+// asked for; everything that is event-shaped arrives on the stream and pulls a
+// snapshot after it, so the board is current within a frame of anything
+// happening rather than within two seconds of it.
 const $ = (id) => document.getElementById(id);
+
+let inFlight = false;
+// waiting maps a service to the request it is stuck on. A prompt blocks its
+// service, so the latest security event per service is the whole story: a
+// "requested" with nothing after it is a human being waited for.
+const waiting = new Map();
+let services = new Map();
+// noticeUntil keeps a refusal on screen for a few seconds: the poll is two
+// seconds away and would otherwise wipe the message before it was read.
+let noticeUntil = 0;
 
 async function api(path, method = "GET") {
   const response = await fetch(path, { method, credentials: "same-origin" });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
   return response.headers.get("content-type")?.includes("json") ? response.json() : null;
+}
+
+// act is every button on the page. A refusal — a grant that lapsed a second
+// ago, a rule that is not devtun's to rewrite — is worth saying out loud;
+// swallowing it leaves a button that looks like it did nothing.
+async function act(path) {
+  try {
+    await api(path, "POST");
+  } catch (err) {
+    notice(err.message);
+  }
+  refresh();
+}
+
+function notice(text) {
+  const banner = $("offline");
+  banner.textContent = text;
+  banner.hidden = false;
+  noticeUntil = Date.now() + 5000;
 }
 
 function bytes(n) {
@@ -134,6 +234,25 @@ function bytes(n) {
   return value.toFixed(value < 10 ? 1 : 0) + " " + units[i];
 }
 
+// left says how long a grant has, in the same shape the interface uses.
+function left(iso) {
+  const seconds = Math.round((new Date(iso) - Date.now()) / 1000);
+  if (seconds <= 0) return "lapsing";
+  if (seconds < 60) return seconds + "s left";
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s left";
+  return Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m left";
+}
+
+// shorten makes a command line readable in one row. The interesting words in
+// `node /home/you/.npm/_npx/38bc83.../node_modules/.bin/mcp-server barreleye`
+// are all at the end, which is exactly what an ellipsis would eat, so the
+// paths are cut down to their last component instead. The full line stays in
+// the title.
+function shorten(command) {
+  if (command.length < 60) return command;
+  return command.split(" ").map((word) => word.includes("/") ? word.slice(word.lastIndexOf("/") + 1) : word).join(" ");
+}
+
 function cell(text, className) {
   const td = document.createElement("td");
   td.textContent = text ?? "";
@@ -141,125 +260,239 @@ function cell(text, className) {
   return td;
 }
 
+function tag(text, title) {
+  const span = document.createElement("span");
+  span.className = "tag";
+  span.textContent = text;
+  if (title) span.title = title;
+  return span;
+}
+
+function who(source) {
+  const meta = services.get(source);
+  return meta ? (meta.glyph ? meta.glyph + " " : "") + meta.title : source;
+}
+
 function renderPorts(state) {
+  const ports = state.ports ?? [];
   const body = $("ports");
   body.replaceChildren();
-  for (const port of state.ports ?? []) {
+  $("remote-head").textContent = state.host ? "on " + state.host : "on the box";
+
+  for (const port of ports) {
     const tr = document.createElement("tr");
+    const hidden = port.mode === "hidden";
 
     const local = document.createElement("td");
-    if (port.url) {
+    local.className = "port";
+    if (port.local && port.url) {
       const link = document.createElement("a");
       link.href = port.url;
       link.target = "_blank";
       link.rel = "noreferrer";
-      link.textContent = port.local || "—";
+      link.textContent = port.local;
+      link.title = "open " + port.url;
       local.append(link);
+      if (port.scheme === "https") local.append(tag("tls", "devtun saw TLS on this port"));
+    } else if (port.local) {
+      local.textContent = port.local;
     } else {
-      local.textContent = port.local || "—";
+      local.textContent = "—";
+      local.className = "port muted";
     }
     tr.append(local);
 
-    tr.append(cell((port.remapped ? "≠ " : "← ") + port.remote));
-    tr.append(cell(port.label ? port.label + " · " + port.proc : port.proc, "wide"));
-    tr.append(cell(port.scheme === "unknown" ? "?" : port.scheme, "muted"));
+    const remote = cell(port.remote, "port");
+    if (port.remapped) {
+      // Two numbers that differ is the whole surprise, and the reason for it
+      // does not deserve a column of its own.
+      remote.title = "port " + port.remote + " was already taken here, so devtun moved it to " + port.local;
+      remote.append(tag("moved"));
+    }
+    tr.append(remote);
+
+    const proc = document.createElement("td");
+    proc.className = "proc";
+    const name = port.label || port.proc;
+    const command = port.cmd && port.cmd !== "?" ? port.cmd : "";
+    if (name) {
+      proc.append(document.createTextNode(name));
+      // ps reports the process as `node` and the command line as `node …`, so
+      // the argv[0] that just said the same thing is dropped.
+      const rest = command.startsWith(name + " ") ? command.slice(name.length + 1) : command;
+      if (rest && rest !== name) {
+        const detail = document.createElement("span");
+        detail.className = "cmd";
+        detail.textContent = " " + shorten(rest);
+        proc.append(detail);
+      }
+    } else if (command) {
+      proc.append(document.createTextNode(shorten(command)));
+    } else {
+      proc.append(document.createTextNode("unknown process"));
+      proc.classList.add("muted");
+    }
+    proc.title = command || name || "";
+    if (hidden) proc.append(tag("hidden", "you hid this port; devtun does not forward it"));
+    else if (port.status !== "active") proc.append(tag(port.skip || port.status));
+    tr.append(proc);
+
     tr.append(cell(port.conns, "num"));
-    tr.append(cell(bytes(port.in), "num"));
-    tr.append(cell(bytes(port.out), "num"));
+    tr.append(cell(bytes(port.in), "num opt"));
+    tr.append(cell(bytes(port.out), "num opt"));
 
     const actions = document.createElement("td");
-    const hidden = port.mode === "hidden";
     const hide = document.createElement("button");
     hide.textContent = hidden ? "unhide" : "hide";
-    hide.onclick = async () => {
-      await api(`/api/ports/${port.remote}/mode?mode=${hidden ? "auto" : "hidden"}`, "POST");
-      refresh();
-    };
+    hide.title = hidden
+      ? "forward this port again"
+      : "stop forwarding this port — it stays hidden until you unhide it";
+    hide.onclick = () => act(`/api/ports/${port.remote}/mode?mode=${hidden ? "auto" : "hidden"}`);
     actions.append(hide);
     tr.append(actions);
 
-    if (port.status !== "active") tr.classList.add("diagnostic");
+    if (hidden || port.status !== "active") tr.classList.add("dim");
     body.append(tr);
   }
-  $("ports-empty").hidden = (state.ports ?? []).length > 0;
+
+  const shown = ports.filter((port) => port.mode !== "hidden").length;
+  $("ports-count").textContent = shown ? shown + " forwarded" : "";
+
+  // Hiding a port is the one action that makes its own row disappear, so the
+  // way back has to be on the page and not in the interface's keymap.
+  const toggle = $("hidden-toggle");
+  toggle.hidden = !state.hidden && !state.showHidden;
+  toggle.textContent = state.showHidden ? "stop listing hidden" : "show " + state.hidden + " hidden";
+  toggle.onclick = () => act(`/api/hidden?show=${state.showHidden ? "false" : "true"}`);
+
+  const empty = $("ports-empty");
+  empty.hidden = ports.length > 0;
+  empty.textContent = state.hidden && !state.showHidden
+    ? "nothing forwarded — " + state.hidden + " hidden"
+    : "nothing forwarded yet — ports appear here as the box opens them";
 }
 
-function renderRules(state) {
-  const body = $("rules");
+function renderGrants(state) {
+  const grants = state.grants ?? [];
+  const body = $("grants");
   body.replaceChildren();
 
-  for (const grant of state.grants ?? []) {
+  for (const grant of grants) {
     const tr = document.createElement("tr");
-    tr.append(cell(grant.action === "deny" ? "refuse" : "grant", grant.action === "deny" ? "deny" : "warn"));
-    tr.append(cell(grant.source, "muted"));
+    const refusing = grant.action === "deny";
+    tr.append(cell(refusing ? "refuse" : "grant", refusing ? "deny" : "live"));
+    tr.append(cell(who(grant.source), "muted"));
     tr.append(cell(grant.host, "muted"));
     tr.append(cell(grant.hostWide ? "anything from " + grant.host : grant.subject, "wide"));
-    tr.append(cell(grant.expires ? "until " + new Date(grant.expires).toLocaleTimeString() : "this session", "muted"));
+    tr.append(cell(grant.expires ? left(grant.expires) : "this session", "muted"));
 
     const actions = document.createElement("td");
     const revoke = document.createElement("button");
     revoke.className = "danger";
     revoke.textContent = "revoke";
-    revoke.onclick = async () => {
-      await api(`/api/grants/revoke?source=${encodeURIComponent(grant.source)}` +
-        `&host=${encodeURIComponent(grant.host)}&subject=${encodeURIComponent(grant.subject)}`, "POST");
-      refresh();
-    };
+    revoke.title = "take this back now rather than waiting for it to lapse";
+    revoke.onclick = () => act(`/api/grants/revoke?source=${encodeURIComponent(grant.source)}` +
+      `&host=${encodeURIComponent(grant.host)}&subject=${encodeURIComponent(grant.subject)}`);
     actions.append(revoke);
     tr.append(actions);
     body.append(tr);
   }
 
-  for (const rule of state.rules ?? []) {
+  $("grants-count").textContent = grants.length ? grants.length + " live" : "";
+  $("grants-empty").hidden = grants.length > 0;
+}
+
+function renderRules(state) {
+  const rules = state.rules ?? [];
+  const body = $("rules");
+  body.replaceChildren();
+
+  for (const rule of rules) {
     const tr = document.createElement("tr");
     tr.append(cell(rule.action, rule.action === "deny" ? "deny" : "allow"));
-    tr.append(cell(rule.source, "muted"));
+    tr.append(cell(who(rule.source), "muted"));
     tr.append(cell(rule.host, "muted"));
     tr.append(cell(rule.subject, "wide"));
     tr.append(cell(rule.global ? "from your config" : rule.note ?? "", "muted"));
 
     const actions = document.createElement("td");
-    if (!rule.global) {
+    if (rule.global) {
+      // A rule out of a hand-written file is not devtun's to rewrite, so the
+      // page says where to change it rather than offering a button that fails.
+      actions.append(tag("edit your config file"));
+    } else {
       const revoke = document.createElement("button");
       revoke.className = "danger";
       revoke.textContent = "revoke";
-      revoke.onclick = async () => {
-        await api(`/api/rules/revoke?source=${encodeURIComponent(rule.source)}&index=${rule.index}`, "POST");
-        refresh();
-      };
+      revoke.title = "forget this rule — the next request asks again";
+      revoke.onclick = () => act(`/api/rules/revoke?source=${encodeURIComponent(rule.source)}&index=${rule.index}`);
       actions.append(revoke);
     }
     tr.append(actions);
     body.append(tr);
   }
 
-  const total = (state.grants ?? []).length + (state.rules ?? []).length;
-  $("rules-empty").hidden = total > 0;
+  $("rules-count").textContent = rules.length ? rules.length + " standing" : "";
+  $("rules-empty").hidden = rules.length > 0;
 }
 
 function renderHeader(state) {
   const connection = state.connection ?? {};
   $("dot").className = "dot " + (connection.state ?? "");
-  $("state").textContent = connection.detail ? connection.state + " — " + connection.detail : (connection.state ?? "");
+  $("state").textContent = connection.detail
+    ? connection.state + " — " + connection.detail
+    : (connection.state ?? "");
   $("host").textContent = state.host ?? "";
   const parts = [];
-  if ((state.ports ?? []).length) parts.push((state.ports ?? []).length + " fwd");
   if (state.hidden) parts.push(state.hidden + " hidden");
-  if (connection.uptime) parts.push(connection.uptime);
+  if (connection.uptime) parts.push("up " + connection.uptime);
   $("counts").textContent = parts.join(" · ");
   $("version").textContent = "devtun " + (state.version ?? "");
   document.title = state.host ? `devtun · ${state.host}` : "devtun";
 }
 
+function renderWaiting() {
+  const banner = $("waiting");
+  banner.replaceChildren();
+  banner.hidden = waiting.size === 0;
+  for (const [source, text] of waiting) {
+    const line = document.createElement("div");
+    const label = document.createElement("b");
+    label.textContent = who(source) + " is waiting: ";
+    line.append(label, document.createTextNode(text));
+    banner.append(line);
+  }
+  if (waiting.size) {
+    const how = document.createElement("div");
+    how.className = "muted";
+    how.textContent = "answer it where devtun is running — this page cannot approve";
+    banner.append(how);
+  }
+}
+
 async function refresh() {
+  // A snapshot that is slow to come back must not stack the next poll behind
+  // it, which is how a hung session turns into a thousand open requests.
+  if (inFlight) return;
+  inFlight = true;
   try {
     const state = await api("/api/state");
+    services = new Map((state.services ?? []).map((svc) => [svc.id, svc]));
     renderHeader(state);
     renderPorts(state);
+    renderGrants(state);
     renderRules(state);
+    renderWaiting();
+    if (Date.now() > noticeUntil) $("offline").hidden = true;
   } catch (err) {
-    $("state").textContent = "the devtun session has gone away";
-    $("dot").className = "dot failed";
+    // The board on screen is now a photograph of the past, and saying so is
+    // the difference between a stale page and a lying one.
+    $("offline").textContent = "not talking to devtun — everything below is as it last was. retrying…";
+    $("offline").hidden = false;
+    $("dot").className = "dot gone";
+    $("state").textContent = "out of touch";
+  } finally {
+    inFlight = false;
   }
 }
 
@@ -281,30 +514,49 @@ function line(e) {
 function stream() {
   const log = $("log");
   const source = new EventSource("/api/events");
+
+  source.onopen = () => {
+    // Every connection replays the history from the start, so a reconnect
+    // would otherwise leave the whole log on screen twice.
+    log.replaceChildren();
+    $("log-empty").hidden = false;
+    waiting.clear();
+    refresh();
+  };
+  // The stream drops when devtun stops, and EventSource dials again by itself.
+  // The poll is what decides whether anything is actually wrong, so ask it.
+  source.onerror = () => refresh();
+
   source.onmessage = (message) => {
     const e = JSON.parse(message.data);
-    if (e.class === "diagnostic" && !location.hash.includes("verbose")) return;
+    if (e.class === "security") {
+      if (e.kind === "requested") waiting.set(e.service, e.text);
+      else waiting.delete(e.service);
+      renderWaiting();
+    }
     const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
     log.append(line(e));
     while (log.childElementCount > 500) log.firstElementChild.remove();
     if (atBottom) log.scrollTop = log.scrollHeight;
+    $("log-empty").hidden = true;
     // Anything that changes what is open changes the board too.
     if (e.kind === "opened" || e.kind === "closed" || e.class === "security") refresh();
   };
 }
 
-$("reconnect").onclick = () => api("/api/reconnect", "POST").then(refresh);
+$("reconnect").onclick = () => act("/api/reconnect");
+$("verbose").onchange = (event) => document.body.classList.toggle("verbose", event.target.checked);
 
-// The token arrives in the URL and is swapped for a cookie on the first
-// request; taking it out of the address bar means a screenshot of this page is
-// not a way in.
-if (location.search.includes("t=")) {
-  refresh().then(() => history.replaceState(null, "", location.pathname + location.hash));
-} else {
-  refresh();
-}
+// The token was traded for a cookie by the request that fetched this page, so
+// it is already worth nothing — but it should not be sitting in the address
+// bar, or in a screenshot of it, either.
+if (location.search) history.replaceState(null, "", location.pathname + location.hash);
+
+refresh();
 stream();
-setInterval(refresh, 2000);
+// A hidden tab is nobody looking. It catches up the moment it is looked at.
+setInterval(() => { if (!document.hidden) refresh(); }, 2000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>
 </body>
 </html>

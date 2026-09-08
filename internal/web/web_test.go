@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -84,13 +85,13 @@ func newTestServer(t *testing.T, opts Options) *Server {
 	return server
 }
 
-// ask makes a request the way the page does: loopback Host, the token, and an
-// Origin that matches.
+// ask makes a request the way the page does: loopback Host, the cookie the
+// token was traded for, and an Origin that matches.
 func ask(t *testing.T, s *Server, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, nil)
 	request.Host = "127.0.0.1:9999"
-	request.AddCookie(&http.Cookie{Name: cookieName, Value: token})
+	request.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
 	if method != http.MethodGet {
 		request.Header.Set("Origin", "http://127.0.0.1:9999")
 	}
@@ -125,9 +126,11 @@ func TestNothingIsReachableWithoutTheToken(t *testing.T) {
 	}
 }
 
-// The token arrives in the URL once and becomes a cookie, so it stops being in
-// the address bar — and in every screenshot of it.
-func TestTheTokenInTheURLBecomesACookie(t *testing.T) {
+// The token arrives in the URL once and is traded for a cookie, so it stops
+// being in the address bar — and in every screenshot of it. The cookie is not
+// the token: if it were, the token out of browser history could be replayed as
+// a cookie and the trade would have bought nothing.
+func TestTheTokenInTheURLIsTradedForACookie(t *testing.T) {
 	s := newTestServer(t, Options{Tunnels: newFakeTunnels()})
 
 	request := httptest.NewRequest(http.MethodGet, "/api/state?t="+token, nil)
@@ -139,11 +142,112 @@ func TestTheTokenInTheURLBecomesACookie(t *testing.T) {
 		t.Fatalf("the token in the URL was refused: %d", recorder.Code)
 	}
 	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != cookieName || cookies[0].Value != token {
+	if len(cookies) != 1 || cookies[0].Name != cookieName || cookies[0].Value == "" {
 		t.Fatalf("no cookie was set: %+v", cookies)
+	}
+	if cookies[0].Value == token {
+		t.Error("the cookie is the URL token, so the token in browser history still opens the board")
 	}
 	if !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
 		t.Errorf("the cookie is not locked down: %+v", cookies[0])
+	}
+}
+
+// devtun opens the browser itself, so the tokened URL is in history from the
+// first second and nothing here can take it out again. What it can do is make
+// it worth nothing once the page it opened has traded it.
+func TestTheURLTokenIsGoodForOneTrade(t *testing.T) {
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	s := newTestServer(t, Options{
+		Tunnels: newFakeTunnels(),
+		Now:     func() time.Time { return now },
+	})
+
+	first := httptest.NewRequest(http.MethodGet, "/?t="+token, nil)
+	first.Host = "127.0.0.1:9999"
+	opened := httptest.NewRecorder()
+	s.mux.ServeHTTP(opened, first)
+	if opened.Code != http.StatusOK {
+		t.Fatalf("the first use of the token = %d", opened.Code)
+	}
+	cookies := opened.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("the first use set no cookie: %+v", cookies)
+	}
+	granted := cookies[0]
+
+	now = now.Add(time.Hour)
+
+	// The bookmark, reopened tomorrow in a browser that no longer has the
+	// cookie: refused, and told what to do about it.
+	replay := httptest.NewRequest(http.MethodGet, "/?t="+token, nil)
+	replay.Host = "127.0.0.1:9999"
+	refused := httptest.NewRecorder()
+	s.mux.ServeHTTP(refused, replay)
+	if refused.Code != http.StatusUnauthorized {
+		t.Errorf("the token worked twice: %d", refused.Code)
+	}
+	if !strings.Contains(refused.Body.String(), "already been used") {
+		t.Errorf("a spent token says only %q", refused.Body.String())
+	}
+
+	// Nor is the token any use as a cookie, which is the replay the separate
+	// values exist to stop.
+	asCookie := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	asCookie.Host = "127.0.0.1:9999"
+	asCookie.AddCookie(&http.Cookie{Name: cookieName, Value: token})
+	recorder := httptest.NewRecorder()
+	s.mux.ServeHTTP(recorder, asCookie)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("the URL token was accepted as a cookie: %d", recorder.Code)
+	}
+
+	// The tab that did the trade is unaffected, however long it stays open —
+	// including when it reloads the bookmarked URL it still has in its bar.
+	for _, path := range []string{"/api/state", "/api/state?t=" + token} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Host = "127.0.0.1:9999"
+		request.AddCookie(granted)
+		kept := httptest.NewRecorder()
+		s.mux.ServeHTTP(kept, request)
+		if kept.Code != http.StatusOK {
+			t.Errorf("GET %s with the cookie from the trade = %d, want 200", path, kept.Code)
+		}
+	}
+}
+
+// One page load is not one request, and a browser may prerender the URL before
+// navigating to it. Whatever arrives in that first moment has to get the same
+// cookie rather than racing the token into a refusal.
+func TestConcurrentFirstRequestsAllGetTheSameCookie(t *testing.T) {
+	s := newTestServer(t, Options{Tunnels: newFakeTunnels()})
+
+	var wait sync.WaitGroup
+	values := make([]string, 8)
+	codes := make([]int, 8)
+	for i := range values {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			request := httptest.NewRequest(http.MethodGet, "/api/state?t="+token, nil)
+			request.Host = "127.0.0.1:9999"
+			recorder := httptest.NewRecorder()
+			s.mux.ServeHTTP(recorder, request)
+			codes[i] = recorder.Code
+			if cookies := recorder.Result().Cookies(); len(cookies) == 1 {
+				values[i] = cookies[0].Value
+			}
+		}()
+	}
+	wait.Wait()
+
+	for i, code := range codes {
+		if code != http.StatusOK {
+			t.Fatalf("request %d of the page load = %d, want 200", i, code)
+		}
+		if values[i] == "" || values[i] != values[0] {
+			t.Fatalf("request %d was given a different cookie: %q vs %q", i, values[i], values[0])
+		}
 	}
 }
 
@@ -155,7 +259,7 @@ func TestAHostThatIsNotLoopbackIsRefused(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/api/state", nil)
 	request.Host = "devtun.attacker.example"
-	request.AddCookie(&http.Cookie{Name: cookieName, Value: token})
+	request.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
 	recorder := httptest.NewRecorder()
 	s.mux.ServeHTTP(recorder, request)
 
@@ -173,7 +277,7 @@ func TestACrossOriginPostIsRefused(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/ports/3000/mode?mode=hidden", nil)
 	request.Host = "127.0.0.1:9999"
 	request.Header.Set("Origin", "https://evil.example")
-	request.AddCookie(&http.Cookie{Name: cookieName, Value: token})
+	request.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
 	recorder := httptest.NewRecorder()
 	s.mux.ServeHTTP(recorder, request)
 
@@ -322,7 +426,7 @@ func TestTheEventStreamOpensWithTheHistory(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/api/events", nil)
 	request.Host = "127.0.0.1:9999"
-	request.AddCookie(&http.Cookie{Name: cookieName, Value: token})
+	request.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
 	ctx, cancel := context.WithCancel(request.Context())
 	request = request.WithContext(ctx)
 
@@ -403,6 +507,36 @@ func TestThePageIsEmbedded(t *testing.T) {
 	for _, forbidden := range []string{"https://", "http://cdn", "unpkg", "jsdelivr"} {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("the page reaches out to %q", forbidden)
+		}
+	}
+}
+
+// The page may say that an approval is waiting; it may never answer one. That
+// is the promise the package documents and the README repeats, and the way it
+// gets broken is a helpful patch teaching the page one more endpoint — so the
+// set of endpoints the page is allowed to call is written down here, and
+// adding to it has to be deliberate.
+func TestThePageCallsNothingItIsNotAllowedTo(t *testing.T) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatalf("reading the page: %v", err)
+	}
+	allowed := map[string]bool{
+		"/api/state":         true,
+		"/api/events":        true,
+		"/api/ports/*/mode":  true,
+		"/api/rules/revoke":  true,
+		"/api/grants/revoke": true,
+		"/api/reconnect":     true,
+		"/api/hidden":        true,
+	}
+
+	// A template hole stands in for whatever the page interpolates, so the
+	// path is compared and the port number is not.
+	hole := regexp.MustCompile(`\$\{[^}]*\}`)
+	for _, call := range regexp.MustCompile("/api/[^\"'`?\\s]*").FindAllString(string(page), -1) {
+		if path := hole.ReplaceAllString(call, "*"); !allowed[path] {
+			t.Errorf("the page calls %q, which is not one of the endpoints it may call", path)
 		}
 	}
 }
