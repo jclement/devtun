@@ -76,6 +76,7 @@ func Run(ctx context.Context, o Options) error {
 		status:   statusOf(o.Session),
 		retry:    retryOf(o.Session),
 		host:     o.Host,
+		webURL:   o.WebURL,
 		version:  o.Version,
 		dissolve: !o.NoDissolve,
 		openURL:  ui.OpenURL,

@@ -504,7 +504,13 @@ func (m *Model) keyBar() string {
 	default:
 		keys = append(keys, [2]string{"x", "hide"}, [2]string{"b", "browser"}, [2]string{"enter", "detail"})
 	}
-	keys = append(keys, [2]string{"c", "config"}, [2]string{"?", "help"}, [2]string{"esc", "quit"})
+	keys = append(keys, [2]string{"c", "config"})
+	// Only when there is one. A key bar advertising something that is not
+	// running is worse than one that is a hint shorter.
+	if m.d.webURL != "" {
+		keys = append(keys, [2]string{"w", "web"})
+	}
+	keys = append(keys, [2]string{"?", "help"}, [2]string{"esc", "quit"})
 
 	// Reserve room for the right-hand chip plus the border decorations.
 	budget := m.width - 6 - ansi.StringWidth(m.viewChip())

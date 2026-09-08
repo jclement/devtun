@@ -78,6 +78,8 @@ type upFlags struct {
 	gate string
 	// web, when set, serves the board over HTTP as well. "on" picks a port.
 	web string
+	// webOpen opens that page in a browser once it is listening.
+	webOpen bool
 
 	// presentation and behaviour
 	tui        bool
@@ -133,6 +135,12 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	fl.StringVar(&f.setup, "setup", "ask", "the remote shell rc: ask, auto, never")
 	fl.StringVar(&f.gate, "gate", "", "browser: ask before each site, or auto (default: your config)")
 	fl.StringVar(&f.web, "web", "", "also serve the board in a browser (\"on\", or an address like 127.0.0.1:8765)")
+	// Opening it is the default. The URL carries a token, so it is long and
+	// unmemorable by construction — and under the interface it lands in a log
+	// you cannot select with the mouse, since the mouse belongs to the table.
+	// Printing something nobody can copy and then not opening it is the worst
+	// of both.
+	fl.BoolVar(&f.webOpen, "web-open", true, "open the web board in your browser when it starts")
 	fl.BoolVar(&f.noInstall, "no-install", false, "never upload the remote helper")
 	fl.StringSliceVar(&f.only, "only", nil, "run only these services, e.g. tunnels,browser")
 }
@@ -310,6 +318,15 @@ func serveWeb(
 			return "", nil, errors.New("the web interface did not start")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if f.webOpen {
+		// Best effort, and quietly: a machine with no browser is a machine
+		// where the URL in the log is the answer, not an error to report.
+		go func() {
+			openCtx, done := context.WithTimeout(ctx, 10*time.Second)
+			defer done()
+			_ = ui.OpenURL(openCtx, server.URL())
+		}()
 	}
 	return server.URL(), cancel, nil
 }

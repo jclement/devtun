@@ -42,6 +42,7 @@ func (m *Model) helpBox() string {
 			{"g / G", "first / last"},
 			{"/", "search this tab"},
 			{"c", "settings: what is listed and how"},
+			{"w", "open the web board here, and copy its URL"},
 			{"esc, q", "quit (asks first)"},
 			{"ctrl+c", "quit immediately"},
 		}},
@@ -104,7 +105,7 @@ func (m *Model) compactHelpBox() string {
 	b.WriteString(ui.Muted.Render("everywhere") + "\n")
 	b.WriteString(row("tab, ←→, 1-4", "switch tab"))
 	b.WriteString(row("↑↓ / j k / gG", "move / first / last"))
-	b.WriteString(row("/ · c", "search · settings"))
+	b.WriteString(row("/ · c · w", "search · settings · web board"))
 	b.WriteString(ui.Muted.Render("a port") + "\n")
 	b.WriteString(row("enter, d", "detail"))
 	b.WriteString(row("x · H", "hide · list hidden"))

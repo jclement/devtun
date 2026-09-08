@@ -3,6 +3,17 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Fixed
+
+- **The web board opens itself**, and `w` in the interface opens it and copies
+  its URL. It printed a forty-character URL with a token in it into a log the
+  mouse cannot select — the mouse belongs to the port table — which is the worst
+  of both: unmemorable, and uncopyable. `--web-open=false` opts out.
+- The comic in the README is an absolute URL and clicks through to the full
+  image, so it renders wherever the README is read rather than only on GitHub.
+
 ## v0.1.7
 
 ### Changed

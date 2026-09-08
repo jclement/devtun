@@ -82,6 +82,11 @@ type deps struct {
 
 	host    string
 	version string
+	// webURL is the browser board, when one is running. It carries a token, so
+	// it is long and unmemorable — and it arrives in the activity log, which
+	// the mouse cannot select because the mouse belongs to the table. `w` is
+	// the way to get at it without asking anybody to retype forty characters.
+	webURL string
 
 	// dissolve enables the exit animation.
 	dissolve bool
@@ -658,8 +663,29 @@ func (m *Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.menu.open = true
 		m.menu.cursor = 0
 		return nil, true
+	case "w":
+		return m.openWeb(), true
 	}
 	return nil, false
+}
+
+// openWeb opens the browser board and puts its URL on the clipboard.
+//
+// Both, rather than a choice: opening it is what you wanted, and the copy is
+// for the case where the browser is on another machine — or where it opened
+// somewhere you did not expect and you want to paste it somewhere you did.
+// OSC 52 means the copy works over SSH, which is the case that matters.
+func (m *Model) openWeb() tea.Cmd {
+	if m.d.webURL == "" {
+		return m.showToast(toastMsg{text: "no web board — start devtun with --web", bad: true})
+	}
+	if err := m.openURL(m.d.webURL); err != nil {
+		// The clipboard still works, so this is a warning and not a dead end.
+		return tea.Batch(yank(m.d.webURL), m.showToast(toastMsg{
+			text: "copied the web board URL — could not open it: " + err.Error(), bad: true,
+		}))
+	}
+	return tea.Batch(yank(m.d.webURL), m.showToast(toastMsg{text: "opened the web board · URL copied"}))
 }
 
 // selectTab switches tabs, keeping each tab's own cursor.
