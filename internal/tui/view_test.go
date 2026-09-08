@@ -50,6 +50,9 @@ func TestViewNeverExceedsTheTerminalWidth(t *testing.T) {
 		row(3000, 3000, "node /a/very/long/path/to/some/server.js --with --many --flags --indeed"),
 		row(8080, 8080, strings.Repeat("x", 400)),
 		skippedRow(5432, strings.Repeat("y", 200), tunnels.SkipHidden),
+		// A bind error wraps onto a second line rather than being cut, which
+		// is a second way for a row to be wider than the frame.
+		errorRow(4000, "python3 -m http.server"),
 	}
 	secrets := &stubSecrets{rules: []authz.Rule{
 		{Host: strings.Repeat("h", 90), Subject: "op://" + strings.Repeat("v", 200), Action: authz.ActionAllow, Note: strings.Repeat("n", 80)},
@@ -282,8 +285,12 @@ func TestEightyColumnFrameKeepsTheModeColumn(t *testing.T) {
 	m := newTestModel(t, deps{tunnels: stub})
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
+	// The body used to start at the column header. It starts at the summary
+	// strip now, so the header and the rows are each one line further down —
+	// the assertion is about which columns survive 80 cells, not about where
+	// the table begins.
 	lines := strings.Split(bodyLines(m), "\n")
-	header, hiddenRow := lines[0], lines[2]
+	header, hiddenRow := lines[1], lines[3]
 	if !strings.Contains(header, " M ") {
 		t.Errorf("the mode column was dropped at 80 columns:\n%s", header)
 	}

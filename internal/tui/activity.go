@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/sahilm/fuzzy"
 
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/ui"
@@ -19,25 +20,41 @@ var logFilters = []event.Class{"", event.Security, event.Network, event.Lifecycl
 
 // reloadActivity applies the class filter and the search to the scrollback.
 func (m *Model) reloadActivity() {
-	q := strings.ToLower(strings.TrimSpace(m.search[tabActivity]))
 	rows := make([]event.Event, 0, len(m.log))
 	for _, e := range m.log {
 		if m.logFilter != "" && e.Class != m.logFilter {
 			continue
 		}
-		if q != "" && !matchesEvent(e, q) {
-			continue
-		}
 		rows = append(rows, e)
+	}
+	if q := strings.TrimSpace(m.search[tabActivity]); q != "" {
+		rows = matchEvents(rows, q)
 	}
 	m.logRows = rows
 }
 
-func matchesEvent(e event.Event, q string) bool {
-	return strings.Contains(strings.ToLower(e.Text), q) ||
-		strings.Contains(strings.ToLower(e.Service), q) ||
-		strings.Contains(strings.ToLower(e.Kind), q) ||
-		strings.Contains(string(e.Class), q)
+// matchEvents keeps the events matching a query, in the order they happened.
+//
+// The tunnel table ranks its matches and this deliberately does not: a log is
+// read by time, newest at the bottom, and a scrollback reordered by how well
+// each line scored is no longer a scrollback — the line above stops being the
+// thing that happened before.
+func matchEvents(rows []event.Event, query string) []event.Event {
+	matches := fuzzy.FindFromNoSort(query, eventNames(rows))
+	out := make([]event.Event, 0, len(matches))
+	for _, match := range matches {
+		out = append(out, rows[match.Index])
+	}
+	return out
+}
+
+// eventNames is the searchable text of each event.
+type eventNames []event.Event
+
+func (e eventNames) Len() int { return len(e) }
+
+func (e eventNames) String(i int) string {
+	return strings.Join([]string{e[i].Text, e[i].Service, e[i].Kind, string(e[i].Class)}, " ")
 }
 
 // activityView renders the scrollback, newest at the bottom — the direction a

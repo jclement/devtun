@@ -2,8 +2,9 @@ package tui
 
 import (
 	"sort"
-	"strconv"
 	"strings"
+
+	"github.com/sahilm/fuzzy"
 
 	"github.com/jclement/devtun/internal/tunnels"
 )
@@ -72,6 +73,20 @@ func sortKeyNamed(name string) SortKey {
 // is what you want to see without pressing anything; reverse flips whichever
 // direction the key considers natural.
 func sortStates(rows []tunnels.State, key SortKey, reverse, inactiveLast bool) {
+	// A search orders by how well each row matched and by nothing else. The
+	// answer to "which of these did I mean" is the ranking, so re-sorting it by
+	// port — or sinking the inactive rows under the live ones — would bury the
+	// best match somewhere in the middle of the list it was picked from.
+	if rank := searchRank; rank != nil {
+		byRank := func(i, j int) bool { return rank[rows[i].RemotePort] < rank[rows[j].RemotePort] }
+		if reverse {
+			sort.SliceStable(rows, func(i, j int) bool { return byRank(j, i) })
+			return
+		}
+		sort.SliceStable(rows, byRank)
+		return
+	}
+
 	less := func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		switch key {
@@ -126,27 +141,49 @@ func sortStates(rows []tunnels.State, key SortKey, reverse, inactiveLast bool) {
 	sort.SliceStable(rows, ordered)
 }
 
-// filterStates keeps rows matching a case-insensitive query against the port
-// numbers, the name and the process command.
+// searchRank carries the last filter's ranking, by remote port, to the sort
+// that immediately follows it.
+//
+// reloadTunnels filters and then sorts, so a slice already in score order is
+// re-sorted by port before anyone sees it and the ranking is thrown away. The
+// two are called back to back from that one place, which is why the ranking can
+// be left here rather than threaded through a signature: filterStates clears it
+// on every call, so a stale ranking cannot outlive the query that produced it.
+var searchRank map[int]int
+
+// filterStates keeps the rows matching a query, best match first.
+//
+// Fuzzy rather than substring: the query is usually a fragment of a name you
+// half remember — "pg" for postgres, "vt" for vite — and on a box forwarding
+// thirty ports typing the exact substring is the part you wanted to skip.
 func filterStates(rows []tunnels.State, query string) []tunnels.State {
-	q := strings.ToLower(strings.TrimSpace(query))
+	searchRank = nil
+	q := strings.TrimSpace(query)
 	if q == "" {
 		return rows
 	}
-	out := rows[:0:0]
-	for _, r := range rows {
-		if matches(r, q) {
-			out = append(out, r)
-		}
+	matches := fuzzy.FindFrom(q, tunnelNames(rows))
+	out := make([]tunnels.State, 0, len(matches))
+	rank := make(map[int]int, len(matches))
+	for i, match := range matches {
+		row := rows[match.Index]
+		rank[row.RemotePort] = i
+		out = append(out, row)
 	}
+	searchRank = rank
 	return out
 }
 
-func matches(r tunnels.State, q string) bool {
-	return strings.Contains(strings.ToLower(r.Cmd), q) ||
-		strings.Contains(strings.ToLower(r.Label), q) ||
-		strings.Contains(strings.ToLower(r.Proc), q) ||
-		strings.Contains(strconv.Itoa(r.RemotePort), q) ||
-		strings.Contains(strconv.Itoa(r.LocalPort), q) ||
-		strings.Contains(string(r.Status), q)
+// tunnelNames is the searchable text of each row: everything on it that names
+// the thing, so a port number and a process name are one query away from each
+// other rather than two different searches.
+type tunnelNames []tunnels.State
+
+func (t tunnelNames) Len() int { return len(t) }
+
+func (t tunnelNames) String(i int) string {
+	r := t[i]
+	return strings.Join([]string{
+		r.Label, r.Proc, r.Cmd, itoa(r.RemotePort), itoa(r.LocalPort), string(r.Status),
+	}, " ")
 }

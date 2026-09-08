@@ -687,11 +687,16 @@ func TestClickingAColumnHeaderSorts(t *testing.T) {
 			age = c
 		}
 	}
-	click(m, age.x+1, rowBody)
+	// The header used to be the first body row. The summary strip now sits
+	// above it, so the test asks where the data starts rather than counting
+	// from the top of the body — what it is really asserting is that a click
+	// on a column title sorts, not which line the titles are drawn on.
+	header := m.listTop() - 1
+	click(m, age.x+1, header)
 	if m.sortKey != SortAge {
 		t.Errorf("clicking AGE sorted by %v", m.sortKey)
 	}
-	click(m, age.x+1, rowBody)
+	click(m, age.x+1, header)
 	if !m.reverse {
 		t.Error("clicking the same header again did not reverse")
 	}
@@ -708,7 +713,9 @@ func TestClickingTheModeCellCyclesIt(t *testing.T) {
 			mode = c
 		}
 	}
-	click(m, mode.x, rowBody+1)
+	// listTop, not rowBody+1: the first data row moved down when the summary
+	// strip arrived, and the assertion is about the M cell, not the offset.
+	click(m, mode.x, m.listTop())
 	if stub.rows[0].Mode != tunnels.ModeOn {
 		t.Errorf("clicking M left the mode %q", stub.rows[0].Mode)
 	}
@@ -1029,7 +1036,7 @@ func TestTheReconnectBoxCannotBeActedThrough(t *testing.T) {
 	}
 
 	// Every visible row is still auto: nothing behind the box was touched.
-	click(m, 5, rowBody+1)
+	click(m, 5, m.listTop())
 	send(m, "x")
 	for _, st := range stub.States() {
 		if st.Mode == tunnels.ModeHidden {
