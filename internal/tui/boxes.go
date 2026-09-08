@@ -61,6 +61,7 @@ func (m *Model) tinyHelpBox() string {
 		{"x · H", "hide a port · list hidden"},
 		{"b · y", "browser · copy"},
 		{"c · /", "settings · search"},
+		{":", "every action, by name"},
 		{"m", "mouse off, to select text"},
 		{"esc, q", "quit"},
 	} {
@@ -86,6 +87,7 @@ func (m *Model) helpSections() []struct {
 			{"↑ ↓ / j k", "move"},
 			{"g / G", "first / last"},
 			{"/", "search this tab"},
+			{":", "the command palette — every action, by name"},
 			{"c", "the Config tab"},
 			{"w", "open the web board here, and copy its URL"},
 			{"m", "mouse off — lets the terminal select and copy text"},
@@ -214,7 +216,8 @@ func (m *Model) compactHelpBox() string {
 	b.WriteString(ui.Muted.Render("everywhere") + "\n")
 	b.WriteString(row("tab, ←→, 1-5", "switch tab"))
 	b.WriteString(row("↑↓ / j k / gG", "move / first / last"))
-	b.WriteString(row("/ · c · w", "search · Config tab · web board"))
+	b.WriteString(row(": · /", "every action by name · search this tab"))
+	b.WriteString(row("c · w", "Config tab · web board"))
 	b.WriteString(row("m · R", "mouse off (select text) · reconnect"))
 	b.WriteString(ui.Muted.Render("a port") + "\n")
 	b.WriteString(row("enter, d", "detail"))

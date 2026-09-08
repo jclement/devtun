@@ -163,6 +163,7 @@ The interface:
 
 | | |
 |---|---|
+| `:` | **the command palette** — every action by name, with the key that runs it |
 | `↑↓` / `j k`, `g` / `G`, `pgup` / `pgdn` | move |
 | `tab`, `← →` / `1`–`4` | switch tabs |
 | `x` | **hide this port** — remembered per host |
@@ -179,7 +180,9 @@ The interface:
 | `r` · `D` | Access tab: revoke a rule or grant · rewrite an allow as a deny |
 | `esc`, `q` | quit — it asks, then dissolves the screen in green rain |
 
-It's clickable too, because it's 2026 and you have a mouse.
+Don't learn any of that. Press `:` and type what you want — "hide", "revoke", "browser", "prompt" — and it tells you which tab it lives on and which key runs it. The keyboard is twenty-five keys deep across five tabs and the same letter deliberately means different things on different ones; the palette is how you stop caring, and it teaches its own way out of a job.
+
+It's clickable too, because it's 2026 and you have a mouse — and `m` hands the mouse back to your terminal when you want to select and copy text instead.
 
 ## Your SSH keys, without handing them over
 

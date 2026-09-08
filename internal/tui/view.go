@@ -96,6 +96,8 @@ func (m *Model) frame() string {
 
 	view := m.baseView()
 	switch {
+	case m.cmd.open:
+		view = overlayCenter(view, m.paletteBox(), m.width, m.height)
 	case m.approval != nil:
 		view = overlayCenter(view, m.approvalBox(), m.width, m.height)
 	case m.setup != nil:
@@ -545,7 +547,9 @@ func (m *Model) keyBar() string {
 	if m.d.webURL != "" {
 		keys = append(keys, [2]string{"w", "web"})
 	}
-	keys = append(keys, [2]string{"?", "help"}, [2]string{"esc", "quit"})
+	// `:` before `?`: it is the shorter path to the same knowledge, and the one
+	// somebody arriving from any other modern tool will already try.
+	keys = append(keys, [2]string{":", "commands"}, [2]string{"?", "help"}, [2]string{"esc", "quit"})
 
 	// Reserve room for the right-hand chip plus the border decorations.
 	budget := m.width - 6 - ansi.StringWidth(m.viewChip())

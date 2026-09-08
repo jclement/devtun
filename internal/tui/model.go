@@ -151,6 +151,7 @@ const (
 	editorLocalPort
 	editorPortLabel
 	editorConfigValue
+	editorCommand
 )
 
 // noSelection is the cursor value meaning "nothing highlighted yet".
@@ -210,6 +211,8 @@ type Model struct {
 
 	showHelp   bool
 	showDetail bool
+	// cmd is the command palette, opened with `:`.
+	cmd palette
 	// mouseOff suspends mouse reporting so the terminal's own selection works
 	// again. See View: while devtun is reading the mouse, you cannot drag
 	// across a URL to copy it.
@@ -310,7 +313,7 @@ func (m *Model) editing() bool { return m.editor != editorNone }
 // connection was gone.
 func (m *Model) overlayOpen() bool {
 	return m.approval != nil || m.setup != nil || m.confirming || m.showHelp ||
-		m.showDetail || m.protocolPrompt || m.editing() || m.offline()
+		m.showDetail || m.protocolPrompt || m.editing() || m.offline() || m.cmd.open
 }
 
 // Update handles one message.
@@ -643,6 +646,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if m.confirming {
 		return m.handleConfirmKey(msg)
 	}
+	// Before the editor, which the palette borrows for its own input line.
+	if m.cmd.open {
+		return m.handlePaletteKey(msg)
+	}
 	if m.editing() {
 		return m.handleEditorKey(msg)
 	}
@@ -740,6 +747,9 @@ func (m *Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 
 	case "/":
 		m.openSearch()
+		return nil, true
+	case ":":
+		m.openPalette()
 		return nil, true
 	case "?":
 		m.showHelp = !m.showHelp

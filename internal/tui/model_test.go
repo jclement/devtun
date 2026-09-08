@@ -1055,3 +1055,100 @@ func TestReconnectHasAKeyOfItsOwn(t *testing.T) {
 		t.Errorf("R did not reconnect while connected (%d)", retried)
 	}
 }
+
+// --- the command palette ---------------------------------------------------
+
+// `:` then a word. The point is not that it runs the action — a key already
+// does — but that it names the key, so it teaches its own way out of a job.
+func TestThePaletteFindsAnActionAndNamesItsKey(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node"))})
+	send(m, ":")
+	typeIn(m, "hide")
+
+	view := plainView(m)
+	if !strings.Contains(view, "Hide this port") {
+		t.Fatalf("the palette did not find it:\n%s", view)
+	}
+	if !strings.Contains(view, "Tunnels") || !strings.Contains(view, "x") {
+		t.Errorf("the palette does not say where it lives or what runs it:\n%s", view)
+	}
+	// "hidden" does not contain "hide", so the aliases are load-bearing.
+	if !strings.Contains(view, "Show the ports you have hidden") {
+		t.Errorf("searching for hide did not offer unhiding:\n%s", view)
+	}
+}
+
+// An action from another tab switches to that tab before running, or the
+// palette would be five palettes and you would have to know which one you were
+// in — which is the problem it exists to solve.
+func TestThePaletteGoesToTheTabTheActionLivesOn(t *testing.T) {
+	secrets := &stubSecrets{rules: []authz.Rule{
+		{Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: authz.ActionAllow},
+	}}
+	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node")), secrets: oneSource(secrets)})
+	if m.tab != tabTunnels {
+		t.Fatalf("this test starts on the Tunnels tab, not %v", m.tab)
+	}
+
+	send(m, ":")
+	typeIn(m, "forget")
+	send(m, "enter")
+
+	if m.tab != tabAccess {
+		t.Errorf("running an Access action left us on %v", m.tab)
+	}
+	if !secrets.forgot {
+		t.Error("the action did not run")
+	}
+}
+
+// An action that cannot work is left out rather than offered and refused.
+func TestThePaletteOmitsWhatCannotBeDone(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub()})
+	send(m, ":")
+	typeIn(m, "web board")
+	if strings.Contains(plainView(m), "Open the web board") {
+		t.Errorf("the palette offered the web board with none running:\n%s", plainView(m))
+	}
+
+	send(m, "esc")
+	m.d.webURL = "http://127.0.0.1:8765/"
+	send(m, ":")
+	typeIn(m, "web board")
+	if !strings.Contains(plainView(m), "Open the web board") {
+		t.Errorf("the palette hid the web board while one was running:\n%s", plainView(m))
+	}
+}
+
+// The palette runs each tab's own key handler, so it cannot drift into being a
+// second implementation of every action. This is the check that the catalogue
+// has not gone stale: every key a tab handles should be findable.
+func TestEveryTabKeyIsInThePalette(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub()})
+
+	listed := map[tab]map[string]bool{}
+	for _, act := range m.actions() {
+		if listed[act.tab] == nil {
+			listed[act.tab] = map[string]bool{}
+		}
+		listed[act.tab][act.key] = true
+	}
+
+	// The keys each tab handles, kept beside the handlers they mirror. A key
+	// added to a tab and not added here is a key the palette cannot find.
+	for _, want := range []struct {
+		tab  tab
+		keys []string
+	}{
+		{tabTunnels, []string{"x", "H", "a", "b", "y", "t", "l", "n", "p", "s", "r", "enter"}},
+		{tabActivity, []string{"f", "y", "enter"}},
+		{tabAccess, []string{"r", "D", "y", "F"}},
+		{tabServices, []string{"e"}},
+	} {
+		for _, key := range want.keys {
+			if !listed[want.tab][key] {
+				t.Errorf("%s: the palette has no entry for %q", want.tab, key)
+			}
+		}
+	}
+}

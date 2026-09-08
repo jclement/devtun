@@ -3,6 +3,26 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Added
+
+- **A command palette on `:`.** Every action devtun has, searchable by name,
+  each showing the tab it lives on and the key that runs it. Choosing one
+  switches to that tab first, so the row it acts on is in front of you rather
+  than on a screen you never saw.
+
+  The keyboard is about twenty-five keys deep across five tabs, and the same
+  letter deliberately means different things on different ones — `r` is
+  reverse-sort here and revoke there. That is fine for hands that know it and
+  hostile to everyone else, and the honest answer to "the help is a wall of
+  text" is not a shorter wall. Showing the key next to every entry is what makes
+  the palette teach its own way out of a job.
+
+  Each entry runs the tab's own key handler rather than reimplementing it, so
+  the two cannot drift, and a test walks the tabs' handlers and fails on any key
+  the catalogue has forgotten.
+
 ## v0.1.8
 
 ### Fixed
