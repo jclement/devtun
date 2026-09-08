@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -302,6 +303,192 @@ func (s *Store) SetEnabled(label, serviceID string, enabled bool) {
 	}
 	h.Services[serviceID] = ServiceState{Enabled: &enabled}
 	s.dirty[label] = true
+}
+
+// Where the Config tab addresses a setting: a section and a key, read and
+// written at exactly one level.
+//
+// An empty section is the top of the file, where the settings are named struct
+// fields rather than free-form documents — hence the constants, since there is
+// nothing to look them up in. SectionServices is the `services:` map both files
+// carry. Anything else is a service's own section.
+const (
+	SectionServices = "services"
+
+	KeyPrompt = "prompt"
+	KeySetup  = "setup"
+	KeyHide   = "hide"
+)
+
+// Setting reads one value at exactly one level: the host file when label names
+// a host, the global file when it is empty. A service's on/off state reads back
+// as "true" or "false" under SectionServices.
+//
+// Empty means that file does not set it, which is a third answer the resolving
+// readers above deliberately collapse. An interface showing the settings cannot
+// afford to: `auto` without saying whether that is this host's answer or the
+// fall-through is a value nobody can act on.
+func (s *Store) Setting(label, section, key string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch section {
+	case "":
+		return s.topSetting(label, key)
+	case SectionServices:
+		states := s.global.Services
+		if label != "" {
+			states = s.host(label).Services
+		}
+		if state, ok := states[key]; ok && state.Enabled != nil {
+			return strconv.FormatBool(*state.Enabled)
+		}
+		return ""
+	}
+
+	data := s.global.Data
+	if label != "" {
+		data = s.host(label).Data
+	}
+	node, ok := lookup(data, section, key)
+	if !ok {
+		return ""
+	}
+	return scalarOf(node)
+}
+
+// SetSetting records a value at one level.
+//
+// An empty value removes the setting rather than writing a blank one: clearing
+// a host's answer has to fall back to the global file, not pin whatever it
+// happened to be showing at the time.
+func (s *Store) SetSetting(label, section, key, value string) error {
+	value = strings.TrimSpace(value)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var err error
+	switch section {
+	case "":
+		err = s.setTopSetting(label, key, value)
+	case SectionServices:
+		err = s.setServiceState(label, key, value)
+	default:
+		err = s.setSectionValue(label, section, key, value)
+	}
+	if err != nil {
+		return err
+	}
+	if label == "" {
+		s.dirty[globalKey] = true
+	} else {
+		s.dirty[label] = true
+	}
+	return nil
+}
+
+// topSetting reads a named field of one of the two documents. The host file has
+// only one of them; asking it for a global-only setting is answered with "not
+// set here" rather than an error, because the caller is a list of rows and the
+// row is about to say which level it lives at anyway.
+func (s *Store) topSetting(label, key string) string {
+	if label != "" {
+		if key == KeyPrompt {
+			return strings.TrimSpace(s.host(label).Prompt)
+		}
+		return ""
+	}
+	switch key {
+	case KeyPrompt:
+		return strings.TrimSpace(s.global.Prompt)
+	case KeySetup:
+		return strings.TrimSpace(s.global.Setup)
+	case KeyHide:
+		return s.global.Hide.Spec()
+	}
+	return ""
+}
+
+func (s *Store) setTopSetting(label, key, value string) error {
+	if label != "" {
+		if key != KeyPrompt {
+			return fmt.Errorf("%s is a global setting, not a per-host one", key)
+		}
+		s.host(label).Prompt = value
+		return nil
+	}
+	switch key {
+	case KeyPrompt:
+		s.global.Prompt = value
+	case KeySetup:
+		s.global.Setup = value
+	case KeyHide:
+		s.global.Hide = nil
+		if value != "" {
+			s.global.Hide = PortSpec{value}
+		}
+	default:
+		return fmt.Errorf("unknown setting %q", key)
+	}
+	return nil
+}
+
+func (s *Store) setServiceState(label, serviceID, value string) error {
+	states := &s.global.Services
+	if label != "" {
+		states = &s.host(label).Services
+	}
+	if value == "" {
+		delete(*states, serviceID)
+		return nil
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return fmt.Errorf("%s: %q is not on or off", serviceID, value)
+	}
+	if *states == nil {
+		*states = make(map[string]ServiceState)
+	}
+	(*states)[serviceID] = ServiceState{Enabled: &enabled}
+	return nil
+}
+
+func (s *Store) setSectionValue(label, section, key, value string) error {
+	data := &s.global.Data
+	if label != "" {
+		data = &s.host(label).Data
+	}
+	if value == "" {
+		if keys, ok := (*data)[section]; ok {
+			delete(keys, key)
+		}
+		return nil
+	}
+	node, err := toNode(value)
+	if err != nil {
+		return fmt.Errorf("encoding %s.%s: %w", section, key, err)
+	}
+	store(data, section, key, node)
+	return nil
+}
+
+// scalarOf renders a stored document as the single line a settings screen can
+// edit: a scalar as itself, a sequence joined with commas — which is the syntax
+// the port lists already accept back, so a list somebody hand-wrote reads out
+// as something they can edit and hand in again.
+func scalarOf(node yaml.Node) string {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		return node.Value
+	case yaml.SequenceNode:
+		parts := make([]string, 0, len(node.Content))
+		for _, item := range node.Content {
+			parts = append(parts, item.Value)
+		}
+		return strings.Join(parts, ",")
+	}
+	return ""
 }
 
 // For returns the service.Config view for one service on one host. Reads fall

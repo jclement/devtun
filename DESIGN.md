@@ -155,12 +155,15 @@ the `hide` lists are for — the global one in `config.yaml`, and the same key i
 a host file's `tunnels:` section for ports that are noisy on one box only, which
 is most of them. Ranges are the reason both exist.
 
-devtun reads those lists and never writes them. A hide list is prose somebody
-wrote; rewriting `32768-60999` as the four ports that happened to be up would
-destroy what it meant. Which also means the two mechanisms have to be readable
-apart: `x` writes `mode: hidden` against a port, and an explicit `mode: on`
-beats every hide list, so a single port can be pulled back out of a hidden range
-without editing the file.
+devtun never *derives* those lists. A hide list is prose somebody wrote;
+rewriting `32768-60999` as the four ports that happened to be up would destroy
+what it meant, so nothing devtun learns from a scan is ever written back into
+one. The Config tab edits them, which is a different act: it saves the text a
+person typed, refuses it if it will not parse, and leaves a range a range.
+Which also means the two mechanisms have to be readable apart: `x` writes
+`mode: hidden` against a port, and an explicit `mode: on` beats every hide list,
+so a single port can be pulled back out of a hidden range without editing the
+file.
 
 One precedence call worth recording, because it differs from autotun and someone
 will wonder. **`--exclude` beats a stored `mode: on`.** autotun let `on` win.
@@ -383,6 +386,34 @@ somewhere other than loopback the whole top edge is drawn in the danger colour.
 A LAN-exposed session is the one condition on screen where the cost of not
 noticing is somebody else reaching your dev box, and a warning rendered at the
 same weight as `3 fwd` is one you have stopped seeing by the second day.
+
+**10c. A setting is a value *and* the file it came from.** The Config tab is a
+tab rather than the popup it replaced because of one column. With a global file
+and a file per host, `prompt: auto` on screen answers nothing on its own — the
+question somebody has is whether that is this box's answer or the fall-through,
+and only the second of those can be changed by editing the other file. So every
+row carries where its value came from, `g` arms which file the next edit lands
+in, and an edit is written at exactly one level: setting one box's preference
+must never quietly rewrite the one every other box was using.
+
+Two consequences. Clearing a level is a value of its own — `inherit` — because
+removing a key and writing a blank one are different things, and only the first
+falls back. And the levels are read separately rather than resolved, which is
+why `hostcfg.Setting` exists beside `Store.Prompt`: the resolving reader is
+right for a session and useless for a screen.
+
+The one row that cannot honour this is a service's own setting, because
+`service.Setting` hands a service one document and asks for a string back. Those
+report `host`, which is where an edit lands. Extending that seam to levels is
+deferred, not forgotten.
+
+**10d. A setting that will not work here says so on the row.** `prompt: dialog`
+on a machine with no osascript, zenity, kdialog or yad falls back to asking in
+the terminal — correct behaviour, and completely invisible from a screen that
+renders the word "dialog" and stops there. The row names what to install
+instead, from `prompt.ChooserNames`, and choosing it anyway is allowed with a
+warning rather than refused: the file may be exactly right on the machine it is
+synced to next.
 
 **11. The bus delivers synchronously, under its lock.** That is only safe because
 every subscriber is required to be non-blocking — the renderers write to a

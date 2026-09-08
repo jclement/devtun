@@ -261,6 +261,15 @@ Narrowest first, and every approval sits above every refusal, so overshooting do
 
 ### Where you get asked
 
+Press `c` for the **Config** tab and it is the first row. Every row there says
+which file its value came from — `host`, `global` or `default` — and `g` arms
+which of the two your edit lands in, because a settings screen for a tool with
+two levels of config that doesn't tell you which one you're looking at is a
+settings screen you can't trust. The approvals row also tells you what *this*
+machine can actually draw a dialog with, and names what to install if the answer
+is nothing.
+
+
 Three places, and it is a setting rather than only a flag, because the right
 answer is a property of the machine you sit at:
 
@@ -390,7 +399,7 @@ The remote half runs the *same* code a session does — the same connector, the 
 
 One file per host, because the per-host state *is* the interesting state: it's what you hand-edit, diff, and copy to another laptop.
 
-**Every service is on or off per host, and that's the main dial.** Press `e` on the Services tab, or toggle it in the `c` popup, or write it in the host file — all three land in the same place, and it applies from the next connection. `--only tunnels,browser` does it for one run. A box that has no business signing with your keys simply doesn't get the agent; you don't have to say no to it every day.
+**Every service is on or off per host, and that's the main dial.** Press `e` on the Services tab, or change it on the **Config** tab, or write it in the host file — all three land in the same place, and it applies from the next connection. `--only tunnels,browser` does it for one run. A box that has no business signing with your keys simply doesn't get the agent; you don't have to say no to it every day.
 
 ```yaml
 # hosts/bedev.yaml
@@ -426,7 +435,7 @@ The ones you'll actually use:
 | `--same-port` | never remap; a busy local port is an error |
 | `--cache` | hold fetched secrets in memory (see below) |
 | `--prompt` | `auto`, `tui`, `dialog`, `deny` — overrides `prompt:` in your config |
-| `--setup` | the remote rc: `ask`, `auto`, `never` |
+| `--setup` | the remote rc: `ask`, `auto`, `never` (default: your config, else ask) |
 | `--web` | also serve the board in a browser: `on`, or an address (it opens by itself) |
 | `--wait` | keep retrying until the box finishes booting |
 | `-i`, `-l`, `-p`, `-J` | as `ssh(1)` — and they work on `doctor` and `install` too |

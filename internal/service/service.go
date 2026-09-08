@@ -241,14 +241,14 @@ type Advisor interface {
 	SetupLines(h Host) []string
 }
 
-// Configurable exposes settings for the TUI's config popup. Settings change
-// what you look at; they never start or stop anything, which is a different
-// question and conflating the two produces surprises.
+// Configurable exposes settings for the TUI's Config tab. Settings change what
+// you look at; they never start or stop anything, which is a different question
+// and conflating the two produces surprises.
 type Configurable interface {
 	Settings() []Setting
 }
 
-// Setting is one toggle or choice in the config popup.
+// Setting is one toggle or choice on the Config tab.
 type Setting struct {
 	Key     string
 	Title   string

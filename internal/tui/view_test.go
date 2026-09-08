@@ -34,7 +34,7 @@ func TestViewRendersTheTable(t *testing.T) {
 	view := plainView(m)
 
 	for _, want := range []string{
-		"devtun", "bedev", "Tunnels", "Activity", "Access", "Services",
+		"devtun", "bedev", "Tunnels", "Activity", "Access", "Services", "Config",
 		"LOCAL", "REMOTE", "PROCESS", "3000", "9090", "node vite", "connected", "2 fwd",
 	} {
 		if !strings.Contains(view, want) {
@@ -59,10 +59,10 @@ func TestViewNeverExceedsTheTerminalWidth(t *testing.T) {
 	}}}
 
 	for _, width := range []int{40, 41, 60, 80, 100, 200} {
-		for _, tb := range []tab{tabTunnels, tabActivity, tabAccess, tabServices} {
+		for _, tb := range []tab{tabTunnels, tabActivity, tabAccess, tabServices, tabConfig} {
 			stub := newStub(rows...)
 			stub.prefs.ShowHidden = true
-			m := newTestModel(t, deps{tunnels: stub, secrets: oneSource(secrets), services: services, store: newStubStore()})
+			m := newTestModel(t, deps{tunnels: stub, secrets: oneSource(secrets), services: services, store: newTestStore(t)})
 			m.Update(tea.WindowSizeMsg{Width: width, Height: 20})
 			m.tab = tb
 			m.Update(eventMsg(event.Event{
@@ -71,9 +71,16 @@ func TestViewNeverExceedsTheTerminalWidth(t *testing.T) {
 			}))
 			m.move(1)
 
-			for _, overlay := range []string{"", "?", "c", "enter"} {
+			// The overlays that can be over any tab, plus the Config tab's own
+			// editor, which draws into the bottom border where an overlong
+			// value would push the frame wider rather than wrap it.
+			for _, overlay := range []string{"", "?", "enter"} {
 				if overlay != "" {
 					send(m, overlay)
+				}
+				if tb == tabConfig {
+					m.editor, m.editorSetting = editorConfigValue, "hide.host"
+					m.input.SetValue(strings.Repeat("9", 400))
 				}
 				for _, line := range strings.Split(m.frame(), "\n") {
 					if w := ansi.StringWidth(line); w > width {
@@ -81,6 +88,7 @@ func TestViewNeverExceedsTheTerminalWidth(t *testing.T) {
 							tb, width, overlay, w, ansi.Strip(line))
 					}
 				}
+				m.closeEditor()
 				if overlay != "" {
 					send(m, "esc")
 				}
@@ -175,7 +183,7 @@ func TestTickerShowsTheMostRecentUnderEveryTab(t *testing.T) {
 		}))
 	}
 
-	for _, tb := range []tab{tabTunnels, tabActivity, tabAccess, tabServices} {
+	for _, tb := range []tab{tabTunnels, tabActivity, tabAccess, tabServices, tabConfig} {
 		m.tab = tb
 		view := plainView(m)
 		for _, want := range texts[1:] {

@@ -82,11 +82,11 @@ func (m *Model) helpSections() []struct {
 		keys  [][2]string
 	}{
 		{"everywhere", [][2]string{
-			{"tab, ← →, 1-4", "switch tab"},
+			{"tab, ← →, 1-5", "switch tab"},
 			{"↑ ↓ / j k", "move"},
 			{"g / G", "first / last"},
 			{"/", "search this tab"},
-			{"c", "settings: what is listed and how"},
+			{"c", "the Config tab"},
 			{"w", "open the web board here, and copy its URL"},
 			{"m", "mouse off — lets the terminal select and copy text"},
 			{"R", "reconnect now"},
@@ -119,6 +119,11 @@ func (m *Model) helpSections() []struct {
 		}},
 		{"services", [][2]string{
 			{"e", "on or off for this host, from the next connection"},
+		}},
+		{"config — the value, and which file said so", [][2]string{
+			{"← →, space", "change the setting under the cursor"},
+			{"enter", "change it, or open the editor for a list"},
+			{"g", "aim edits at this host or at every host"},
 		}},
 		{"mouse", [][2]string{
 			{"click", "select a row, or a tab, or a key bar action"},
@@ -207,9 +212,9 @@ func (m *Model) compactHelpBox() string {
 	var b strings.Builder
 	b.WriteString(ui.Banner.Render("devtun "+m.d.version) + "\n")
 	b.WriteString(ui.Muted.Render("everywhere") + "\n")
-	b.WriteString(row("tab, ←→, 1-4", "switch tab"))
+	b.WriteString(row("tab, ←→, 1-5", "switch tab"))
 	b.WriteString(row("↑↓ / j k / gG", "move / first / last"))
-	b.WriteString(row("/ · c · w", "search · settings · web board"))
+	b.WriteString(row("/ · c · w", "search · Config tab · web board"))
 	b.WriteString(row("m · R", "mouse off (select text) · reconnect"))
 	b.WriteString(ui.Muted.Render("a port") + "\n")
 	b.WriteString(row("enter, d", "detail"))
@@ -222,6 +227,7 @@ func (m *Model) compactHelpBox() string {
 	b.WriteString(row("f", "activity: filter by class"))
 	b.WriteString(row("r · D · y · F", "access: revoke · deny · copy ref · forget"))
 	b.WriteString(row("e", "services: on/off for this host"))
+	b.WriteString(row("←→ · g", "config: change · this host or every host"))
 	b.WriteString(ui.Muted.Render("leave") + "\n")
 	b.WriteString(row("esc, q / ^C", "ask to quit / quit now"))
 	b.WriteString(ui.Muted.Render("? or esc to close"))

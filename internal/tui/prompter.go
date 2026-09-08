@@ -148,7 +148,6 @@ func (m *Model) openApproval(msg approvalMsg) tea.Cmd {
 	}
 	// A request is worth interrupting whatever else is open for.
 	m.showHelp, m.showDetail, m.protocolPrompt, m.confirming = false, false, false, false
-	m.menu.open = false
 	m.closeEditor()
 	m.approval = &approvalState{
 		request: msg.request, options: msg.options, reply: msg.reply,

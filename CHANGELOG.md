@@ -44,6 +44,24 @@ found, each verified before it was fixed.
 
 ### Added
 
+- **A Config tab** — `c`, or `5`. The settings that had no interface at all now
+  have one: where approvals appear (`prompt:`), which services run on this host,
+  the per-host and global `hide:` lists, and whether devtun offers to edit the
+  remote shell rc.
+
+  Every row says **which file its value came from** — `host`, `global`, or
+  `default` — and `g` arms which level your edit lands in. A configuration
+  screen for a tool with two levels of config that does not say which one you
+  are looking at is one you cannot trust, and that provenance is most of the
+  point.
+
+  The approvals row reports what this machine can actually do: with no dialog
+  program installed it names the ones it looked for, rather than offering a
+  setting that will silently not work. Changing it takes effect immediately —
+  somebody changing where approvals appear is somebody who is missing them, and
+  "reconnect first" tells them to miss one more.
+
+  The `c` popup it replaces is gone.
 - **`R` reconnects from anywhere.** `r` meant reverse-sort, revoke, or
   reconnect depending on whether the link happened to be up — and there was no
   way at all to force a reconnect while connected, though the web board had one.

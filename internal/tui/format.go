@@ -82,6 +82,12 @@ func clampWidth(s string, w int) string {
 	if w <= 0 || ansi.StringWidth(s) <= w {
 		return s
 	}
+	// An ellipsis, so a line that has been cut says so. Without one a sentence
+	// simply stops — and a reader cannot tell a truncated help string from a
+	// terse one, or a shortened URL from a broken one.
+	if w > 1 {
+		return ansi.Truncate(s, w, "…")
+	}
 	return ansi.Truncate(s, w, "")
 }
 

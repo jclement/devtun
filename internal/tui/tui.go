@@ -5,7 +5,7 @@
 // the argument for putting them in one window is that the interesting moments
 // are the ones where they meet — a deploy script on the remote box asking for a
 // secret while the port it will publish to comes up. So there is one frame,
-// four tabs over it, and a three-line ticker of recent activity under every tab
+// five tabs over it, and a three-line ticker of recent activity under every tab
 // so an approval can never be off-screen when it arrives.
 //
 // Everything here is a view. The model asks the services what is true and tells
@@ -68,46 +68,56 @@ func Run(ctx context.Context, o Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	model := newModel(deps{
-		tunnels:  tunnelAdapter{svc: o.Tunnels},
-		secrets:  secretSources(o.Services),
-		store:    storeOf(o.Store),
-		services: o.Services,
-		status:   statusOf(o.Session),
-		retry:    retryOf(o.Session),
-		host:     o.Host,
-		webURL:   o.WebURL,
-		version:  o.Version,
-		dissolve: !o.NoDissolve,
-		openURL:  ui.OpenURL,
-	})
-
-	program := tea.NewProgram(model, tea.WithContext(ctx))
-
 	// The approval modal and the shell-rc question are both this interface's
 	// to answer, and neither can exist before the program does — which is why
-	// they are installed here rather than wired up at construction. Under the
+	// they are installed below rather than wired up at construction. Under the
 	// TUI the 1Password service is deliberately built with no prompter at all,
 	// so without this every request would be silently refused.
 	prompter := NewPrompter()
+
+	// applyPrompt installs the prompter every service that asks a human gets,
+	// found by interface rather than by name.
+	//
+	// That list was once written down by hand and the SSH agent broker was not
+	// on it — so under the interface, which is the default, every signature was
+	// refused in the same instant it was requested and no prompt ever appeared.
+	// A service built with no prompter refuses by construction, which is the
+	// right default and exactly why forgetting to install one is silent.
+	//
+	// It is a function rather than a one-off because the Config tab can change
+	// where approvals appear, and that setting has to take effect now: somebody
+	// changing it is somebody who is missing approvals, and answering them with
+	// "reconnect first" is telling them to miss one more.
+	applyPrompt := func(backend prompt.Backend) {
+		approver := approverFor(backend, prompter, o.Bus)
+		for _, svc := range o.Services {
+			if p, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
+				p.SetPrompter(approver)
+			}
+		}
+	}
+
+	model := newModel(deps{
+		tunnels:       tunnelAdapter{svc: o.Tunnels},
+		secrets:       secretSources(o.Services),
+		store:         storeOf(o.Store),
+		services:      o.Services,
+		status:        statusOf(o.Session),
+		retry:         retryOf(o.Session),
+		host:          o.Host,
+		webURL:        o.WebURL,
+		version:       o.Version,
+		dissolve:      !o.NoDissolve,
+		openURL:       ui.OpenURL,
+		promptBackend: o.Prompt,
+		applyPrompt:   applyPrompt,
+	})
+
+	program := tea.NewProgram(model, tea.WithContext(ctx))
 	prompter.Attach(program)
 	defer prompter.Detach()
 
-	// Every service that asks a human gets the modal, found by interface
-	// rather than by name.
-	//
-	// This was a list of one, and the SSH agent broker was not on it — so
-	// under the interface, which is the default, every signature was refused
-	// in the same instant it was requested and no prompt ever appeared. A
-	// service built with no prompter refuses by construction, which is the
-	// right default and exactly why forgetting to install one is silent.
-	// Asking "can you be prompted?" means a fifth broker cannot be forgotten.
-	approver := approverFor(o.Prompt, prompter, o.Bus)
-	for _, svc := range o.Services {
-		if p, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
-			p.SetPrompter(approver)
-		}
-	}
+	applyPrompt(o.Prompt)
 	if o.Session != nil {
 		o.Session.SetAskSetup(prompter.AskSetup)
 	}

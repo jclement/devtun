@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jclement/devtun/internal/authz"
+	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -224,21 +225,16 @@ func (s *stubSecrets) Forget() (int, int) {
 	return s.grants, s.cached
 }
 
-// stubStore records what the Services tab switches on and off.
-type stubStore struct {
-	enabled map[string]bool
+// newTestStore is the real configuration store over a temporary directory.
+//
+// There is no stub for this one. What the Config tab has to get right is which
+// of two files a value lands in and which of them a value came from, and a stub
+// could only ever agree with itself about that. Nothing reaches the disk until
+// Save, so the ones that never call it pay for a directory and no I/O.
+func newTestStore(t *testing.T) *hostcfg.Store {
+	t.Helper()
+	return hostcfg.Open(t.TempDir())
 }
-
-func newStubStore() *stubStore { return &stubStore{enabled: map[string]bool{}} }
-
-func (s *stubStore) Enabled(_, id string, fallback bool) bool {
-	if v, ok := s.enabled[id]; ok {
-		return v
-	}
-	return fallback
-}
-
-func (s *stubStore) SetEnabled(_, id string, v bool) { s.enabled[id] = v }
 
 // stubService is the smallest thing satisfying service.Service, for the
 // Services tab and the settings popup.

@@ -12,6 +12,7 @@ import (
 	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
+	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
 )
 
@@ -343,6 +344,42 @@ func TestPromptBackendResolution(t *testing.T) {
 	// empty flag default readable as "not set" rather than as a choice.
 	if got := promptBackend(defaults(), hostcfg.Open(t.TempDir()), "bedev"); got != prompt.BackendAuto {
 		t.Errorf("an unconfigured machine = %q, want auto", got)
+	}
+}
+
+// `setup:` in the config file has to reach the session, or the setting is one
+// the Config tab offers and nothing reads.
+func TestSetupModeResolution(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("setup: never\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := hostcfg.Open(dir)
+
+	got, err := setupMode(defaults(), store)
+	if err != nil {
+		t.Fatalf("setupMode: %v", err)
+	}
+	if got != session.SetupNever {
+		t.Errorf("the config file said never and the session got %q", got)
+	}
+
+	// The command line is about this run and must always be able to win.
+	flags := defaults()
+	flags.setup = "auto"
+	if got, err := setupMode(flags, store); err != nil || got != session.SetupAuto {
+		t.Errorf("--setup lost to the config file: %q, %v", got, err)
+	}
+
+	// And with nothing configured, ask — the answer that leaves the user's file
+	// alone until they say otherwise.
+	if got, err := setupMode(defaults(), hostcfg.Open(t.TempDir())); err != nil || got != session.SetupAsk {
+		t.Errorf("an unconfigured machine = %q, %v", got, err)
+	}
+
+	flags.setup = "yolo"
+	if _, err := setupMode(flags, store); err == nil {
+		t.Error("an unknown setup mode was accepted")
 	}
 }
 

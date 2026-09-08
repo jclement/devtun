@@ -2,14 +2,19 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/hostcfg"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -31,7 +36,7 @@ func TestTabsCycleAndJump(t *testing.T) {
 		t.Errorf("3 moved to %v, want Access", m.tab)
 	}
 	// Wrapping is what makes tab usable without counting.
-	m.tab = tabServices
+	m.tab = tabCount - 1
 	send(m, "tab")
 	if m.tab != tabTunnels {
 		t.Errorf("tab from the last tab moved to %v, want Tunnels", m.tab)
@@ -272,8 +277,7 @@ func TestServicesTabShowsWhyAServiceIsUnavailable(t *testing.T) {
 		stubService{meta: service.Meta{ID: "tunnels", Title: "Tunnels", Glyph: "⇄", Short: "forward ports"}},
 		stubService{meta: service.Meta{ID: "1password", Title: "1Password", Glyph: "🔒", Short: "serve op"}},
 	}
-	store := newStubStore()
-	m := newTestModel(t, deps{tunnels: newStub(), services: services, store: store})
+	m := newTestModel(t, deps{tunnels: newStub(), services: services, store: newTestStore(t)})
 
 	m.Update(eventMsg(event.Event{Time: testNow, Service: "tunnels", Kind: "started", Class: event.Network, Text: "Tunnels ready"}))
 	m.Update(eventMsg(event.Event{
@@ -294,24 +298,227 @@ func TestServicesToggleIsPersisted(t *testing.T) {
 	services := []service.Service{
 		stubService{meta: service.Meta{ID: "1password", Title: "1Password", Glyph: "🔒"}},
 	}
-	store := newStubStore()
+	store := newTestStore(t)
 	m := newTestModel(t, deps{tunnels: newStub(), services: services, store: store})
 	send(m, "4")
 	send(m, "down")
 	send(m, "e")
 
-	if store.enabled["1password"] {
+	if store.Enabled("bedev", "1password", true) {
 		t.Error("e did not switch the service off")
 	}
 	send(m, "e")
-	if !store.enabled["1password"] {
+	if !store.Enabled("bedev", "1password", false) {
 		t.Error("e did not switch it back on")
 	}
 }
 
-// The settings popup is built from each service's own Configurable, so a
-// fourth service gets a row without this package changing.
-func TestSettingsPopupOffersServiceSettings(t *testing.T) {
+// c is in people's fingers from when the settings were a popup, so it still
+// leads to them — now by selecting the tab rather than covering the screen.
+func TestCReachesTheConfigTab(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(), store: newTestStore(t)})
+
+	send(m, "c")
+	if m.tab != tabConfig {
+		t.Fatalf("c selected %v, want Config", m.tab)
+	}
+	view := bodyLines(m)
+	// The setting the owner went looking for, at the top of the tab, with the
+	// two things a value on this screen has to carry.
+	for _, want := range []string{"Approvals", "Approvals appear", "auto", "default"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the Config tab is missing %q:\n%s", want, view)
+		}
+	}
+}
+
+// The whole argument for a Config tab over a popup: a value is only useful
+// alongside which file said so.
+func TestConfigProvenanceNamesTheLevelAValueCameFrom(t *testing.T) {
+	store := newTestStore(t)
+	m := newTestModel(t, deps{tunnels: newStub(), store: store})
+	send(m, "c")
+
+	if got := configRowText(t, m, "prompt"); !strings.Contains(got, "auto") || !strings.Contains(got, "default") {
+		t.Errorf("with nothing configured the row reads %q, want devtun's own default", got)
+	}
+
+	if err := store.SetSetting("", "", hostcfg.KeyPrompt, "dialog"); err != nil {
+		t.Fatal(err)
+	}
+	m.reload()
+	if got := configRowText(t, m, "prompt"); !strings.Contains(got, "dialog") || !strings.Contains(got, "global") {
+		t.Errorf("a global setting reads %q, want dialog from the global file", got)
+	}
+
+	if err := store.SetSetting("bedev", "", hostcfg.KeyPrompt, "tui"); err != nil {
+		t.Fatal(err)
+	}
+	m.reload()
+	if got := configRowText(t, m, "prompt"); !strings.Contains(got, "tui") || !strings.Contains(got, "host") {
+		t.Errorf("a host setting reads %q, want tui from the host file", got)
+	}
+
+	// And clearing the host's answer falls back to the global one, provenance
+	// and all: a cleared level must not pin what it happened to be showing.
+	moveConfigTo(t, m, "prompt")
+	send(m, "left") // tui → auto
+	send(m, "left") // auto → inherit, which clears the host's answer
+	if got := configRowText(t, m, "prompt"); !strings.Contains(got, "dialog") || !strings.Contains(got, "global") {
+		t.Errorf("a cleared host reads %q, want the global answer back", got)
+	}
+}
+
+// The setting the owner could not find, doing the thing he wanted it to do: it
+// has to change where this session asks, not only what a future one would read.
+func TestThePromptSettingChangesWhereThisSessionAsks(t *testing.T) {
+	var applied []prompt.Backend
+	store := newTestStore(t)
+	m := newTestModel(t, deps{
+		tunnels:       newStub(),
+		store:         store,
+		promptBackend: prompt.BackendAuto,
+		applyPrompt:   func(b prompt.Backend) { applied = append(applied, b) },
+	})
+
+	send(m, "c")
+	moveConfigTo(t, m, "prompt")
+	send(m, "right") // inherit → auto
+	send(m, "right") // auto → tui
+
+	if got := store.Setting("bedev", "", hostcfg.KeyPrompt); got != "tui" {
+		t.Errorf("the host file records %q, want tui", got)
+	}
+	if len(applied) == 0 || applied[len(applied)-1] != prompt.BackendTUI {
+		t.Errorf("the session was told %v, want the prompter rebuilt as tui", applied)
+	}
+
+	// And left is the way back, without a lap of the options: clearing the host
+	// value leaves the row inheriting rather than pinning what it showed.
+	send(m, "left")
+	send(m, "left")
+	if got := store.Setting("bedev", "", hostcfg.KeyPrompt); got != "" {
+		t.Errorf("stepping back to inherit left %q in the host file", got)
+	}
+}
+
+// g aims an edit at the other file, and the two must stay independent: setting
+// one box's preference cannot quietly rewrite the answer every other box uses.
+func TestTargetingWritesToTheFileThatIsArmed(t *testing.T) {
+	dir := t.TempDir()
+	store := hostcfg.Open(dir)
+	if err := store.SetSetting("", "", hostcfg.KeyPrompt, "dialog"); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestModel(t, deps{tunnels: newStub(), store: store})
+	send(m, "c")
+	moveConfigTo(t, m, "prompt")
+
+	// Armed at the host by default: the host file gains a value, the global one
+	// keeps the one it had.
+	send(m, "right")
+	if got := store.Setting("", "", hostcfg.KeyPrompt); got != "dialog" {
+		t.Errorf("editing the host rewrote the global setting to %q", got)
+	}
+	if got := store.Setting("bedev", "", hostcfg.KeyPrompt); got != "auto" {
+		t.Errorf("the host file records %q, want auto", got)
+	}
+
+	// And with g armed the other way, the global file is what moves.
+	send(m, "g")
+	send(m, "right")
+	if got := store.Setting("", "", hostcfg.KeyPrompt); got == "dialog" {
+		t.Error("g did not aim the edit at the global file")
+	}
+	if got := store.Setting("bedev", "", hostcfg.KeyPrompt); got != "auto" {
+		t.Errorf("editing the global file changed the host's value to %q", got)
+	}
+
+	// It is two files on disk, not two maps: the tab saves as it goes, so a
+	// laptop that dies before the session ends keeps the setting.
+	global, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("the global file was not written: %v", err)
+	}
+	if !strings.Contains(string(global), "prompt:") {
+		t.Errorf("the global file holds no prompt setting:\n%s", global)
+	}
+	host, err := os.ReadFile(filepath.Join(dir, "hosts", "bedev.yaml"))
+	if err != nil {
+		t.Fatalf("the host file was not written: %v", err)
+	}
+	if !strings.Contains(string(host), "prompt: auto") {
+		t.Errorf("the host file holds no prompt setting:\n%s", host)
+	}
+}
+
+// A hide list that will not parse fails silently and in the wrong direction:
+// the ports it was written to hide are forwarded, and only on the next
+// connection, long after anyone would connect the two.
+func TestABadPortListIsRefusedRatherThanSaved(t *testing.T) {
+	store := newTestStore(t)
+	m := newTestModel(t, deps{tunnels: newStub(), store: store})
+	send(m, "c")
+	moveConfigTo(t, m, "hide.host")
+
+	send(m, "enter")
+	if m.editor != editorConfigValue {
+		t.Fatalf("enter on a list did not open the editor, editor = %v", m.editor)
+	}
+	typeIn(m, "not-a-port")
+	send(m, "enter")
+
+	if got := store.Setting("bedev", "tunnels", hostcfg.KeyHide); got != "" {
+		t.Errorf("a list that will not parse was saved as %q", got)
+	}
+	if !m.hasToast || !m.toast.bad {
+		t.Errorf("nothing said the list was refused, toast = %q", m.toast.text)
+	}
+
+	// And one that parses is kept, ranges included — the reason the list exists
+	// at all is the ephemeral range no per-port key can cover.
+	send(m, "enter")
+	typeIn(m, "5432,32768-60999")
+	send(m, "enter")
+	if got := store.Setting("bedev", "tunnels", hostcfg.KeyHide); got != "5432,32768-60999" {
+		t.Errorf("the host's hide list is %q", got)
+	}
+}
+
+// `dialog` on a machine with nothing to draw one with falls back to asking in
+// this window. That is right, and completely invisible from a screen that
+// renders the word "dialog" and stops there.
+func TestThePromptRowSaysWhatThisMachineCanActuallyDo(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(), store: newTestStore(t)})
+	none := ""
+	m.dialogPick = &none
+	send(m, "c")
+	m.reload()
+
+	row := configRowText(t, m, "prompt")
+	if !strings.Contains(row, "no dialog program here") {
+		t.Errorf("the row does not say a dialog cannot be drawn here:\n%s", row)
+	}
+	for _, name := range prompt.ChooserNames() {
+		if !strings.Contains(row, name) {
+			t.Errorf("the row does not name %q as what to install:\n%s", name, row)
+		}
+	}
+
+	// Choosing it anyway is allowed — the file may be right on the machine it
+	// is synced to next — but it must not pass without a word.
+	moveConfigTo(t, m, "prompt")
+	for range 3 { // inherit → auto → tui → dialog
+		send(m, "right")
+	}
+	if !strings.Contains(m.toast.text, "no dialog program") || !m.toast.bad {
+		t.Errorf("choosing dialog with nothing to draw it said %q", m.toast.text)
+	}
+}
+
+// The rows are still the services' own, discovered by interface, so a sixth
+// service gets its settings on this tab without this package changing.
+func TestServiceSettingsAreStillDiscoveredByInterface(t *testing.T) {
 	value := "false"
 	services := []service.Service{configurableService{
 		stubService{meta: service.Meta{ID: "tunnels", Title: "Tunnels"}},
@@ -321,17 +528,13 @@ func TestSettingsPopupOffersServiceSettings(t *testing.T) {
 			Set: func(v string) { value = v },
 		}},
 	}}
-	m := newTestModel(t, deps{tunnels: newStub(), services: services})
+	m := newTestModel(t, deps{tunnels: newStub(), services: services, store: newTestStore(t)})
 
 	send(m, "c")
-	if !strings.Contains(plainView(m), "Show hidden ports") {
-		t.Fatalf("the service's setting is not in the popup:\n%s", plainView(m))
+	if !strings.Contains(bodyLines(m), "Show hidden ports") {
+		t.Fatalf("the service's setting is not on the tab:\n%s", bodyLines(m))
 	}
-	// Walk to the row rather than counting presses: the popup also lists a
-	// toggle per service, and this test is about the seam, not the order.
-	if !moveMenuTo(m, "Show hidden ports") {
-		t.Fatalf("the setting is not a menu row")
-	}
+	moveConfigTo(t, m, "tunnels.show_hidden")
 	send(m, "enter")
 	if value != "true" {
 		t.Errorf("the setting was not written through the service: %q", value)
@@ -344,37 +547,92 @@ func TestSettingsPopupOffersServiceSettings(t *testing.T) {
 	}
 }
 
-// The services are switchable from the popup as well as from their tab: `c` is
-// where people look for "turn that off for this box".
-func TestSettingsPopupTogglesAService(t *testing.T) {
-	store := newStubStore()
+// Whether a service runs at all is a setting like any other here, and it is the
+// one with two levels people actually use: off everywhere, on for this box.
+func TestAServiceIsSwitchableAtEitherLevel(t *testing.T) {
+	store := newTestStore(t)
 	services := []service.Service{stubService{meta: service.Meta{ID: "1password", Title: "1Password"}}}
-	m := newTestModel(t, deps{tunnels: newStub(), services: services, store: store, host: "bedev"})
+	m := newTestModel(t, deps{tunnels: newStub(), services: services, store: store})
 
 	send(m, "c")
-	if !moveMenuTo(m, "1Password") {
-		t.Fatalf("no row for the service:\n%s", plainView(m))
+	moveConfigTo(t, m, "1password")
+	send(m, "right") // inherit → on
+	send(m, "right") // on → off
+	if got := store.Setting("bedev", hostcfg.SectionServices, "1password"); got != "false" {
+		t.Errorf("the host file records %q, want the service off", got)
 	}
-	send(m, "enter")
-	if store.enabled["1password"] {
-		t.Error("the popup did not switch the service off")
+	if got := store.Setting("", hostcfg.SectionServices, "1password"); got != "" {
+		t.Errorf("switching it off here wrote %q to the global file", got)
 	}
-	send(m, "enter")
-	if !store.enabled["1password"] {
-		t.Error("the popup did not switch it back on")
+
+	send(m, "g")
+	send(m, "right")
+	if got := store.Setting("", hostcfg.SectionServices, "1password"); got != "true" {
+		t.Errorf("the global file records %q, want the service on", got)
+	}
+	// The host still wins, which is what the provenance column has to say.
+	if store.Enabled("bedev", "1password", true) {
+		t.Error("the host's explicit off stopped winning")
+	}
+	if got := configRowText(t, m, "1password"); !strings.Contains(got, "host") {
+		t.Errorf("the row reads %q, want the host named as what is deciding", got)
 	}
 }
 
-// moveMenuTo walks the settings popup to the row whose title contains want.
-func moveMenuTo(m *Model, want string) bool {
-	items := m.menuItems()
-	for range items {
-		if strings.Contains(items[m.menu.cursor].title, want) {
-			return true
+// Headings are structure, not settings: a cursor that could land on one arms
+// keys with nothing to act on.
+func TestTheCursorSkipsSectionHeadings(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(), store: newTestStore(t)})
+	send(m, "c")
+	if m.cfgRows[0].setting != nil {
+		t.Fatal("the tab does not start with a heading, so this proves nothing")
+	}
+
+	for range len(m.cfgRows) + 2 {
+		send(m, "down")
+		if s := m.selectedSetting(); s == nil {
+			t.Fatalf("the cursor landed on the heading at row %d", m.cursor())
+		}
+	}
+	for range len(m.cfgRows) + 2 {
+		send(m, "up")
+		if s := m.selectedSetting(); s == nil {
+			t.Fatalf("moving up landed on the heading at row %d", m.cursor())
+		}
+	}
+}
+
+// configRowText is the rendered line for one setting, with styling stripped.
+func configRowText(t *testing.T, m *Model, key string) string {
+	t.Helper()
+	for _, row := range m.cfgRows {
+		if row.setting != nil && row.setting.key == key {
+			return ansi.Strip(m.configLine(row, false))
+		}
+	}
+	t.Fatalf("no config row keyed %q", key)
+	return ""
+}
+
+// moveConfigTo walks the Config tab to the row with this key, rather than
+// counting presses: the sections list services and this package's own settings,
+// and a test about one of them should not break when another is added.
+func moveConfigTo(t *testing.T, m *Model, key string) {
+	t.Helper()
+	for range len(m.cfgRows) + 1 {
+		if s := m.selectedSetting(); s != nil && s.key == key {
+			return
 		}
 		send(m, "down")
 	}
-	return false
+	t.Fatalf("never reached the row keyed %q:\n%s", key, bodyLines(m))
+}
+
+// typeIn sends a string to whichever inline editor is open.
+func typeIn(m *Model, text string) {
+	for _, r := range text {
+		send(m, string(r))
+	}
 }
 
 // configurableService is a stub service that also exposes settings.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -61,10 +62,19 @@ type accessSource struct {
 	ctrl  secretsCtrl
 }
 
-// configStore is where the Services tab records what runs on this host.
+// configStore is where the Services and Config tabs read and record devtun's
+// own settings.
+//
+// Everything is addressed as (section, key) at one level — an empty label is
+// the global file — rather than resolved, because telling "this host says tui"
+// from "the global file says tui" is the whole point of showing a setting at
+// all, and a resolving read cannot.
 type configStore interface {
 	Enabled(label, serviceID string, fallback bool) bool
 	SetEnabled(label, serviceID string, enabled bool)
+	Setting(label, section, key string) string
+	SetSetting(label, section, key, value string) error
+	Save() error
 }
 
 // deps is everything the model needs, narrowed to interfaces and functions.
@@ -79,6 +89,14 @@ type deps struct {
 	// interface asks of it: how are we doing, and try again now.
 	status func() session.Status
 	retry  func()
+
+	// promptBackend is where approvals are appearing right now, and
+	// applyPrompt puts a changed setting into effect without a reconnect —
+	// the one config change this session can honour immediately, and the one
+	// where waiting for the next connection would mean missing the request you
+	// were trying to catch.
+	promptBackend prompt.Backend
+	applyPrompt   func(prompt.Backend)
 
 	host    string
 	version string
@@ -132,6 +150,7 @@ const (
 	editorSearch
 	editorLocalPort
 	editorPortLabel
+	editorConfigValue
 )
 
 // noSelection is the cursor value meaning "nothing highlighted yet".
@@ -172,10 +191,22 @@ type Model struct {
 	// svcState is what the session has said about each service, keyed by id.
 	svcState map[string]svcState
 
+	// Config tab. cfgLevel is the file the next edit lands in, and it is state
+	// rather than a per-row question so that arming it once covers a run of
+	// edits — which is how somebody setting a box up actually works.
+	cfgRows  []cfgRow
+	cfgLevel cfgLevel
+	// dialogPick memoises which program could raise a desktop dialog here.
+	dialogPick *string
+	// promptNow is where approvals are appearing, which the command line can
+	// have decided rather than the files.
+	promptNow prompt.Backend
+
 	// Inline editor in the bottom border.
-	editor     editorKind
-	editorPort int
-	input      textInput
+	editor        editorKind
+	editorPort    int
+	editorSetting string
+	input         textInput
 
 	showHelp   bool
 	showDetail bool
@@ -187,7 +218,6 @@ type Model struct {
 	// classify.
 	protocolPrompt bool
 	confirming     bool
-	menu           viewMenu
 	approval       *approvalState
 	setup          *setupState
 
@@ -236,15 +266,20 @@ func newModel(d deps) *Model {
 
 	prefs := d.tunnels.ViewPrefs()
 	m := &Model{
-		d:        d,
-		width:    80,
-		height:   24,
-		started:  d.now(),
-		prefs:    prefs,
-		sortKey:  sortKeyNamed(prefs.Sort),
-		reverse:  prefs.Reverse,
-		status:   session.Status{State: session.Connecting},
-		svcState: map[string]svcState{},
+		d:       d,
+		width:   80,
+		height:  24,
+		started: d.now(),
+		prefs:   prefs,
+		sortKey: sortKeyNamed(prefs.Sort),
+		reverse: prefs.Reverse,
+		status:  session.Status{State: session.Connecting},
+		// Edits start aimed at this host: the per-host file is the one people
+		// mean, and a first keystroke that quietly changed every box would be
+		// the wrong direction to be surprised in.
+		cfgLevel:  levelHost,
+		promptNow: d.promptBackend,
+		svcState:  map[string]svcState{},
 	}
 	for i := range m.cursors {
 		// Nothing is highlighted until you move: a selection bar on arrival
@@ -275,7 +310,7 @@ func (m *Model) editing() bool { return m.editor != editorNone }
 // connection was gone.
 func (m *Model) overlayOpen() bool {
 	return m.approval != nil || m.setup != nil || m.confirming || m.showHelp ||
-		m.showDetail || m.protocolPrompt || m.editing() || m.menu.open || m.offline()
+		m.showDetail || m.protocolPrompt || m.editing() || m.offline()
 }
 
 // Update handles one message.
@@ -424,9 +459,42 @@ func (m *Model) rowCount() int {
 		return len(m.accessRows)
 	case tabServices:
 		return len(m.svcRows)
+	case tabConfig:
+		return len(m.cfgRows)
 	default:
 		return len(m.rows)
 	}
+}
+
+// selectable reports whether a row can hold the cursor. Only the Config tab has
+// rows that cannot: its section headings are structure, not settings.
+func (m *Model) selectable(i int) bool {
+	if m.tab != tabConfig {
+		return true
+	}
+	return i >= 0 && i < len(m.cfgRows) && m.cfgRows[i].setting != nil
+}
+
+// nextSelectable walks from i in the direction of travel to the first row that
+// can hold the cursor, turning back at the end of the list rather than leaving
+// the selection on a heading.
+func (m *Model) nextSelectable(i, delta int) int {
+	step := 1
+	if delta < 0 {
+		step = -1
+	}
+	n := m.rowCount()
+	for j := i; j >= 0 && j < n; j += step {
+		if m.selectable(j) {
+			return j
+		}
+	}
+	for j := i; j >= 0 && j < n; j -= step {
+		if m.selectable(j) {
+			return j
+		}
+	}
+	return i
 }
 
 func (m *Model) cursor() int     { return m.cursors[m.tab] }
@@ -457,7 +525,7 @@ func (m *Model) move(delta int) {
 	if target >= n {
 		target = n - 1
 	}
-	m.setCursor(target)
+	m.setCursor(m.nextSelectable(target, delta))
 	m.clampCursor()
 }
 
@@ -502,6 +570,7 @@ func (m *Model) reload() {
 	m.reloadActivity()
 	m.reloadAccess()
 	m.reloadServices()
+	m.reloadConfig()
 	m.clampCursor()
 }
 
@@ -580,9 +649,6 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if m.protocolPrompt {
 		return m.handleProtocolKey(msg)
 	}
-	if m.menu.open {
-		return m.handleMenuKey(msg)
-	}
 	if m.offline() {
 		if cmd, handled := m.handleOfflineKey(msg); handled {
 			return cmd
@@ -600,6 +666,15 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		case "esc", "enter", "d", "q":
 			m.showDetail = false
 			return nil
+		}
+	}
+	// The Config tab is the one that claims keys *before* the global handler:
+	// it needs ← and → to change a value, and `g` to arm which file an edit
+	// lands in. Everything it does not claim — tab, the digits, search, quit —
+	// still falls through, so nothing else is traded away.
+	if m.tab == tabConfig {
+		if cmd, handled := m.handleConfigKey(msg); handled {
+			return cmd
 		}
 	}
 	if cmd, handled := m.handleGlobalKey(msg); handled {
@@ -631,14 +706,14 @@ func (m *Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, true
 
 	// Left and right walk the tabs, which is what a hand reaches for before it
-	// finds tab/shift+tab. They are free here: no tab uses them for anything
-	// of its own, and the two places that do — the inline editor and the
-	// settings popup — take their keys before this handler sees them.
+	// finds tab/shift+tab. The places that need them for something of their
+	// own — the inline editor, and the Config tab, where they change the value
+	// under the cursor — take their keys before this handler sees them.
 	case "tab", "right":
 		return m.selectTab(m.tab.next(1)), true
 	case "shift+tab", "left":
 		return m.selectTab(m.tab.next(-1)), true
-	case "1", "2", "3", "4":
+	case "1", "2", "3", "4", "5":
 		n, _ := strconv.Atoi(msg.String())
 		return m.selectTab(tab(n - 1)), true
 
@@ -669,10 +744,11 @@ func (m *Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	case "?":
 		m.showHelp = !m.showHelp
 		return nil, true
+	// c kept its meaning when the settings popup became a tab. It is in
+	// people's fingers, and the tab bar is not where somebody looks for a
+	// keystroke they already know.
 	case "c":
-		m.menu.open = true
-		m.menu.cursor = 0
-		return nil, true
+		return m.selectTab(tabConfig), true
 	case "w":
 		return m.openWeb(), true
 	case "R":
@@ -772,6 +848,8 @@ func (m *Model) handleEditorKey(msg tea.KeyPressMsg) tea.Cmd {
 			return m.applyLocalPort()
 		case editorPortLabel:
 			return m.applyLabel()
+		case editorConfigValue:
+			return m.applyConfigValue()
 		}
 		m.closeEditor()
 		return nil
@@ -788,6 +866,7 @@ func (m *Model) handleEditorKey(msg tea.KeyPressMsg) tea.Cmd {
 func (m *Model) closeEditor() {
 	m.editor = editorNone
 	m.editorPort = 0
+	m.editorSetting = ""
 	m.input.Reset()
 }
 
@@ -855,14 +934,6 @@ func (m *Model) handleClick(e tea.Mouse) tea.Cmd {
 		m.showDetail, m.showHelp = false, false
 		return nil
 	}
-	if m.menu.open {
-		if i := m.menuRowAt(e.Y); i >= 0 {
-			m.menu.cursor = i
-			return m.activateMenuItem(i)
-		}
-		m.menu.open = false
-		return nil
-	}
 	// The quit confirmation is deliberately modal: it must be answered.
 	if m.confirming {
 		return nil
@@ -875,6 +946,8 @@ func (m *Model) handleClick(e tea.Mouse) tea.Cmd {
 			return m.applyLocalPort()
 		case editorPortLabel:
 			return m.applyLabel()
+		case editorConfigValue:
+			return m.applyConfigValue()
 		}
 		m.closeEditor()
 		return nil
@@ -901,7 +974,9 @@ func (m *Model) handleClick(e tea.Mouse) tea.Cmd {
 	if m.tab == tabTunnels {
 		return m.handleTunnelsClick(e)
 	}
-	if i := m.rowAt(e.Y); i >= 0 {
+	// A click on a Config section heading selects nothing: it is a label, and
+	// moving the cursor onto it would arm keys that have nothing to act on.
+	if i := m.rowAt(e.Y); i >= 0 && m.selectable(i) {
 		m.setCursor(i)
 		m.clampCursor()
 	}
@@ -927,12 +1002,17 @@ func (m *Model) rowAt(y int) int {
 // resolution in one place instead of two.
 func (m *Model) runAction(id string) tea.Cmd {
 	switch id {
-	case "↑↓":
+	case "↑↓", "←→":
 		return nil
 	case "esc":
 		m.confirming = true
 		return nil
 	case "enter":
+		// enter is "open the detail" on the tabs that have one and "change
+		// this setting" on the Config tab, exactly as the key is.
+		if m.tab == tabConfig {
+			return m.stepConfig(1)
+		}
 		return m.toggleDetail()
 	}
 	return m.handleKey(keyPress(id))

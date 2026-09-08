@@ -8,8 +8,8 @@ import (
 	"github.com/jclement/devtun/internal/ui"
 )
 
-// tab is one of the four views over the session. There is one screen and one
-// connection; the tabs are four ways of looking at it, not four modes.
+// tab is one of the five views over the session. There is one screen and one
+// connection; the tabs are five ways of looking at it, not five modes.
 type tab int
 
 const (
@@ -17,6 +17,7 @@ const (
 	tabActivity
 	tabAccess
 	tabServices
+	tabConfig
 	tabCount
 )
 
@@ -25,7 +26,11 @@ const (
 // clicked through, for the vault and the agent alike. Called Secrets it read as
 // a list of things you own rather than as the rule viewer it is, and the person
 // looking for one did not find it.
-var tabTitles = [tabCount]string{"Tunnels", "Activity", "Access", "Services"}
+//
+// "Config" is a tab and not the popup it used to be for the same reason: a
+// centred list with no room to say where a value came from is a settings screen
+// people look at once and then go and edit the file instead.
+var tabTitles = [tabCount]string{"Tunnels", "Activity", "Access", "Services", "Config"}
 
 // String names the tab, for toasts and for the help box.
 func (t tab) String() string {

@@ -321,3 +321,136 @@ func TestAnAbsentHideListIsEmpty(t *testing.T) {
 		t.Errorf("Spec() = %q, want empty", got)
 	}
 }
+
+// The settings screen has to be able to tell "this host says tui" from "the
+// global file says tui", which the resolving readers cannot: Prompt collapses
+// both into one answer on purpose.
+func TestSettingReadsOneLevelAtATime(t *testing.T) {
+	store := Open(t.TempDir())
+	if err := store.SetSetting("", "", KeyPrompt, "dialog"); err != nil {
+		t.Fatalf("SetSetting global: %v", err)
+	}
+
+	if got := store.Setting("bedev", "", KeyPrompt); got != "" {
+		t.Errorf("the host reports %q for a setting only the global file has", got)
+	}
+	if got := store.Setting("", "", KeyPrompt); got != "dialog" {
+		t.Errorf("the global file reports %q, want dialog", got)
+	}
+	if got := store.Prompt("bedev", "auto"); got != "dialog" {
+		t.Errorf("resolving reports %q, want the global answer", got)
+	}
+
+	// A host's own answer must not touch the global one, or setting one box's
+	// preference would quietly change every other box's.
+	if err := store.SetSetting("bedev", "", KeyPrompt, "tui"); err != nil {
+		t.Fatalf("SetSetting host: %v", err)
+	}
+	if got := store.Setting("", "", KeyPrompt); got != "dialog" {
+		t.Errorf("writing the host rewrote the global setting to %q", got)
+	}
+	if got := store.Prompt("bedev", "auto"); got != "tui" {
+		t.Errorf("resolving reports %q, want the host's answer", got)
+	}
+}
+
+// Clearing a level has to remove the key, not write a blank one: a host with no
+// prompt setting is a host that has stopped having an opinion, and it must fall
+// back to the global file rather than pin what it happened to be showing.
+func TestClearingAHostSettingFallsBackToGlobal(t *testing.T) {
+	dir := t.TempDir()
+	store := Open(dir)
+	if err := store.SetSetting("", "", KeyPrompt, "dialog"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSetting("bedev", "", KeyPrompt, "tui"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSetting("bedev", "", KeyPrompt, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	reopened := Open(dir)
+	if got := reopened.Setting("bedev", "", KeyPrompt); got != "" {
+		t.Errorf("the host file still says %q after being cleared", got)
+	}
+	if got := reopened.Prompt("bedev", "auto"); got != "dialog" {
+		t.Errorf("a cleared host resolves to %q, want the global answer", got)
+	}
+}
+
+// A service's own section is free-form, so it is reached through the same two
+// calls — and a hide list somebody hand-wrote as a sequence has to read back as
+// something they can edit and hand in again.
+func TestSectionSettingsReadAndClearAtOneLevel(t *testing.T) {
+	store := Open(t.TempDir())
+	if err := store.For("bedev", "tunnels").Set(KeyHide, []string{"5432", "32768-60999"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Setting("bedev", "tunnels", KeyHide); got != "5432,32768-60999" {
+		t.Errorf("the host's hide list reads as %q", got)
+	}
+	if got := store.Setting("", "tunnels", KeyHide); got != "" {
+		t.Errorf("the global file reports %q for a host's own list", got)
+	}
+
+	if err := store.SetSetting("bedev", "tunnels", KeyHide, "6379"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Setting("bedev", "tunnels", KeyHide); got != "6379" {
+		t.Errorf("after an edit the list reads as %q", got)
+	}
+	if err := store.SetSetting("bedev", "tunnels", KeyHide, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Setting("bedev", "tunnels", KeyHide); got != "" {
+		t.Errorf("a cleared list still reads as %q", got)
+	}
+}
+
+// Whether a service runs is the same kind of three-answer setting, and absent
+// has to stay distinguishable from an explicit off.
+func TestServiceStateIsReadableAndClearablePerLevel(t *testing.T) {
+	store := Open(t.TempDir())
+	if err := store.SetSetting("", SectionServices, "gpg-agent", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSetting("bedev", SectionServices, "gpg-agent", "false"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := store.Setting("", SectionServices, "gpg-agent"); got != "true" {
+		t.Errorf("the global file reports %q", got)
+	}
+	if got := store.Setting("bedev", SectionServices, "gpg-agent"); got != "false" {
+		t.Errorf("the host file reports %q", got)
+	}
+	if store.Enabled("bedev", "gpg-agent", true) {
+		t.Error("the host's explicit off should win")
+	}
+
+	if err := store.SetSetting("bedev", SectionServices, "gpg-agent", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Setting("bedev", SectionServices, "gpg-agent"); got != "" {
+		t.Errorf("a cleared service state reads as %q, want unset", got)
+	}
+	if !store.Enabled("bedev", "gpg-agent", false) {
+		t.Error("with the host cleared the global answer should win")
+	}
+}
+
+// The host file carries one of the top-level settings and not the others.
+// Writing a global-only one to a host would leave a key nothing ever reads.
+func TestAGlobalOnlySettingIsRefusedOnAHost(t *testing.T) {
+	store := Open(t.TempDir())
+	if err := store.SetSetting("bedev", "", KeySetup, "never"); err == nil {
+		t.Fatal("a host accepted a global-only setting")
+	}
+	if err := store.SetSetting("", "", "nonsense", "x"); err == nil {
+		t.Fatal("the global file accepted a setting that does not exist")
+	}
+}

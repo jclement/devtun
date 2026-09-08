@@ -108,8 +108,6 @@ func (m *Model) frame() string {
 		view = overlayCenter(view, m.detailBox(), m.width, m.height)
 	case m.protocolPrompt:
 		view = overlayCenter(view, m.protocolBox(), m.width, m.height)
-	case m.menu.open:
-		view = overlayCenter(view, m.menuBox(), m.width, m.height)
 	case m.offline():
 		view = overlayCenter(view, m.reconnectBox(), m.width, m.height)
 	}
@@ -166,6 +164,8 @@ func (m *Model) body() string {
 		return m.accessView()
 	case tabServices:
 		return m.servicesView()
+	case tabConfig:
+		return m.configView()
 	default:
 		return m.tunnelsView()
 	}
@@ -485,6 +485,15 @@ func (m *Model) viewChip() string {
 		if m.logFilter != "" {
 			parts = append(parts, ui.ClassStyle(m.logFilter).Render(string(m.logFilter)))
 		}
+	case tabConfig:
+		// Which file the next edit lands in, always on screen while the tab is.
+		// The wider-reaching target is the louder one: an edit meant for one
+		// box that silently went everywhere is the mistake worth preventing.
+		if m.cfgLevel == levelGlobal {
+			parts = append(parts, ui.Warn.Render("edits → every host"))
+		} else {
+			parts = append(parts, ui.Muted.Render("edits → "+m.d.host))
+		}
 	}
 	return strings.Join(parts, ui.Muted.Render(" · "))
 }
@@ -501,6 +510,9 @@ func (m *Model) editorLabel() string {
 	case editorPortLabel:
 		prompt = fmt.Sprintf("name for remote %d", m.editorPort)
 		hint = "blank clears · enter to remember · esc to cancel"
+	case editorConfigValue:
+		prompt = m.configEditorPrompt()
+		hint = "blank clears · enter to save · esc to cancel"
 	}
 	return ui.Banner.Render(prompt) + ui.Muted.Render(" ▸ ") + m.input.Render() +
 		ui.Muted.Render("   "+hint)
@@ -519,12 +531,17 @@ func (m *Model) keyBar() string {
 		keys = append(keys, [2]string{"r", "revoke"}, [2]string{"D", "deny"}, [2]string{"y", "copy ref"})
 	case tabServices:
 		keys = append(keys, [2]string{"e", "enable"})
+	case tabConfig:
+		keys = append(keys, [2]string{"←→", "change"}, [2]string{"g", "where"}, [2]string{"enter", "edit"})
 	default:
 		keys = append(keys, [2]string{"x", "hide"}, [2]string{"b", "browser"}, [2]string{"enter", "detail"})
 	}
-	keys = append(keys, [2]string{"c", "config"})
-	// Only when there is one. A key bar advertising something that is not
-	// running is worse than one that is a hint shorter.
+	// Not on the Config tab, where `c` is where you already are.
+	if m.tab != tabConfig {
+		keys = append(keys, [2]string{"c", "config"})
+	}
+	// And only when there is a board. A key bar advertising something that is
+	// not running is worse than one that is a hint shorter.
 	if m.d.webURL != "" {
 		keys = append(keys, [2]string{"w", "web"})
 	}

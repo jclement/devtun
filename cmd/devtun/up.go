@@ -132,7 +132,11 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	fl.BoolVar(&f.plain, "plain", false, "plain log lines, no colour")
 	fl.BoolVar(&f.noColor, "no-color", false, "disable colour")
 	fl.BoolVarP(&f.verbose, "verbose", "v", false, "include diagnostic events")
-	fl.StringVar(&f.setup, "setup", "ask", "the remote shell rc: ask, auto, never")
+	// No default, for the same reason --prompt has none: an empty value means
+	// "whatever the config says, else ask", and a flag defaulting to ask could
+	// not be told apart from somebody typing it — which would leave `setup:` in
+	// the config file unreachable.
+	fl.StringVar(&f.setup, "setup", "", "the remote shell rc: ask, auto, never (default: your config, else ask)")
 	fl.StringVar(&f.gate, "gate", "", "browser: ask before each site, or auto (default: your config)")
 	fl.StringVar(&f.web, "web", "", "also serve the board in a browser (\"on\", or an address like 127.0.0.1:8765)")
 	// Opening it is the default. The URL carries a token, so it is long and
@@ -172,11 +176,6 @@ func runUp(ctx context.Context, f upFlags) error {
 		ui.NoColor()
 	}
 
-	setupMode, err := session.ParseSetupMode(f.setup)
-	if err != nil {
-		return err
-	}
-
 	dest, connectOpts, err := resolveDestination(f)
 	if err != nil {
 		return err
@@ -194,6 +193,11 @@ func runUp(ctx context.Context, f upFlags) error {
 			fmt.Fprintln(os.Stderr, ui.Warn.Render("devtun: could not save settings: "+err.Error()))
 		}
 	}()
+
+	setupMode, err := setupMode(f, store)
+	if err != nil {
+		return err
+	}
 
 	// The interface is the default, because it is the thing devtun is: a board
 	// of what is forwarded, what is open in your name, and what just happened.
@@ -603,6 +607,20 @@ func tunnelPolicy(f upFlags) (tunnels.Policy, error) {
 		return policy, errors.New("--interval below 200ms would spend more time scanning than working")
 	}
 	return policy, nil
+}
+
+// setupMode resolves whether devtun offers to edit the remote shell rc: the
+// flag, then the global config, then ask.
+//
+// It reads the config for the same reason --prompt does. "Never touch a shell
+// rc" is a standing preference about how you work, not a decision to retype on
+// every connection — and a setting nothing reads is a setting the Config tab
+// would be lying about.
+func setupMode(f upFlags, store *hostcfg.Store) (session.SetupMode, error) {
+	if v := strings.TrimSpace(f.setup); v != "" {
+		return session.ParseSetupMode(v)
+	}
+	return session.ParseSetupMode(strings.TrimSpace(store.Global().Setup))
 }
 
 // promptBackend resolves how approvals are asked for.
