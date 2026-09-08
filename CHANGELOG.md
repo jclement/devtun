@@ -5,6 +5,16 @@ this is 0.x, a minor bump may break something.
 
 ## Unreleased
 
+### Fixed
+
+- **doctor said 1Password was fine on a machine where every request would be
+  refused.** It ran `op account list` — which reads a file on disk and succeeds
+  with no session at all — while claiming in its own comment to be testing that
+  op "will answer". It runs `op whoami` now, which needs a live session, and
+  tells apart the three states that have three different fixes: not installed,
+  installed with no account, and configured but not signed in. The last is the
+  common one and used to pass silently.
+
 ### Added
 
 - **`devtun doctor` reports whether an approval will actually be heard.** It

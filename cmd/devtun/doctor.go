@@ -175,14 +175,31 @@ func doctorOnePassword(ctx context.Context, out *doctor.Section, flags upFlags) 
 		out.Warn("1password", path+" would not run: "+err.Error(), "check the install")
 		return
 	}
-	// Whether an account is configured is the difference between "op is
-	// installed" and "op will answer", and only the second one matters.
-	if _, err := runBriefly(ctx, path, "account", "list"); err != nil {
-		out.Warn("1password", "op "+version+" at "+path+", but no account answered",
-			"run `op account add`, or sign in to the 1Password app and enable the CLI integration")
+	// `op whoami`, not `op account list`.
+	//
+	// This check used to run `account list` and claim, in a comment, that it
+	// told "op is installed" from "op will answer". It does not: `account list`
+	// reads a config file on disk and succeeds with no session at all. So
+	// doctor reported a cheerful tick on a machine where every request from the
+	// remote box came back "account is not signed in" — which is exactly the
+	// failure this check exists to find, passed over by the check itself.
+	//
+	// `whoami` needs a live session, which is the thing being claimed. It may
+	// raise a biometric prompt; that is the right trade for a diagnostic
+	// somebody ran on purpose, and a prompt appearing is itself the answer.
+	who, err := runBriefly(ctx, path, "whoami")
+	if err != nil {
+		if accounts, listErr := runBriefly(ctx, path, "account", "list"); listErr != nil || strings.TrimSpace(accounts) == "" {
+			out.Warn("1password", "op "+version+" has no account configured",
+				"run `op account add` — until then every op call from the remote box is refused")
+			return
+		}
+		out.Warn("1password", "op "+version+" knows your accounts but is not signed in",
+			"turn on 1Password → Settings → Developer → \"Integrate with 1Password CLI\", or run `eval $(op signin)`;\n"+
+				"devtun will forward the request and op will refuse it until then")
 		return
 	}
-	out.OK("1password", "op "+version+" at "+path)
+	out.OK("1password", "op "+version+" · "+firstField(who, "signed in"))
 }
 
 // doctorAgent reports which agent devtun would forward, and what it holds.
@@ -216,6 +233,20 @@ func doctorBrowser(out *doctor.Section) {
 		return
 	}
 	out.OK("browser", "URLs open with "+opener)
+}
+
+// firstField pulls the account's email out of `op whoami`, which prints a
+// labelled block. A fallback rather than a parser: the shape of that output is
+// 1Password's to change, and a doctor line is not worth breaking over it.
+func firstField(out, fallback string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if _, rest, found := strings.Cut(line, "Email:"); found {
+			if email := strings.TrimSpace(rest); email != "" {
+				return email
+			}
+		}
+	}
+	return fallback
 }
 
 // runBriefly runs a local tool for its one line of output. The timeout is

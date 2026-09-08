@@ -34,24 +34,57 @@ func find(t *testing.T, section *doctor.Section, name string) doctor.Check {
 	return doctor.Check{}
 }
 
-// An installed op that no account answers for is the interesting case: op is
-// there, so "install it" is the wrong advice, and every request would still be
-// refused.
-func TestDoctorTellsAnInstalledOpFromAWorkingOne(t *testing.T) {
+// An op that is installed and configured but *not signed in* is the case that
+// matters, and the one this check used to miss.
+//
+// It ran `op account list`, which reads a file on disk and succeeds with no
+// session at all — so doctor reported a cheerful tick on a machine where every
+// request from the remote came back "account is not signed in". That is exactly
+// the failure the check exists to find, passed over by the check itself. The
+// three states have three different fixes and have to be told apart.
+func TestDoctorTellsSignedInFromMerelyConfigured(t *testing.T) {
+	// Configured, not signed in: `whoami` fails, `account list` succeeds.
 	section := &doctor.Section{}
-	stubTool(t, "op", `case "$1" in --version) echo 2.30.0;; account) exit 1;; esac`)
+	stubTool(t, "op", `case "$1" in
+	--version) echo 2.30.0;;
+	whoami) echo "[ERROR] account is not signed in" >&2; exit 1;;
+	account) echo "URL EMAIL"; echo "example.1password.com a@b.c";;
+	esac`)
 	doctorOnePassword(t.Context(), section, upFlags{})
 
 	got := find(t, section, "1password")
-	if got.Status != doctor.StatusWarn || !strings.Contains(got.Detail, "no account") {
-		t.Errorf("check = %+v", got)
+	if got.Status != doctor.StatusWarn || !strings.Contains(got.Detail, "not signed in") {
+		t.Errorf("a configured-but-unauthenticated op reported %+v", got)
+	}
+	if !strings.Contains(got.Fix, "signin") && !strings.Contains(got.Fix, "Integrate") {
+		t.Errorf("the fix does not say how to sign in: %q", got.Fix)
 	}
 
+	// No accounts at all: a different problem with a different fix.
 	section = &doctor.Section{}
-	stubTool(t, "op", `case "$1" in --version) echo 2.30.0;; account) exit 0;; esac`)
+	stubTool(t, "op", `case "$1" in
+	--version) echo 2.30.0;;
+	whoami) exit 1;;
+	account) exit 1;;
+	esac`)
 	doctorOnePassword(t.Context(), section, upFlags{})
-	if got := find(t, section, "1password"); got.Status != doctor.StatusOK {
-		t.Errorf("a working op reported %+v", got)
+	if got := find(t, section, "1password"); !strings.Contains(got.Fix, "account add") {
+		t.Errorf("an op with no accounts was not told to add one: %+v", got)
+	}
+
+	// Signed in.
+	section = &doctor.Section{}
+	stubTool(t, "op", `case "$1" in
+	--version) echo 2.30.0;;
+	whoami) echo "URL:   https://example.1password.com"; echo "Email: a@b.c";;
+	esac`)
+	doctorOnePassword(t.Context(), section, upFlags{})
+	got = find(t, section, "1password")
+	if got.Status != doctor.StatusOK {
+		t.Errorf("a signed-in op reported %+v", got)
+	}
+	if !strings.Contains(got.Detail, "a@b.c") {
+		t.Errorf("the check does not say which account answered: %q", got.Detail)
 	}
 }
 
