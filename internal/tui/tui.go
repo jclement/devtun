@@ -22,6 +22,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/jclement/devtun/internal/approval"
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/hostcfg"
@@ -53,6 +54,10 @@ type Options struct {
 	// running behind the browser and a secret request would otherwise sit
 	// unanswered on a screen nobody is on.
 	Prompt prompt.Backend
+	// Approvals is the desk the web board reads and answers through. When one
+	// is given, every question also goes on it — so the same request is on
+	// screen here and on the board, and whichever is answered first wins.
+	Approvals *approval.Desk
 	// WebURL is where the browser interface is, when one was asked for. It is
 	// announced through the log once the program is running, because it is
 	// carrying a token and a line printed before then would scroll the frame.
@@ -90,6 +95,15 @@ func Run(ctx context.Context, o Options) error {
 	// "reconnect first" is telling them to miss one more.
 	applyPrompt := func(backend prompt.Backend) {
 		approver := approverFor(backend, prompter, o.Bus)
+		// The desk wraps whatever the setting chose, rather than replacing it:
+		// the modal is still where somebody sitting here answers, and the desk
+		// is what lets the board answer the same question. Wrapping outside
+		// means `prompt: deny` still denies — a session told to answer nothing
+		// must not become answerable by opening a browser tab.
+		if o.Approvals != nil && backend != prompt.BackendDeny {
+			o.Approvals.SetPrompter(approver)
+			approver = o.Approvals
+		}
 		for _, svc := range o.Services {
 			if p, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
 				p.SetPrompter(approver)

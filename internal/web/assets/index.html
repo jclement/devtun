@@ -90,6 +90,41 @@
   .banner.bad { background: var(--bad-bg); color: var(--err); }
   .banner.ask { background: var(--ask-bg); }
   .banner b { color: var(--sec); }
+
+  /* A waiting approval is the one state worth interrupting for: devtun is
+     holding a request open and a person has to answer it, and the cost of not
+     noticing is a timeout that reads as a refusal nobody made. So the band is
+     red, it is pinned where scrolling cannot lose it, and the board stays
+     readable between the two halves rather than being covered by a dialog —
+     what that box is doing right now is often exactly what you want to see
+     while deciding. */
+  .ask-band {
+    position: sticky; z-index: 5;
+    background: var(--err); color: #fff;
+    border: 0; padding: .6rem 1rem;
+  }
+  .ask-band.top { top: 0; box-shadow: 0 2px 12px rgb(0 0 0 / .35); }
+  .ask-band.bottom { bottom: 0; box-shadow: 0 -2px 12px rgb(0 0 0 / .35); }
+  .ask-band h2 { margin: 0 0 .2rem; font-size: .95rem; font-weight: 600; letter-spacing: .01em; }
+  .ask-band .subject { font-family: var(--mono); word-break: break-all; }
+  .ask-band dl { margin: .35rem 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 0 .6rem; font-size: .8rem; }
+  .ask-band dt { opacity: .75; }
+  .ask-band dd { margin: 0; font-family: var(--mono); word-break: break-all; }
+  .ask-band .caveat { margin-top: .35rem; font-size: .75rem; opacity: .8; }
+  .ask-band .answers { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .ask-band button {
+    background: rgb(255 255 255 / .12); color: #fff; border-color: rgb(255 255 255 / .45);
+    font-size: .8rem; padding: .25rem .6rem;
+  }
+  .ask-band button:hover { background: #fff; color: var(--err); border-color: #fff; }
+  /* No is not styled as the scary one. Refusing costs a moment's confusion;
+     approving by reflex costs a secret, so the deliberate-looking button is
+     the yes. */
+  .ask-band button.no { background: transparent; }
+  @media (prefers-reduced-motion: no-preference) {
+    .ask-band.top { animation: ask-in .18s ease-out; }
+  }
+  @keyframes ask-in { from { opacity: 0; transform: translateY(-6px); } }
   #log { max-height: min(60vh, 22rem); overflow-y: auto; padding: .4rem .8rem; }
   #log div { display: flex; gap: .6rem; }
   #log time { color: var(--muted); }
@@ -126,6 +161,11 @@
 
 <div class="banner bad" id="offline" role="status" hidden></div>
 <div class="banner ask" id="waiting" role="status" hidden></div>
+
+<!-- The request, then the board, then the answers. Two bands rather than a
+     dialog: what the box is doing right now is often what you want to look at
+     while deciding whether it may have a secret. -->
+<div class="ask-band top" id="ask-top" role="alertdialog" aria-live="assertive" hidden></div>
 
 <main>
   <section>
@@ -174,9 +214,11 @@
   </section>
 </main>
 
+<div class="ask-band bottom" id="ask-bottom" hidden></div>
+
 <footer class="muted">
   <span id="version"></span> ·
-  approvals are answered where devtun is running — this page shows them, it does not decide them
+  an approval answered here is answered everywhere — whichever surface gets there first wins
 </footer>
 
 <script>
@@ -436,6 +478,93 @@ function renderRules(state) {
   $("rules-empty").hidden = rules.length > 0;
 }
 
+// renderAsk draws the two red bands, or takes them away.
+//
+// Only the oldest question is shown. More than one at a time is rare — the
+// brokers serialise their own — and stacking dialogs is how somebody ends up
+// answering the second one thinking it is the first.
+function renderAsk(waitingList) {
+  const top = $("ask-top");
+  const bottom = $("ask-bottom");
+  const ask = waitingList[0];
+
+  if (!ask) {
+    top.hidden = bottom.hidden = true;
+    top.replaceChildren();
+    bottom.replaceChildren();
+    askShown = null;
+    return;
+  }
+  // Rebuilding on every poll would throw away the click you were making. The
+  // bands are only redrawn when the question itself changes.
+  if (askShown === ask.id) return;
+  askShown = ask.id;
+
+  top.replaceChildren();
+  const head = document.createElement("h2");
+  head.textContent = `${ask.host} wants this ${ask.noun}${ask.scope ? " for " + ask.scope : ""}`;
+  const subject = document.createElement("div");
+  subject.className = "subject";
+  subject.textContent = ask.subject;
+  top.append(head, subject);
+
+  if ((ask.rows ?? []).length) {
+    const dl = document.createElement("dl");
+    for (const row of ask.rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = row.label;
+      const dd = document.createElement("dd");
+      dd.textContent = row.value;
+      dl.append(dt, dd);
+    }
+    top.append(dl);
+    // The same caveat the terminal shows, for the same reason: these details
+    // are self-reported by a process on a box devtun treats as semi-trusted,
+    // and a detail read as fact is worse than no detail.
+    const caveat = document.createElement("div");
+    caveat.className = "caveat";
+    caveat.textContent = "these details come from the remote box and are not verified";
+    top.append(caveat);
+  }
+  top.hidden = false;
+
+  bottom.replaceChildren();
+  const answers = document.createElement("div");
+  answers.className = "answers";
+  for (const option of ask.options ?? []) {
+    const button = document.createElement("button");
+    button.textContent = option.label;
+    if (!option.allows) button.className = "no";
+    button.onclick = () => answer(ask.id, option.choice, button);
+    answers.append(button);
+  }
+  bottom.append(answers);
+  bottom.hidden = false;
+}
+
+// askShown is the id currently drawn, so a poll does not rebuild the buttons
+// out from under a click.
+let askShown = null;
+
+// answer sends one decision and gets out of the way.
+//
+// The buttons are disabled the moment one is pressed: the id is good for a
+// single use, so a second click is refused by the server anyway, and a row of
+// live buttons after a decision invites somebody to try.
+async function answer(id, choice, pressed) {
+  for (const button of $("ask-bottom").querySelectorAll("button")) button.disabled = true;
+  pressed.textContent = "…";
+  try {
+    await api(`/api/approve?id=${encodeURIComponent(id)}&choice=${choice}`, "POST");
+  } catch (err) {
+    // Answered elsewhere, or timed out. Either way the question is gone and
+    // the next poll will clear the bands; saying so beats a silent no-op.
+    notice(String(err.message || err));
+  }
+  askShown = null;
+  refresh();
+}
+
 function renderHeader(state) {
   const connection = state.connection ?? {};
   $("dot").className = "dot " + (connection.state ?? "");
@@ -483,6 +612,7 @@ async function refresh() {
     renderGrants(state);
     renderRules(state);
     renderWaiting();
+    renderAsk(state.waiting ?? []);
     if (Date.now() > noticeUntil) $("offline").hidden = true;
   } catch (err) {
     // The board on screen is now a photograph of the past, and saying so is

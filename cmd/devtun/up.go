@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/jclement/devtun/internal/approval"
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/browser"
 	"github.com/jclement/devtun/internal/buildinfo"
@@ -210,8 +211,16 @@ func runUp(ctx context.Context, f upFlags) error {
 
 	backend := promptBackend(f, store, dest.Label())
 
+	// The desk is what lets one question be answered from more than one place.
+	// It is built whenever a board is, and only then: without a board there is
+	// no second surface, and every approval goes exactly where it always did.
+	var desk *approval.Desk
+	if f.web != "" {
+		desk = approval.New(approval.Options{})
+	}
+
 	bus := event.NewBus(historyLimit)
-	services, tunnelSvc, err := buildServices(f, store, backend, useTUI)
+	services, tunnelSvc, err := buildServices(f, store, backend, useTUI, desk)
 	if err != nil {
 		return err
 	}
@@ -248,7 +257,7 @@ func runUp(ctx context.Context, f upFlags) error {
 	// somebody's secret.
 	var webURL string
 	if f.web != "" {
-		url, stop, err := serveWeb(ctx, f, bus, sess, tunnelSvc, services, dest.Label())
+		url, stop, err := serveWeb(ctx, f, bus, sess, tunnelSvc, services, dest.Label(), desk)
 		if err != nil {
 			return err
 		}
@@ -266,6 +275,7 @@ func runUp(ctx context.Context, f upFlags) error {
 			Version:    buildinfo.Version(),
 			Store:      store,
 			Prompt:     backend,
+			Approvals:  desk,
 			WebURL:     webURL,
 			NoDissolve: f.noDissolve,
 		})
@@ -282,21 +292,22 @@ func runUp(ctx context.Context, f upFlags) error {
 // a person is looking and not into a log they may be piping to a file.
 func serveWeb(
 	ctx context.Context, f upFlags, bus *event.Bus, sess *session.Session,
-	tunnelSvc *tunnels.Service, services []service.Service, label string,
+	tunnelSvc *tunnels.Service, services []service.Service, label string, desk *approval.Desk,
 ) (string, func(), error) {
 	addr := strings.TrimSpace(f.web)
 	if addr == "on" || addr == "true" {
 		addr = ""
 	}
 	server, err := web.New(web.Options{
-		Addr:     addr,
-		Host:     label,
-		Version:  buildinfo.Version(),
-		Tunnels:  webTunnels(tunnelSvc),
-		Services: services,
-		Bus:      bus,
-		Status:   sess.Status,
-		Retry:    sess.RetryNow,
+		Addr:      addr,
+		Host:      label,
+		Version:   buildinfo.Version(),
+		Tunnels:   webTunnels(tunnelSvc),
+		Services:  services,
+		Bus:       bus,
+		Status:    sess.Status,
+		Retry:     sess.RetryNow,
+		Approvals: desk,
 	})
 	if err != nil {
 		return "", nil, err
@@ -459,7 +470,9 @@ func resolveDestination(f upFlags) (*sshx.Destination, sshx.Options, error) {
 // Tunnels comes first because the browser bridge resolves ports through it, and
 // because it is the one that needs nothing on the remote box: if everything
 // else fails, forwarding still works, which is very often why devtun was run.
-func buildServices(f upFlags, store *hostcfg.Store, backend prompt.Backend, useTUI bool) ([]service.Service, *tunnels.Service, error) {
+func buildServices(
+	f upFlags, store *hostcfg.Store, backend prompt.Backend, useTUI bool, desk *approval.Desk,
+) ([]service.Service, *tunnels.Service, error) {
 	policy, err := tunnelPolicy(f)
 	if err != nil {
 		return nil, nil, err
@@ -481,6 +494,18 @@ func buildServices(f upFlags, store *hostcfg.Store, backend prompt.Backend, useT
 	prompter, err := buildPrompter(backend, useTUI)
 	if err != nil {
 		return nil, nil, err
+	}
+	// Outside whatever the setting chose, not instead of it: the terminal form
+	// or the desktop dialog is still where somebody at this machine answers,
+	// and the desk is what lets the board answer the same question. Wrapping
+	// outside is also what keeps `prompt: deny` meaning deny — a session told
+	// to answer nothing must not become answerable by opening a browser tab.
+	//
+	// Under the interface this is nil and the wrapping happens in tui.Run
+	// instead, because the modal cannot exist until its program does.
+	if desk != nil && prompter != nil && backend != prompt.BackendDeny {
+		desk.SetPrompter(prompter)
+		prompter = desk
 	}
 	rules, err := globalRules(store)
 	if err != nil {

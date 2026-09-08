@@ -262,7 +262,9 @@ The first time a new secret is asked for, devtun asks you:
   Never, this secret (writes a deny rule)
 ```
 
-Narrowest first, and every approval sits above every refusal, so overshooting downward can never land on a "yes". Walking away, pressing escape, or letting it time out all mean *No*. Under `--tui` this is a modal inside the interface — the thing neither predecessor could do, because a terminal form and a full-screen TUI cannot share a terminal.
+Narrowest first, and every approval sits above every refusal, so overshooting downward can never land on a "yes". Walking away, pressing escape, or letting it time out all mean *No*.
+
+In the interface this is **two red bands** — the request across the top, the answers across the bottom — with the port table and the log still readable between them, because what that box is doing right now is often exactly what you want to see while deciding. Press the number, or `↑↓` and enter, or `esc` for no.
 
 ### Where you get asked
 
@@ -348,7 +350,16 @@ Under the interface, `w` opens the board and copies its URL to your clipboard �
 
 The page shows the same board the interface draws: the port table with its live counters, the security log streaming in, and — in two separate panels, because they are two different kinds of thing — the **grants** that are live now and lapsing on their own, and the **rules** that are written down and stay until revoked. You can hide a port, show the hidden ones again, revoke a rule, revoke a grant, and ask for a reconnect. A rule that came from your config file says *edit your config file* instead of offering a button that would refuse. It runs *alongside* whichever interface owns your terminal rather than instead of it, so `--web` and the TUI are a fine combination — one on the second monitor, one in the pane.
 
-**It cannot approve anything, deliberately.** A page that could approve has to be right about tokens, origins, rebinding and replay all at once, and the cost of being subtly wrong there is one of your secrets. Approvals stay where they were: the interface's modal, a desktop dialog, or the terminal.
+**It answers approvals too.** The same question appears in the terminal and on the board at the same time, and whichever you answer first wins — the other withdraws. That matters because devtun runs in a window you are not looking at; a board that could show you a secret being asked for and then send you to another window to say yes turns every approval into a race against its own timeout.
+
+Four things make that safe to do over HTTP, and the first three were already here:
+
+- the **one-shot token** and the session cookie behind it;
+- the **loopback-only `Host` check**, which is what stops DNS rebinding;
+- the **`Origin` check** on everything that changes something;
+- and **an unguessable id per request, spent on first use.** You approve *that request*, never "whatever is pending" — between reading the board and clicking, the pending one may be a different question entirely. A replay gets a 409. A choice is checked against the menu built for that one request, so a signature cannot be answered with an option only ever offered for a vault read.
+
+`prompt: deny` still means deny: a session told to answer nothing does not become answerable by opening a browser tab.
 
 Three things keep the port honest, because a port on `127.0.0.1` is not private — every process on your machine can reach it, and so can a web page you have open:
 

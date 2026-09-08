@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jclement/devtun/internal/approval"
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -511,11 +515,16 @@ func TestThePageIsEmbedded(t *testing.T) {
 	}
 }
 
-// The page may say that an approval is waiting; it may never answer one. That
-// is the promise the package documents and the README repeats, and the way it
-// gets broken is a helpful patch teaching the page one more endpoint — so the
-// set of endpoints the page is allowed to call is written down here, and
-// adding to it has to be deliberate.
+// The set of endpoints the page may call is written down, so that adding one is
+// deliberate rather than incidental.
+//
+// This used to enforce "the page may say an approval is waiting; it may never
+// answer one", and /api/approve was added to it on purpose, once the replay
+// question had an answer: a request is addressed by an unguessable id that is
+// spent on first use, and a choice is checked against that one request's menu.
+// The list survives the rule it originally guarded, because the failure it
+// prevents is the same either way — a helpful patch teaching the page one more
+// endpoint, with nobody weighing what that endpoint can do.
 func TestThePageCallsNothingItIsNotAllowedTo(t *testing.T) {
 	page, err := assets.ReadFile("assets/index.html")
 	if err != nil {
@@ -529,6 +538,7 @@ func TestThePageCallsNothingItIsNotAllowedTo(t *testing.T) {
 		"/api/grants/revoke": true,
 		"/api/reconnect":     true,
 		"/api/hidden":        true,
+		"/api/approve":       true,
 	}
 
 	// A template hole stands in for whatever the page interpolates, so the
@@ -555,5 +565,166 @@ func TestLoopbackHost(t *testing.T) {
 		if got := loopbackHost(host); got != want {
 			t.Errorf("loopbackHost(%q) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+// --- approvals -------------------------------------------------------------
+
+// deskWith returns a server whose desk has one question waiting on it, and the
+// function that stops the asker.
+func deskWith(t *testing.T, opts Options) (*Server, *approval.Desk, approval.Item, func()) {
+	t.Helper()
+	desk := approval.New(approval.Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		_, _ = desk.Ask(ctx, prompt.Request{
+			Host: "bedev", Subject: "op://Personal/Docker/PAT", TTL: 5 * time.Minute,
+			Rows: []prompt.Row{{Label: "caller", Value: "deploy.sh"}},
+		})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(desk.Waiting()) == 0 {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("the desk never published the question")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	opts.Approvals = desk
+	return newTestServer(t, opts), desk, desk.Waiting()[0], cancel
+}
+
+// The board shows what is waiting, with the id it needs to answer and the same
+// menu every other surface offers.
+func TestTheBoardShowsWhatIsWaiting(t *testing.T) {
+	s, _, item, stop := deskWith(t, Options{})
+	defer stop()
+
+	recorder := ask(t, s, http.MethodGet, "/api/state")
+	var payload statePayload
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	if len(payload.Waiting) != 1 {
+		t.Fatalf("waiting = %+v", payload.Waiting)
+	}
+	got := payload.Waiting[0]
+	if got.ID != item.ID || got.Subject != "op://Personal/Docker/PAT" {
+		t.Errorf("the board published %+v", got)
+	}
+	if len(got.Options) == 0 {
+		t.Error("the board offered no answers, so nothing could be decided from it")
+	}
+	// The caller detail is what makes an approval decidable at all.
+	if len(got.Rows) != 1 || got.Rows[0].Value != "deploy.sh" {
+		t.Errorf("the detail rows did not survive: %+v", got.Rows)
+	}
+}
+
+func TestApprovingFromTheBoardAnswersTheRequest(t *testing.T) {
+	s, desk, item, stop := deskWith(t, Options{})
+	defer stop()
+
+	path := "/api/approve?id=" + url.QueryEscape(item.ID) +
+		"&choice=" + strconv.Itoa(int(prompt.ChoiceAllowOnce))
+	if got := ask(t, s, http.MethodPost, path); got.Code != http.StatusOK {
+		t.Fatalf("approve = %d: %s", got.Code, got.Body)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(desk.Waiting()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the question is still waiting after being approved")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// An id is spent on first use, so a replayed approval — a double submit, a
+// resent request — cannot land on whatever is waiting next.
+func TestAnApprovalCannotBeReplayed(t *testing.T) {
+	s, _, item, stop := deskWith(t, Options{})
+	defer stop()
+
+	path := "/api/approve?id=" + url.QueryEscape(item.ID) +
+		"&choice=" + strconv.Itoa(int(prompt.ChoiceAllowOnce))
+	if got := ask(t, s, http.MethodPost, path); got.Code != http.StatusOK {
+		t.Fatalf("the first approval was refused: %d", got.Code)
+	}
+	got := ask(t, s, http.MethodPost, path)
+	if got.Code != http.StatusConflict {
+		t.Errorf("a replayed approval returned %d, want 409", got.Code)
+	}
+	if !strings.Contains(got.Body.String(), "no longer waiting") {
+		t.Errorf("the refusal does not say why: %s", got.Body)
+	}
+}
+
+// Guessing at ids, and answering with something never offered, are the two
+// ways to aim an approval at the wrong thing.
+func TestApproveRefusesWhatItCannotVerify(t *testing.T) {
+	s, _, item, stop := deskWith(t, Options{})
+	defer stop()
+
+	for _, tc := range []struct {
+		name, path string
+		want       int
+	}{
+		{"a guessed id", "/api/approve?id=AAAAAAAAAAAAAAAAAAAAAA&choice=1", http.StatusConflict},
+		{"no id at all", "/api/approve?choice=1", http.StatusConflict},
+		{"no choice", "/api/approve?id=" + url.QueryEscape(item.ID), http.StatusBadRequest},
+		{"a choice that is not a number", "/api/approve?id=" + url.QueryEscape(item.ID) + "&choice=yes", http.StatusBadRequest},
+		{"a choice off the end of the menu", "/api/approve?id=" + url.QueryEscape(item.ID) + "&choice=99", http.StatusBadRequest},
+	} {
+		if got := ask(t, s, http.MethodPost, tc.path); got.Code != tc.want {
+			t.Errorf("%s = %d, want %d: %s", tc.name, got.Code, tc.want, got.Body)
+		}
+	}
+}
+
+// Approving is a mutation, so it carries every defence the others do: no
+// token, no rebound hostname, no cross-origin post.
+func TestApproveIsGuardedLikeEveryOtherMutation(t *testing.T) {
+	s, _, item, stop := deskWith(t, Options{})
+	defer stop()
+
+	path := "/api/approve?id=" + url.QueryEscape(item.ID) + "&choice=1"
+
+	noToken := httptest.NewRequest(http.MethodPost, path, nil)
+	noToken.Host = "127.0.0.1:9999"
+	noToken.Header.Set("Origin", "http://127.0.0.1:9999")
+	recorder := httptest.NewRecorder()
+	s.mux.ServeHTTP(recorder, noToken)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("approving without a token = %d, want 401", recorder.Code)
+	}
+
+	rebound := httptest.NewRequest(http.MethodPost, path, nil)
+	rebound.Host = "devtun.attacker.example"
+	rebound.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+	recorder = httptest.NewRecorder()
+	s.mux.ServeHTTP(recorder, rebound)
+	if recorder.Code != http.StatusForbidden {
+		t.Errorf("approving through a rebound hostname = %d, want 403", recorder.Code)
+	}
+
+	crossOrigin := httptest.NewRequest(http.MethodPost, path, nil)
+	crossOrigin.Host = "127.0.0.1:9999"
+	crossOrigin.Header.Set("Origin", "https://evil.example")
+	crossOrigin.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+	recorder = httptest.NewRecorder()
+	s.mux.ServeHTTP(recorder, crossOrigin)
+	if recorder.Code != http.StatusForbidden {
+		t.Errorf("a cross-origin approval = %d, want 403", recorder.Code)
+	}
+}
+
+// A session with nothing that asks for approval must not pretend it can.
+func TestApproveWithNoDeskSaysSo(t *testing.T) {
+	s := newTestServer(t, Options{})
+	if got := ask(t, s, http.MethodPost, "/api/approve?id=x&choice=1"); got.Code != http.StatusServiceUnavailable {
+		t.Errorf("approve with no desk = %d, want 503", got.Code)
 	}
 }

@@ -176,7 +176,7 @@ func TestModeSelection(t *testing.T) {
 // at that.
 func TestTheAssembledRegistry(t *testing.T) {
 	store := hostcfg.Open(t.TempDir())
-	services, tunnelSvc, err := buildServices(defaults(), store, prompt.BackendDeny, false)
+	services, tunnelSvc, err := buildServices(defaults(), store, prompt.BackendDeny, false, nil)
 	if err != nil {
 		t.Fatalf("buildServices: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestTheAssembledRegistry(t *testing.T) {
 // nothing and devtun starts with no services at all.
 func TestOnlyAcceptsEveryServiceName(t *testing.T) {
 	store := hostcfg.Open(t.TempDir())
-	services, _, err := buildServices(defaults(), store, prompt.BackendDeny, false)
+	services, _, err := buildServices(defaults(), store, prompt.BackendDeny, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestABrokenHideListIsFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := buildServices(defaults(), hostcfg.Open(dir), prompt.BackendDeny, false)
+	_, _, err := buildServices(defaults(), hostcfg.Open(dir), prompt.BackendDeny, false, nil)
 	if err == nil {
 		t.Fatal("an unparseable hide list must not be read as 'hide nothing'")
 	}
@@ -387,7 +387,7 @@ func TestSetupModeResolution(t *testing.T) {
 // something a person can act on, rather than at the moment a secret is asked
 // for.
 func TestAnUnknownPromptBackendIsRefusedUpFront(t *testing.T) {
-	_, _, err := buildServices(defaults(), hostcfg.Open(t.TempDir()), prompt.Backend("gui"), false)
+	_, _, err := buildServices(defaults(), hostcfg.Open(t.TempDir()), prompt.Backend("gui"), false, nil)
 	if err == nil {
 		t.Fatal("an unknown prompt backend was accepted")
 	}

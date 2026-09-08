@@ -5,6 +5,32 @@ this is 0.x, a minor bump may break something.
 
 ## Unreleased
 
+### Added
+
+- **Approvals can be answered from the web board.** The same question appears in
+  the terminal and on the board at once, and whichever is answered first wins —
+  the other withdraws. devtun runs in a window you are not looking at, which is
+  the whole premise; a board that could show you a secret being asked for and
+  then send you elsewhere to say yes turned every approval into a race against
+  its own timeout.
+
+  This reverses a deliberate refusal, and the reasoning it reverses was: a page
+  that can approve has to be right about tokens, origins, rebinding and replay
+  at once. Three of those were already handled. Replay is answered in
+  `internal/approval`: a request carries an unguessable id, spent on first use,
+  and a choice is checked against the menu built for that one request. "Approve
+  whatever is pending" is not an operation — between reading the board and
+  clicking, the pending one may be a different question. `prompt: deny` still
+  denies; the desk wraps outside the backend choice, so a session told to answer
+  nothing does not become answerable by opening a browser tab.
+- **A waiting approval is two red bands rather than a modal.** The request
+  across the top, the answers across the bottom, and the port table and log
+  still readable between them — because what the box is doing right now is
+  often exactly what you want to see while deciding whether it may have a
+  secret. Every answer is on screen, wrapped over as many rows as it takes: a
+  security menu that shows one option and "5 of 9" is asking somebody to decide
+  blind. The answers are numbered, and the numbers work.
+
 ### Fixed
 
 - **A session no longer deletes a socket it does not own.** Two devtun sessions

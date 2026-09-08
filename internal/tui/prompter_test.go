@@ -365,3 +365,78 @@ func (s *unpromptableStub) Probe(context.Context, service.Host) service.Support 
 func (s *unpromptableStub) Attach(context.Context, service.Host) (service.Instance, error) {
 	return nil, nil
 }
+
+// The request is a band across the top and the answers a band across the
+// bottom, not a panel over the middle. Deciding whether a box may read a secret
+// is a decision you often want to make while looking at what that box is doing.
+func TestAWaitingApprovalLeavesTheBoardReadable(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(
+		row(3000, 3000, "node vite"), row(5173, 5174, "vite --host"))})
+
+	reply := make(chan prompt.Choice, 1)
+	request := prompt.Request{
+		Host: "bedev", Subject: "op://Personal/Docker/PAT", TTL: 5 * time.Minute,
+		Rows:   []prompt.Row{{Label: "command", Value: "op read op://Personal/Docker/PAT"}},
+		Caller: service.Caller{User: "jsc", Host: "bedev", Program: "deploy.sh", PID: 4412},
+	}
+	m.Update(approvalMsg{request: request, options: prompt.MenuFor(request), reply: reply})
+
+	view := plainView(m)
+	// The question, in full.
+	for _, want := range []string{
+		"bedev wants", "op://Personal/Docker/PAT",
+		"op read op://Personal/Docker/PAT", "deploy.sh",
+		"are not verified",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the band is missing %q:\n%s", want, view)
+		}
+	}
+	// And the board behind it, which is the whole reason it is a band.
+	for _, want := range []string{"node vite", "vite --host", "3000"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the board was covered; %q is not visible:\n%s", want, view)
+		}
+	}
+}
+
+// Every answer is on screen. A security menu that shows one option and a count
+// is asking somebody to decide blind, and the order — every approval above
+// every refusal — only protects you if you can see it.
+func TestEveryAnswerIsVisibleRatherThanCollapsed(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub()})
+	reply := make(chan prompt.Choice, 1)
+	request := prompt.Request{Host: "bedev", Subject: "op://V/I/F", TTL: 5 * time.Minute}
+	options := prompt.MenuFor(request)
+	m.Update(approvalMsg{request: request, options: options, reply: reply})
+
+	view := plainView(m)
+	for _, option := range options {
+		if !strings.Contains(view, option.Label) {
+			t.Errorf("the answer %q is not on screen:\n%s", option.Label, view)
+		}
+	}
+}
+
+// The answers are numbered on screen, so the numbers answer: somebody who has
+// just been interrupted should not have to work out a cursor to say no.
+func TestANumberAnswersTheQuestion(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub()})
+	reply := make(chan prompt.Choice, 1)
+	request := prompt.Request{Host: "bedev", Subject: "op://V/I/F", TTL: 5 * time.Minute}
+	options := prompt.MenuFor(request)
+	m.Update(approvalMsg{request: request, options: options, reply: reply})
+
+	send(m, "1")
+	select {
+	case got := <-reply:
+		if got != options[0].Choice {
+			t.Errorf("pressing 1 answered %v, want %v", got, options[0].Choice)
+		}
+	default:
+		t.Fatal("pressing 1 did not answer the question")
+	}
+	if m.approval != nil {
+		t.Error("the band is still on screen after being answered")
+	}
+}

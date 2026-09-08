@@ -98,8 +98,6 @@ func (m *Model) frame() string {
 	switch {
 	case m.cmd.open:
 		view = overlayCenter(view, m.paletteBox(), m.width, m.height)
-	case m.approval != nil:
-		view = overlayCenter(view, m.approvalBox(), m.width, m.height)
 	case m.setup != nil:
 		view = overlayCenter(view, m.setupBox(), m.width, m.height)
 	case m.confirming:
@@ -142,8 +140,30 @@ func (m *Model) baseView() string {
 	b.WriteByte('\n')
 	b.WriteString(m.separator(""))
 	b.WriteByte('\n')
+	// The request, and then the board it is about. A modal over the middle
+	// hides the one thing you often want while deciding — what that box is
+	// doing right now.
+	if m.approvalPending() {
+		for _, line := range m.approvalBanner() {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		b.WriteString(m.separatorIn(ui.Danger, ""))
+		b.WriteByte('\n')
+	}
 	b.WriteString(m.body())
 	b.WriteByte('\n')
+	if m.approvalPending() {
+		b.WriteString(m.separatorIn(ui.Danger, ""))
+		b.WriteByte('\n')
+		for i, line := range m.approvalOptions() {
+			if i > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(line)
+		}
+		b.WriteByte('\n')
+	}
 	// The activity pane disappears entirely on a frame too short to spare the
 	// rows. Its rule goes with it: a labelled separator over nothing is worse
 	// than no pane, because it looks like something failed to render.
@@ -230,10 +250,16 @@ func (m *Model) tickerHeight() int {
 
 // chrome is every line the active tab's body does not get.
 func (m *Model) chrome() int {
+	rows := baseChrome
 	if h := m.tickerHeight(); h > 0 {
-		return baseChrome + h + 1 // the pane, plus the rule above it
+		rows += h + 1 // the pane, plus the rule above it
 	}
-	return baseChrome
+	if m.approvalPending() {
+		// The request above the board and the answers below it: the request's
+		// own rows, one rule under them, then a rule and a row for the answers.
+		rows += m.approvalBannerHeight() + m.approvalOptionsHeight() + 2
+	}
+	return rows
 }
 
 // listHeight is how many rows of the active tab's list fit on screen.
@@ -295,8 +321,6 @@ func (m *Model) emptyView(h int, msg string) string {
 }
 
 // rule draws a horizontal run of the frame's edge.
-func (m *Model) rule(n int) string { return m.ruleIn(ui.Muted, n) }
-
 // ruleIn draws a horizontal rule in a given style, so one border can be
 // coloured differently from the rest of the frame.
 func (m *Model) ruleIn(style lipgloss.Style, n int) string {
@@ -347,10 +371,16 @@ func (m *Model) borderIn(edge lipgloss.Style, left, right, lc, rc string) string
 }
 
 func (m *Model) separator(label string) string {
+	return m.separatorIn(ui.Muted, label)
+}
+
+// separatorIn is separator with the rule's colour chosen by the caller, so the
+// bands around a waiting approval can be red the whole way across.
+func (m *Model) separatorIn(style lipgloss.Style, label string) string {
 	if label == "" {
-		return ui.Muted.Render(teeL) + m.rule(m.inner()) + ui.Muted.Render(teeR)
+		return style.Render(teeL) + m.ruleIn(style, m.inner()) + style.Render(teeR)
 	}
-	return m.borderWith(ui.Muted.Render(label), "", teeL, teeR)
+	return m.borderIn(style, style.Render(label), "", teeL, teeR)
 }
 
 func (m *Model) topBorder() string {
@@ -374,13 +404,18 @@ func (m *Model) topBorder() string {
 	// reaching your dev box, and a warning drawn at the same weight as "3 fwd"
 	// is one you have stopped seeing by the second day.
 	edge := ui.Muted
-	if m.exposed() {
+	if m.exposed() || m.approvalPending() {
 		edge = ui.Danger
 	}
 	return m.borderIn(edge, title, status, cornerTL, cornerTR)
 }
 
 func (m *Model) bottomBorder() string {
+	// None of the ordinary keys does anything while a question is waiting, so
+	// advertising them would be a lie about what the keyboard is for.
+	if m.approvalPending() {
+		return m.borderIn(ui.Danger, m.approvalHint(), "", cornerBL, cornerBR)
+	}
 	if m.editing() {
 		return m.borderWith(m.editorLabel(), "", cornerBL, cornerBR)
 	}
@@ -768,12 +803,6 @@ func (m *Model) wrapBody(body string) string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
-}
-
-// boxOfStyle is boxOf with a caller-chosen frame, for the one overlay that
-// must not look like the others.
-func (m *Model) boxOfStyle(style lipgloss.Style, body string) string {
-	return style.Render(m.wrapBody(body))
 }
 
 // barWidth is how wide a set of key hints renders, separators included.

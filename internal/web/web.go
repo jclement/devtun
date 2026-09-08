@@ -12,12 +12,18 @@
 // rule, revoke a grant, forget everything. Every one of those either narrows
 // what the remote box can do or changes what you are looking at.
 //
-// It does not answer approvals. A prompt is the one decision where the cost of
-// getting the plumbing subtly wrong is somebody else's secret, and a page that
-// can approve is a page that has to be right about tokens, origins, rebinding
-// and replay all at once. Approvals stay where they were — the interface's
-// modal, a desktop dialog, or the terminal — and this page says so when one is
-// waiting.
+// It answers approvals too, which was not always true. The objection was that a
+// page which can approve has to be right about tokens, origins, rebinding and
+// replay all at once — and three of those were already handled here. Replay is
+// the fourth, and it is answered in internal/approval rather than here: a
+// request is addressed by an unguessable id that is spent on first use, and a
+// choice is checked against the menu built for that one request. "Approve
+// whatever is pending" is not an operation this page can perform.
+//
+// The alternative was worse than the risk. devtun runs in a window you are not
+// looking at; that is the whole premise. A board that could show you a secret
+// being asked for and then send you to another window to say yes is a board
+// that turns every approval into a race against its own timeout.
 //
 // # Getting in
 //
@@ -55,8 +61,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jclement/devtun/internal/approval"
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -124,6 +132,10 @@ type Options struct {
 	Status func() session.Status
 	// Retry asks the session to reconnect now.
 	Retry func()
+	// Approvals is the desk of questions waiting on a human. Nil means the
+	// board shows none and can answer none, which is what a session with no
+	// gated service has.
+	Approvals *approval.Desk
 	// Now is injectable for tests.
 	Now func() time.Time
 }
@@ -238,6 +250,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/grants/revoke", s.guard(s.handleRevokeGrant))
 	s.mux.HandleFunc("POST /api/reconnect", s.guard(s.handleReconnect))
 	s.mux.HandleFunc("POST /api/hidden", s.guard(s.handleShowHidden))
+	s.mux.HandleFunc("POST /api/approve", s.guard(s.handleApprove))
 }
 
 // guard is the whole of the access control, in one place so that no handler can
@@ -357,6 +370,10 @@ type statePayload struct {
 	Services   []serviceView `json:"services"`
 	Rules      []ruleView    `json:"rules"`
 	Grants     []grantView   `json:"grants"`
+	// Waiting is every question sitting on a human right now. It is first in
+	// the page's reading order for the same reason it is loud on screen: a
+	// secret being asked for outranks anything else the board has to say.
+	Waiting []approvalView `json:"waiting"`
 }
 
 type connection struct {
@@ -471,6 +488,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	payload.Waiting = s.waiting()
 	writeJSON(w, payload)
 }
 
@@ -671,6 +689,99 @@ func (s *Server) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// approvalView is one question waiting on a human, as the page sees it.
+//
+// The id is included because it is how the page answers, and it is safe to send
+// to a caller that already holds the session cookie: it is unguessable, it is
+// good for one use, and it names one specific question.
+type approvalView struct {
+	ID      string        `json:"id"`
+	Host    string        `json:"host"`
+	Subject string        `json:"subject"`
+	Noun    string        `json:"noun"`
+	Scope   string        `json:"scope,omitempty"`
+	Rows    []approvalRow `json:"rows,omitempty"`
+	Options []optionView  `json:"options"`
+	Asked   string        `json:"asked"`
+	Expires string        `json:"expires,omitempty"`
+}
+
+type approvalRow struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+type optionView struct {
+	// Choice is the wire value the page sends back. It is the Choice's own
+	// integer, checked against this request's menu on the way in.
+	Choice int    `json:"choice"`
+	Label  string `json:"label"`
+	// Allows separates the yeses from the noes, so the page can colour them
+	// without parsing the label — which would be a second place for the meaning
+	// of an answer to live.
+	Allows bool `json:"allows"`
+}
+
+// waiting renders the desk for the page.
+func (s *Server) waiting() []approvalView {
+	if s.opts.Approvals == nil {
+		return nil
+	}
+	var out []approvalView
+	for _, item := range s.opts.Approvals.Waiting() {
+		view := approvalView{
+			ID: item.ID, Host: item.Request.Host, Subject: item.Request.Subject,
+			Noun: item.Request.SubjectNoun(), Scope: item.Request.Scope,
+			Asked: item.Asked.Format(time.RFC3339),
+		}
+		if !item.Deadline.IsZero() {
+			view.Expires = item.Deadline.Format(time.RFC3339)
+		}
+		for _, row := range item.Request.Rows {
+			view.Rows = append(view.Rows, approvalRow{Label: row.Label, Value: row.Value})
+		}
+		for _, option := range item.Options {
+			view.Options = append(view.Options, optionView{
+				Choice: int(option.Choice), Label: option.Label, Allows: option.Choice.Allows(),
+			})
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
+// handleApprove answers one waiting request.
+//
+// Everything that makes this safe is in the desk: the id is unguessable, it is
+// spent on first use, and the choice must have been on that request's own menu.
+// What is left here is refusing to guess — a missing or unparseable choice is
+// not treated as anything, least of all as a yes.
+func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Approvals == nil {
+		http.Error(w, "nothing on this session asks for approval", http.StatusServiceUnavailable)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	choice, err := strconv.Atoi(r.URL.Query().Get("choice"))
+	if err != nil {
+		http.Error(w, "choice must be one of the options offered for this request", http.StatusBadRequest)
+		return
+	}
+
+	switch err := s.opts.Approvals.Answer(id, prompt.Choice(choice)); {
+	case errors.Is(err, approval.ErrUnknown):
+		// Gone means answered elsewhere, timed out, or never real. Saying which
+		// would tell a caller which ids once existed.
+		http.Error(w, "that request is no longer waiting — it was answered or it timed out", http.StatusConflict)
+	case errors.Is(err, approval.ErrNotOffered):
+		http.Error(w, "that answer was not offered for this request", http.StatusBadRequest)
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	default:
+		writeJSON(w, map[string]bool{"ok": true})
+	}
 }
 
 func (s *Server) handleReconnect(w http.ResponseWriter, _ *http.Request) {

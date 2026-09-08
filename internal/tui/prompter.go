@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -10,7 +11,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/jclement/devtun/internal/prompt"
-	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/ui"
 )
@@ -207,67 +207,14 @@ func (m *Model) handleApprovalKey(msg tea.KeyPressMsg) tea.Cmd {
 		// Every way of dismissing this means the same thing.
 		return m.answer(prompt.ChoiceDeny)
 	}
+
+	// The answers are numbered on screen, so the numbers answer. Somebody who
+	// has just been interrupted by a red band across their terminal should not
+	// have to count rows with the arrow keys before they can say no.
+	if n, err := strconv.Atoi(msg.String()); err == nil && n >= 1 && n <= len(a.options) {
+		return m.answer(a.options[n-1].Choice)
+	}
 	return nil
-}
-
-// approvalBox renders the request.
-//
-// The subject carries ui.Secret, the same treatment it gets in the log and in
-// the terminal prompt, and the caller details carry the fixed warning that they
-// come from the remote box and are not verified — because they are the part a
-// hurried reader is most likely to take as proof of who is asking.
-func (m *Model) approvalBox() string {
-	a := m.approval
-	if a == nil {
-		return ""
-	}
-
-	var b strings.Builder
-	b.WriteString(ui.Host.Render(a.request.Host) + " wants " + ui.Secret.Render(a.request.Subject) + "\n\n")
-
-	row := func(label, value string) {
-		if value == "" {
-			return
-		}
-		b.WriteString(ui.Muted.Render(pad(label, 8)) + " " + value + "\n")
-	}
-	// The rows come from the service. This used to hardcode `op ` + argv, which
-	// put an empty command row in front of anyone approving a signature.
-	for _, r := range a.request.Rows {
-		row(r.Label, r.Value)
-	}
-	row("caller", describeCaller(a.request))
-	row("cwd", a.request.Caller.CWD)
-	// The caveat only belongs on screen when there are caller details to
-	// caveat. An agent connection carries no provenance at all, and a warning
-	// about information that is not shown trains people to skip the line.
-	if a.request.Caller != (service.Caller{}) {
-		b.WriteString(ui.Muted.Render("caller details come from the remote box and are not verified") + "\n")
-	}
-	b.WriteString("\n")
-
-	// Narrowest first, deny last: the safe answer is the one under the cursor
-	// and the broad ones take deliberate effort to reach.
-	for i, item := range a.options {
-		style := ui.Muted
-		if item.Choice == prompt.ChoiceDeny {
-			style = ui.Error
-		}
-		if i == a.cursor {
-			b.WriteString(ui.Banner.Render("▸ ") + ui.Selected.Render(item.Label) + "\n")
-			continue
-		}
-		b.WriteString("  " + style.Render(item.Label) + "\n")
-	}
-	b.WriteString("\n" + ui.Muted.Render("↑↓ choose · enter approve · esc deny"))
-	if left := time.Until(a.deadline).Round(time.Second); !a.deadline.IsZero() && left > 0 {
-		b.WriteString(ui.Muted.Render(fmt.Sprintf("  ·  refuses itself in %s", left)))
-	}
-	// Violet, the colour that means "vault" everywhere else in devtun. The
-	// help and detail overlays share the accent border, so an approval framed
-	// like them is one more box to dismiss rather than a question about a
-	// secret.
-	return m.boxOfStyle(ui.SecretPanel, b.String())
 }
 
 func describeCaller(request prompt.Request) string {
