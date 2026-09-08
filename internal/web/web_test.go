@@ -728,3 +728,34 @@ func TestApproveWithNoDeskSaysSo(t *testing.T) {
 		t.Errorf("approve with no desk = %d, want 503", got.Code)
 	}
 }
+
+// Anything the page hides has to actually be hidden.
+//
+// The `hidden` attribute is `display: none` in the browser's own stylesheet,
+// which any author rule outranks. The approval dialog's backdrop is
+// `display: grid`, so it shipped dimming the entire board at all times while
+// the page's own script believed it was hidden — a whole feature's worth of
+// chrome on screen, permanently, from one line of CSS.
+//
+// The fix is one rule, and this is what keeps it there. It also fails if a new
+// element is given `display` and marked `hidden` without it.
+func TestHiddenElementsAreActuallyHidden(t *testing.T) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatalf("reading the page: %v", err)
+	}
+	text := string(page)
+
+	if !regexp.MustCompile(`\[hidden\]\s*\{[^}]*display:\s*none\s*!important`).MatchString(text) {
+		t.Fatal("the page has no `[hidden] { display: none !important }`, so any element " +
+			"with a display rule of its own will stay on screen when the script hides it")
+	}
+
+	// Every id the markup marks hidden must be one the script can unhide, or
+	// it is dead chrome nobody will notice is missing.
+	for _, id := range regexp.MustCompile(`id="([a-z-]+)"[^>]*\shidden`).FindAllStringSubmatch(text, -1) {
+		if !strings.Contains(text, `$("`+id[1]+`")`) {
+			t.Errorf("#%s starts hidden and nothing in the page ever shows it", id[1])
+		}
+	}
+}

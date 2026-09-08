@@ -27,6 +27,15 @@
     }
   }
   * { box-sizing: border-box; }
+
+  /* The `hidden` attribute is `display: none` in the browser's own stylesheet,
+     which *any* author rule outranks — so an element given a display of its own
+     stays on screen while every script in the page believes it is gone. That is
+     not hypothetical: the approval dialog's backdrop is `display: grid`, and it
+     shipped dimming the whole board at all times, over a page whose JavaScript
+     had correctly set `hidden` on it. One rule makes the whole class of that
+     bug impossible, which is worth an `!important` in a file this size. */
+  [hidden] { display: none !important; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
     font: 14px/1.5 var(--mono);

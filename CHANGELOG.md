@@ -7,6 +7,13 @@ this is 0.x, a minor bump may break something.
 
 ### Fixed
 
+- **The web board was dimmed by a grey overlay at all times.** The approval
+  dialog's backdrop is `display: grid`, and the `hidden` attribute is only
+  `display: none` in the browser's own stylesheet — which any author rule
+  outranks. So the backdrop stayed on screen over everything while the page's
+  own script correctly believed it was hidden. One `[hidden] { display: none
+  !important }` makes the whole class of that bug impossible, and a test keeps
+  it there.
 - **doctor said 1Password was fine on a machine where every request would be
   refused.** It ran `op account list` — which reads a file on disk and succeeds
   with no session at all — while claiming in its own comment to be testing that
