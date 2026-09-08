@@ -36,7 +36,12 @@ var (
 	Host        lipgloss.Style
 	Panel       lipgloss.Style
 	SecretPanel lipgloss.Style
-	Warning     lipgloss.Style
+	// AlertPanel frames the one overlay that is not a thing to dismiss: a
+	// request that has stopped and is waiting for a person. Every other box on
+	// screen is information; this one is a question, and it should not be
+	// possible to mistake it for the help.
+	AlertPanel lipgloss.Style
+	Warning    lipgloss.Style
 	// Tunnel is the network palette: the counterweight to Secret, and the
 	// contrast between them is the one that has to survive a glance.
 	Tunnel lipgloss.Style
@@ -98,6 +103,7 @@ func NoColor() {
 	Host = lipgloss.NewStyle()
 	Panel = lipgloss.NewStyle()
 	SecretPanel = lipgloss.NewStyle()
+	AlertPanel = lipgloss.NewStyle()
 	Warning = lipgloss.NewStyle()
 	Tunnel = lipgloss.NewStyle()
 	Active = lipgloss.NewStyle()
@@ -139,6 +145,9 @@ func apply(dark bool) {
 	// means "vault" everywhere else here, and an approval that looks like
 	// every other overlay is one people dismiss by reflex.
 	SecretPanel = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(ColorSecret).Padding(0, 1)
+	// A thick border and a red one. The frame is what tells you, before you
+	// have read a word, that this box is not the help.
+	AlertPanel = lipgloss.NewStyle().Border(lipgloss.DoubleBorder()).BorderForeground(ColorError).Padding(1, 2)
 	Warning = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(ColorWarn).Padding(0, 1)
 }
 

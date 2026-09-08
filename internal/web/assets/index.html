@@ -93,38 +93,58 @@
 
   /* A waiting approval is the one state worth interrupting for: devtun is
      holding a request open and a person has to answer it, and the cost of not
-     noticing is a timeout that reads as a refusal nobody made. So the band is
-     red, it is pinned where scrolling cannot lose it, and the board stays
-     readable between the two halves rather than being covered by a dialog —
-     what that box is doing right now is often exactly what you want to see
-     while deciding. */
-  .ask-band {
-    position: sticky; z-index: 5;
+     noticing is a timeout that reads as a refusal nobody made.
+
+     A dialog in the middle over a dimmed board, not a band down an edge. Edges
+     are where an interface puts the things you are meant to ignore; a question
+     that has stopped the world belongs in the middle of it, where it cannot be
+     read as chrome. */
+  .ask-scrim {
+    position: fixed; inset: 0; z-index: 40;
+    background: rgb(0 0 0 / .55);
+    display: grid; place-items: center; padding: 1rem;
+  }
+  .ask {
+    width: min(46rem, 100%); max-height: 90vh; overflow-y: auto;
+    background: var(--panel); color: var(--text);
+    border: 3px solid var(--err); border-radius: 10px;
+    box-shadow: 0 18px 50px rgb(0 0 0 / .5);
+  }
+  .ask header {
     background: var(--err); color: #fff;
-    border: 0; padding: .6rem 1rem;
+    padding: .55rem 1rem; font-weight: 600; letter-spacing: .02em;
+    position: static; border: 0;
   }
-  .ask-band.top { top: 0; box-shadow: 0 2px 12px rgb(0 0 0 / .35); }
-  .ask-band.bottom { bottom: 0; box-shadow: 0 -2px 12px rgb(0 0 0 / .35); }
-  .ask-band h2 { margin: 0 0 .2rem; font-size: .95rem; font-weight: 600; letter-spacing: .01em; }
-  .ask-band .subject { font-family: var(--mono); word-break: break-all; }
-  .ask-band dl { margin: .35rem 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 0 .6rem; font-size: .8rem; }
-  .ask-band dt { opacity: .75; }
-  .ask-band dd { margin: 0; font-family: var(--mono); word-break: break-all; }
-  .ask-band .caveat { margin-top: .35rem; font-size: .75rem; opacity: .8; }
-  .ask-band .answers { display: flex; flex-wrap: wrap; gap: .4rem; }
-  .ask-band button {
-    background: rgb(255 255 255 / .12); color: #fff; border-color: rgb(255 255 255 / .45);
-    font-size: .8rem; padding: .25rem .6rem;
+  .ask .body { padding: 1rem; }
+  .ask h2 { margin: 0 0 .5rem; font-size: 1rem; font-weight: 600; }
+  .ask .subject {
+    font-family: var(--mono); word-break: break-all;
+    color: var(--sec); font-size: 1.05rem; margin-bottom: .8rem;
   }
-  .ask-band button:hover { background: #fff; color: var(--err); border-color: #fff; }
+  .ask dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: .15rem .8rem; font-size: .85rem; }
+  .ask dt { color: var(--muted); }
+  .ask dd { margin: 0; font-family: var(--mono); word-break: break-all; }
+  .ask .caveat { margin: .7rem 0 0; font-size: .78rem; color: var(--muted); }
+  .ask .answers { display: flex; flex-direction: column; gap: .3rem; margin-top: 1rem; }
+  .ask .answers button {
+    text-align: left; font-size: .88rem; padding: .4rem .7rem;
+    display: flex; gap: .6rem; align-items: baseline;
+  }
+  .ask .answers button .n { color: var(--muted); font-family: var(--mono); min-width: 1ch; }
+  .ask .answers button:hover, .ask .answers button:focus-visible {
+    border-color: var(--ok); color: var(--ok); outline: none;
+  }
   /* No is not styled as the scary one. Refusing costs a moment's confusion;
      approving by reflex costs a secret, so the deliberate-looking button is
-     the yes. */
-  .ask-band button.no { background: transparent; }
-  @media (prefers-reduced-motion: no-preference) {
-    .ask-band.top { animation: ask-in .18s ease-out; }
+     never the yes. */
+  .ask .answers button.no:hover, .ask .answers button.no:focus-visible {
+    border-color: var(--err); color: var(--err);
   }
-  @keyframes ask-in { from { opacity: 0; transform: translateY(-6px); } }
+  .ask .how { margin-top: .8rem; font-size: .78rem; color: var(--muted); }
+  @media (prefers-reduced-motion: no-preference) {
+    .ask { animation: ask-in .16s ease-out; }
+  }
+  @keyframes ask-in { from { opacity: 0; transform: scale(.97); } }
   #log { max-height: min(60vh, 22rem); overflow-y: auto; padding: .4rem .8rem; }
   #log div { display: flex; gap: .6rem; }
   #log time { color: var(--muted); }
@@ -161,11 +181,6 @@
 
 <div class="banner bad" id="offline" role="status" hidden></div>
 <div class="banner ask" id="waiting" role="status" hidden></div>
-
-<!-- The request, then the board, then the answers. Two bands rather than a
-     dialog: what the box is doing right now is often what you want to look at
-     while deciding whether it may have a secret. -->
-<div class="ask-band top" id="ask-top" role="alertdialog" aria-live="assertive" hidden></div>
 
 <main>
   <section>
@@ -214,7 +229,7 @@
   </section>
 </main>
 
-<div class="ask-band bottom" id="ask-bottom" hidden></div>
+<div class="ask-scrim" id="ask" role="alertdialog" aria-modal="true" aria-live="assertive" hidden></div>
 
 <footer class="muted">
   <span id="version"></span> ·
@@ -478,35 +493,42 @@ function renderRules(state) {
   $("rules-empty").hidden = rules.length > 0;
 }
 
-// renderAsk draws the two red bands, or takes them away.
+// renderAsk draws the dialog, or takes it away.
 //
 // Only the oldest question is shown. More than one at a time is rare — the
-// brokers serialise their own — and stacking dialogs is how somebody ends up
-// answering the second one thinking it is the first.
+// brokers serialise their own — and stacking dialogs is how somebody answers
+// the second one thinking it is the first.
 function renderAsk(waitingList) {
-  const top = $("ask-top");
-  const bottom = $("ask-bottom");
+  const scrim = $("ask");
   const ask = waitingList[0];
 
   if (!ask) {
-    top.hidden = bottom.hidden = true;
-    top.replaceChildren();
-    bottom.replaceChildren();
+    scrim.hidden = true;
+    scrim.replaceChildren();
     askShown = null;
     return;
   }
-  // Rebuilding on every poll would throw away the click you were making. The
-  // bands are only redrawn when the question itself changes.
+  // Rebuilding on every poll would throw away the click you were making, and
+  // move the buttons under the cursor. Only a different question redraws.
   if (askShown === ask.id) return;
   askShown = ask.id;
 
-  top.replaceChildren();
+  const box = document.createElement("div");
+  box.className = "ask";
+
+  const bar = document.createElement("header");
+  bar.textContent = "devtun is waiting for you";
+  box.append(bar);
+
+  const body = document.createElement("div");
+  body.className = "body";
+
   const head = document.createElement("h2");
   head.textContent = `${ask.host} wants this ${ask.noun}${ask.scope ? " for " + ask.scope : ""}`;
   const subject = document.createElement("div");
   subject.className = "subject";
   subject.textContent = ask.subject;
-  top.append(head, subject);
+  body.append(head, subject);
 
   if ((ask.rows ?? []).length) {
     const dl = document.createElement("dl");
@@ -517,48 +539,109 @@ function renderAsk(waitingList) {
       dd.textContent = row.value;
       dl.append(dt, dd);
     }
-    top.append(dl);
+    body.append(dl);
     // The same caveat the terminal shows, for the same reason: these details
     // are self-reported by a process on a box devtun treats as semi-trusted,
     // and a detail read as fact is worse than no detail.
-    const caveat = document.createElement("div");
+    const caveat = document.createElement("p");
     caveat.className = "caveat";
     caveat.textContent = "these details come from the remote box and are not verified";
-    top.append(caveat);
+    body.append(caveat);
   }
-  top.hidden = false;
 
-  bottom.replaceChildren();
   const answers = document.createElement("div");
   answers.className = "answers";
-  for (const option of ask.options ?? []) {
+  (ask.options ?? []).forEach((option, i) => {
     const button = document.createElement("button");
-    button.textContent = option.label;
+    const n = document.createElement("span");
+    n.className = "n";
+    n.textContent = i + 1;
+    button.append(n, document.createTextNode(option.label));
     if (!option.allows) button.className = "no";
-    button.onclick = () => answer(ask.id, option.choice, button);
+    button.onclick = () => answer(ask.id, option.choice);
     answers.append(button);
-  }
-  bottom.append(answers);
-  bottom.hidden = false;
+  });
+  body.append(answers);
+
+  const how = document.createElement("p");
+  how.className = "how";
+  how.textContent = "press 1–9, or esc to refuse · answering here answers it in the terminal too";
+  body.append(how);
+
+  box.append(body);
+  scrim.replaceChildren(box);
+  scrim.hidden = false;
+  // Focus the first answer, which is the narrowest one: the menu is ordered so
+  // that the safe choice is the one already under you.
+  answers.querySelector("button")?.focus();
+  alertSound();
 }
 
 // askShown is the id currently drawn, so a poll does not rebuild the buttons
 // out from under a click.
 let askShown = null;
 
+// The keyboard, matching the terminal's: a number answers, esc refuses.
+document.addEventListener("keydown", (event) => {
+  if ($("ask").hidden) return;
+  const buttons = [...$("ask").querySelectorAll(".answers button")];
+  if (!buttons.length) return;
+
+  if (event.key === "Escape") {
+    // The last option is always the most refusing one the menu offered.
+    event.preventDefault();
+    buttons[buttons.length - 1].click();
+    return;
+  }
+  const n = Number(event.key);
+  if (Number.isInteger(n) && n >= 1 && n <= buttons.length) {
+    event.preventDefault();
+    buttons[n - 1].click();
+  }
+});
+
+// alertSound is a short two-note ping, synthesised rather than fetched: the
+// page is served from a socket on your own machine and has to work with the
+// network unplugged, and an audio file would be the one thing on it that did
+// not.
+//
+// Browsers refuse to make noise before the page has been interacted with, which
+// is why this is best-effort and silent about failing. The dialog is the alert;
+// the sound is the part that reaches you in another tab.
+function alertSound() {
+  try {
+    const audio = new (window.AudioContext || window.webkitAudioContext)();
+    const now = audio.currentTime;
+    for (const [at, hz] of [[0, 880], [0.13, 1320]]) {
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = "sine";
+      osc.frequency.value = hz;
+      gain.gain.setValueAtTime(0.0001, now + at);
+      gain.gain.exponentialRampToValueAtTime(0.22, now + at + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + at + 0.12);
+      osc.connect(gain).connect(audio.destination);
+      osc.start(now + at);
+      osc.stop(now + at + 0.14);
+    }
+    setTimeout(() => audio.close(), 800);
+  } catch {
+    // No audio, or not allowed yet. The dialog is still on screen.
+  }
+}
+
 // answer sends one decision and gets out of the way.
 //
-// The buttons are disabled the moment one is pressed: the id is good for a
+// Every button is disabled the moment one is pressed: the id is good for a
 // single use, so a second click is refused by the server anyway, and a row of
 // live buttons after a decision invites somebody to try.
-async function answer(id, choice, pressed) {
-  for (const button of $("ask-bottom").querySelectorAll("button")) button.disabled = true;
-  pressed.textContent = "…";
+async function answer(id, choice) {
+  for (const button of $("ask").querySelectorAll("button")) button.disabled = true;
   try {
     await api(`/api/approve?id=${encodeURIComponent(id)}&choice=${choice}`, "POST");
   } catch (err) {
     // Answered elsewhere, or timed out. Either way the question is gone and
-    // the next poll will clear the bands; saying so beats a silent no-op.
+    // the next poll clears the dialog; saying so beats a silent no-op.
     notice(String(err.message || err));
   }
   askShown = null;

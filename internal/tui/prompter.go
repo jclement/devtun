@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/jclement/devtun/internal/prompt"
+	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/ui"
 )
@@ -158,13 +159,14 @@ func (m *Model) openApproval(msg approvalMsg) tea.Cmd {
 		// signature. The order never changes — only the starting point.
 		cursor: prompt.PreferredIndex(msg.options, msg.request.Prefer),
 	}
-	// Ring the terminal. devtun is meant to run in a window you are not looking
-	// at, so a request that only appears on screen is a request that gets
-	// answered by its own timeout.
+	// Make a noise. devtun is meant to run in a window you are not looking at,
+	// so a request that only appears on screen is a request that gets answered
+	// by its own timeout — and a plain terminal bell is not enough, since half
+	// of terminals have it off and the other half use it for tab completion.
 	return func() tea.Msg { return bellMsg{} }
 }
 
-// bellMsg asks the view to emit a terminal bell on the next frame.
+// bellMsg asks the view to sound the alert on the next frame.
 type bellMsg struct{}
 
 // dismissApproval drops a modal whose asker has given up on it.
@@ -215,6 +217,71 @@ func (m *Model) handleApprovalKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.answer(a.options[n-1].Choice)
 	}
 	return nil
+}
+
+// approvalBox renders the request.
+//
+// The subject carries ui.Secret, the same treatment it gets in the log and in
+// the terminal prompt, and the caller details carry the fixed warning that they
+// come from the remote box and are not verified — because they are the part a
+// hurried reader is most likely to take as proof of who is asking.
+func (m *Model) approvalBox() string {
+	a := m.approval
+	if a == nil {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString(ui.Host.Render(a.request.Host) + " wants " + ui.Secret.Render(a.request.Subject) + "\n\n")
+
+	row := func(label, value string) {
+		if value == "" {
+			return
+		}
+		b.WriteString(ui.Muted.Render(pad(label, 8)) + " " + value + "\n")
+	}
+	// The rows come from the service. This used to hardcode `op ` + argv, which
+	// put an empty command row in front of anyone approving a signature.
+	for _, r := range a.request.Rows {
+		row(r.Label, r.Value)
+	}
+	row("caller", describeCaller(a.request))
+	row("cwd", a.request.Caller.CWD)
+	// The caveat only belongs on screen when there are caller details to
+	// caveat. An agent connection carries no provenance at all, and a warning
+	// about information that is not shown trains people to skip the line.
+	if a.request.Caller != (service.Caller{}) {
+		b.WriteString(ui.Muted.Render("caller details come from the remote box and are not verified") + "\n")
+	}
+	b.WriteString("\n")
+
+	// Narrowest first, deny last: the safe answer is the one under the cursor
+	// and the broad ones take deliberate effort to reach.
+	for i, item := range a.options {
+		style := ui.Muted
+		if item.Choice == prompt.ChoiceDeny {
+			style = ui.Error
+		}
+		// Numbered, and the numbers answer. Somebody interrupted by this box
+		// should not have to count rows with the arrow keys before they can
+		// say no, and a number is faster than reasoning about a cursor.
+		label := fmt.Sprintf("%d  %s", i+1, item.Label)
+		if i == a.cursor {
+			b.WriteString(ui.Banner.Render("▸ ") + ui.Selected.Render(label) + "\n")
+			continue
+		}
+		b.WriteString("  " + style.Render(label) + "\n")
+	}
+	b.WriteString("\n" + ui.Muted.Render("1-9 or ↑↓ · enter approve · esc deny"))
+	if left := time.Until(a.deadline).Round(time.Second); !a.deadline.IsZero() && left > 0 {
+		b.WriteString(ui.Muted.Render(fmt.Sprintf("  ·  refuses itself in %s", left)))
+	}
+	// Red, and not the violet that means "vault" everywhere else. Violet was
+	// the right colour when this was a box about a secret; it is the wrong one
+	// for the only state in which devtun has stopped and is waiting for a
+	// person. The help and detail overlays share the accent border, so an
+	// approval framed like them is one more box to dismiss.
+	return m.boxOfStyle(ui.AlertPanel, b.String())
 }
 
 func describeCaller(request prompt.Request) string {

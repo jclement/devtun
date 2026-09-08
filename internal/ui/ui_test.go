@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -120,5 +122,27 @@ func TestEveryGlyphIsOneCell(t *testing.T) {
 				t.Errorf("%s glyph %q is an emoji (U+%04X); devtun draws text glyphs", name, glyph, r)
 			}
 		}
+	}
+}
+
+// The alert has to be a specific sound, not a beep. A terminal bell is off in
+// half of terminals and means "tab completion" in the other half, so a request
+// announced only by a bell is a request that times out unheard — and a timeout
+// reads as a refusal nobody made.
+func TestTheAlertPicksAPlayerOrIsSilent(t *testing.T) {
+	name, args := alertPlayer()
+	if name == "" {
+		// A machine with no player is legitimate — a headless Linux box — and
+		// the bell is then the whole of the alert.
+		if len(args) != 0 {
+			t.Errorf("no player but arguments were returned: %v", args)
+		}
+		return
+	}
+	if !filepath.IsAbs(name) {
+		t.Errorf("the player %q was not resolved to a path, so it depends on PATH at play time", name)
+	}
+	if runtime.GOOS == "darwin" && !strings.Contains(strings.Join(args, " "), "Submarine") {
+		t.Errorf("macOS should play its own distinct sound, got %v", args)
 	}
 }

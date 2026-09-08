@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 
@@ -96,6 +95,8 @@ func (m *Model) frame() string {
 
 	view := m.baseView()
 	switch {
+	case m.approval != nil:
+		view = overlayCenter(view, m.approvalBox(), m.width, m.height)
 	case m.cmd.open:
 		view = overlayCenter(view, m.paletteBox(), m.width, m.height)
 	case m.setup != nil:
@@ -140,30 +141,8 @@ func (m *Model) baseView() string {
 	b.WriteByte('\n')
 	b.WriteString(m.separator(""))
 	b.WriteByte('\n')
-	// The request, and then the board it is about. A modal over the middle
-	// hides the one thing you often want while deciding — what that box is
-	// doing right now.
-	if m.approvalPending() {
-		for _, line := range m.approvalBanner() {
-			b.WriteString(line)
-			b.WriteByte('\n')
-		}
-		b.WriteString(m.separatorIn(ui.Danger, ""))
-		b.WriteByte('\n')
-	}
 	b.WriteString(m.body())
 	b.WriteByte('\n')
-	if m.approvalPending() {
-		b.WriteString(m.separatorIn(ui.Danger, ""))
-		b.WriteByte('\n')
-		for i, line := range m.approvalOptions() {
-			if i > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(line)
-		}
-		b.WriteByte('\n')
-	}
 	// The activity pane disappears entirely on a frame too short to spare the
 	// rows. Its rule goes with it: a labelled separator over nothing is worse
 	// than no pane, because it looks like something failed to render.
@@ -253,11 +232,6 @@ func (m *Model) chrome() int {
 	rows := baseChrome
 	if h := m.tickerHeight(); h > 0 {
 		rows += h + 1 // the pane, plus the rule above it
-	}
-	if m.approvalPending() {
-		// The request above the board and the answers below it: the request's
-		// own rows, one rule under them, then a rule and a row for the answers.
-		rows += m.approvalBannerHeight() + m.approvalOptionsHeight() + 2
 	}
 	return rows
 }
@@ -404,18 +378,13 @@ func (m *Model) topBorder() string {
 	// reaching your dev box, and a warning drawn at the same weight as "3 fwd"
 	// is one you have stopped seeing by the second day.
 	edge := ui.Muted
-	if m.exposed() || m.approvalPending() {
+	if m.exposed() || m.approval != nil {
 		edge = ui.Danger
 	}
 	return m.borderIn(edge, title, status, cornerTL, cornerTR)
 }
 
 func (m *Model) bottomBorder() string {
-	// None of the ordinary keys does anything while a question is waiting, so
-	// advertising them would be a lie about what the keyboard is for.
-	if m.approvalPending() {
-		return m.borderIn(ui.Danger, m.approvalHint(), "", cornerBL, cornerBR)
-	}
 	if m.editing() {
 		return m.borderWith(m.editorLabel(), "", cornerBL, cornerBR)
 	}
@@ -757,20 +726,6 @@ func overlayCenter(base, box string, width, height int) string {
 	return strings.Join(baseLines, "\n")
 }
 
-// ring emits a terminal bell without going through the renderer.
-//
-// It writes to the controlling terminal rather than to stdout so it works when
-// output is redirected, and drops the bell entirely rather than risking a
-// stray byte in a pipe when there is no terminal to ring.
-func ring() {
-	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
-	if err != nil {
-		return
-	}
-	defer func() { _ = tty.Close() }()
-	_, _ = tty.WriteString("\a")
-}
-
 // boxOf renders an overlay panel, clamped so it can never be wider than the
 // frame it sits on.
 func (m *Model) boxOf(body string) string {
@@ -803,6 +758,12 @@ func (m *Model) wrapBody(body string) string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// boxOfStyle is boxOf with a caller-chosen frame, for the one overlay that
+// must not look like the others.
+func (m *Model) boxOfStyle(style lipgloss.Style, body string) string {
+	return style.Render(m.wrapBody(body))
 }
 
 // barWidth is how wide a set of key hints renders, separators included.

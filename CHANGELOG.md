@@ -3,6 +3,34 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Changed
+
+- **A waiting approval is a popup in the middle of the screen**, on all three
+  surfaces: the terminal, the desktop dialog, and the web board. It was briefly
+  a pair of bands down the top and bottom edges, on the theory that you would
+  want the board visible while deciding. In front of a real terminal that theory
+  was simply wrong — edges are where an interface puts what you are meant to
+  ignore, and a question that has stopped the world belongs in the middle of it.
+  The terminal's box has a heavy red double frame rather than the violet one it
+  shares with the help, because it is the only overlay that is a question rather
+  than something to dismiss.
+- **The answers are numbered on every surface**, and the numbers work. Somebody
+  interrupted by a red box should not have to count rows with the arrow keys
+  before they can say no.
+
+### Added
+
+- **A sound when a request arrives**, and a specific one rather than the
+  terminal bell. Half of terminals have the bell off and the other half use it
+  for tab completion, so a request announced by a bell is a request that times
+  out unheard — and a timeout reads as a refusal nobody made. macOS plays its
+  own sound, a Linux desktop uses whatever it has, Windows two short tones, and
+  the web board synthesises the same two notes rather than fetching a file,
+  because the page must work with the network unplugged. The bell is still rung
+  alongside, since a terminal that badges its tab is doing exactly the job.
+
 ## v0.1.11
 
 ### Added

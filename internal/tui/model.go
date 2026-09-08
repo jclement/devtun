@@ -15,6 +15,7 @@ import (
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
+	"github.com/jclement/devtun/internal/ui"
 )
 
 // tunnelCtrl is the slice of the tunnels service this interface drives.
@@ -351,7 +352,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		//
 		// BEL moves no cursor and occupies no cell, so writing it directly
 		// past the renderer disturbs nothing.
-		ring()
+		ui.Alert()
 		return m, nil
 
 	case toastMsg:

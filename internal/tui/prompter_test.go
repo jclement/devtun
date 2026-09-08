@@ -366,10 +366,14 @@ func (s *unpromptableStub) Attach(context.Context, service.Host) (service.Instan
 	return nil, nil
 }
 
-// The request is a band across the top and the answers a band across the
-// bottom, not a panel over the middle. Deciding whether a box may read a secret
-// is a decision you often want to make while looking at what that box is doing.
-func TestAWaitingApprovalLeavesTheBoardReadable(t *testing.T) {
+// A waiting approval is a popup in the middle of the screen.
+//
+// It was briefly a pair of bands down the top and bottom edges, on the theory
+// that you would want to see the board while deciding. In front of a real
+// terminal that theory was simply wrong: edges are where a interface puts the
+// things you are meant to ignore, and a question that has stopped the world
+// belongs in the middle of it where it cannot be read as chrome.
+func TestAWaitingApprovalIsAPopupInTheMiddle(t *testing.T) {
 	m := newTestModel(t, deps{tunnels: newStub(
 		row(3000, 3000, "node vite"), row(5173, 5174, "vite --host"))})
 
@@ -392,11 +396,14 @@ func TestAWaitingApprovalLeavesTheBoardReadable(t *testing.T) {
 			t.Errorf("the band is missing %q:\n%s", want, view)
 		}
 	}
-	// And the board behind it, which is the whole reason it is a band.
-	for _, want := range []string{"node vite", "vite --host", "3000"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("the board was covered; %q is not visible:\n%s", want, view)
-		}
+	// And it is centred, not pinned to an edge: the first and last rows of the
+	// frame are still the frame's own borders.
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[0], "devtun") {
+		t.Errorf("the top of the frame is not the header:\n%s", view)
+	}
+	if !strings.Contains(lines[len(lines)-1], "╰") {
+		t.Errorf("the bottom of the frame is not its own border:\n%s", view)
 	}
 }
 

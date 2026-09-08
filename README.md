@@ -264,7 +264,9 @@ The first time a new secret is asked for, devtun asks you:
 
 Narrowest first, and every approval sits above every refusal, so overshooting downward can never land on a "yes". Walking away, pressing escape, or letting it time out all mean *No*.
 
-In the interface this is **two red bands** — the request across the top, the answers across the bottom — with the port table and the log still readable between them, because what that box is doing right now is often exactly what you want to see while deciding. Press the number, or `↑↓` and enter, or `esc` for no.
+It appears the same way everywhere: a **popup in the middle of the screen** with a heavy red frame — in the terminal, as a desktop dialog, and on the web board. Press the number, or `↑↓` and enter, or `esc` for no.
+
+And it **makes a noise** — a short two-note ping, not the terminal bell. Half of terminals have the bell turned off and the other half use it for tab completion, so a request announced by a bell is one that times out unheard, and a timeout reads as a refusal you never made. macOS plays its own sound, Linux uses whatever the desktop has, and the browser synthesises the same two notes.
 
 ### Where you get asked
 
