@@ -139,7 +139,10 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	// the config file unreachable.
 	fl.StringVar(&f.setup, "setup", "", "the remote shell rc: ask, auto, never (default: your config, else ask)")
 	fl.StringVar(&f.gate, "gate", "", "browser: ask before each site, or auto (default: your config)")
-	fl.StringVar(&f.web, "web", "", "also serve the board in a browser (\"on\", or an address like 127.0.0.1:8765)")
+	fl.StringVar(&f.web, "web", "", "serve the board in a browser; bare, or an address like 127.0.0.1:8765")
+	// Bare `--web` is the way people will write it, so it has to mean
+	// something. pflag needs telling that the value is optional.
+	fl.Lookup("web").NoOptDefVal = "on"
 	// Opening it is the default. The URL carries a token, so it is long and
 	// unmemorable by construction — and under the interface it lands in a log
 	// you cannot select with the mouse, since the mouse belongs to the table.
@@ -296,7 +299,7 @@ func serveWeb(
 ) (string, func(), error) {
 	addr := strings.TrimSpace(f.web)
 	if addr == "on" || addr == "true" {
-		addr = ""
+		addr = defaultWebAddr
 	}
 	server, err := web.New(web.Options{
 		Addr:      addr,
@@ -345,6 +348,15 @@ func serveWeb(
 	}
 	return server.URL(), cancel, nil
 }
+
+// defaultWebAddr is where a bare `--web` listens.
+//
+// A fixed port rather than one the kernel picks, so the board can be
+// bookmarked and so a reload after a restart lands somewhere. It gives way
+// rather than failing when something else already has it — a second devtun on
+// the same machine is an ordinary thing to want, and refusing to start over a
+// port number would be a poor trade for the convenience of a stable one.
+const defaultWebAddr = "127.0.0.1:8422"
 
 // webTunnels adapts the tunnels service for the web interface, and returns a
 // nil interface rather than a typed nil pointer when there is none.
@@ -400,6 +412,19 @@ func wantsTUI(f upFlags, isTTY bool) bool {
 	if !isTTY {
 		return false
 	}
+	// A board and an interface are two implementations of one surface, and
+	// running both is redundant rather than complementary. The interface costs
+	// the alt screen, the mouse and your scrollback — worth paying to interact
+	// there, worth nothing if you are interacting in a browser. A log is a
+	// different thing entirely: a record you can scroll, select, grep and pipe,
+	// which is exactly what you want beside a board and cannot get from a
+	// second copy of it.
+	//
+	// `--tui` still forces it, for the two-monitor case, because the command
+	// line is about this run and must always be able to win.
+	if f.web != "" && !f.tui {
+		return false
+	}
 	return !f.logMode && !f.jsonOut && !f.plain
 }
 
@@ -423,7 +448,10 @@ func runHeadless(ctx context.Context, f upFlags, sess *session.Session, bus *eve
 	// piping to a file, and announcing it before anything is subscribed is how
 	// it went missing the first time.
 	if webURL != "" {
-		fmt.Fprintln(os.Stderr, ui.Banner.Render("devtun")+" "+ui.Muted.Render("the board is also at ")+ui.Host.Render(webURL))
+		// "the board is at", not "also at". In log mode the board is the place
+		// you do things and this terminal is the record, so the URL is the way
+		// in rather than a footnote.
+		fmt.Fprintln(os.Stderr, ui.Banner.Render("devtun")+" "+ui.Muted.Render("the board is at ")+ui.Host.Render(webURL))
 	}
 	return sess.Run(ctx)
 }

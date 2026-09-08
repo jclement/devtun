@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -757,5 +758,44 @@ func TestHiddenElementsAreActuallyHidden(t *testing.T) {
 		if !strings.Contains(text, `$("`+id[1]+`")`) {
 			t.Errorf("#%s starts hidden and nothing in the page ever shows it", id[1])
 		}
+	}
+}
+
+// A bare `--web` picks a fixed port so the board can be bookmarked, and gives
+// way to any free one when something already has it — a second devtun on the
+// same machine is an ordinary thing to want, and refusing to start over a port
+// number would be a poor trade for a stable URL.
+func TestTheDefaultPortGivesWayButANamedOneDoesNot(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("taking a port: %v", err)
+	}
+	defer func() { _ = busy.Close() }()
+	taken := busy.Addr().String()
+
+	// Defaulted: it moves aside and still comes up.
+	defaulted := newTestServer(t, Options{Addr: taken})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- defaulted.Run(ctx) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for defaulted.URL() == "" {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("a defaulted address did not give way to a free port")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if strings.Contains(defaulted.URL(), taken) {
+		t.Errorf("it bound the busy port anyway: %s", defaulted.URL())
+	}
+	cancel()
+	<-done
+
+	// Named: honoured or reported, never quietly moved.
+	named := newTestServer(t, Options{Addr: taken, FixedAddr: true})
+	if err := named.Run(context.Background()); err == nil {
+		t.Error("an address the user named was silently moved")
 	}
 }

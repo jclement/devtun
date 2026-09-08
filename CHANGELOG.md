@@ -3,6 +3,32 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Changed
+
+- **`--web` makes the terminal a log and the board the surface.** A board and
+  the interface are two implementations of one thing, and running both is
+  redundant rather than complementary — the interface costs the alt screen, the
+  mouse and your scrollback, which is worth paying to interact there and worth
+  nothing if you are interacting in a browser. A log is a different thing: a
+  record you can scroll, select, grep and pipe, which is what you actually want
+  beside a board. `--tui --web` still gives both, for one on each monitor.
+
+### Added
+
+- **`--web` works bare**, and defaults to `127.0.0.1:8422` so the board can be
+  bookmarked. That port gives way to a free one when something already has it —
+  a second devtun on one machine is an ordinary thing to want — while an address
+  you name is honoured or reported, never quietly moved.
+
+### Fixed
+
+- **A data race on the board's URL.** `Run` wrote it from its own goroutine
+  while the caller polled `URL()` from another, with no synchronisation, in
+  shipped code. Found by a new test that raced them the way `devtun --web`
+  already did.
+
 ## v0.1.13
 
 ### Fixed

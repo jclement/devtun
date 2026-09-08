@@ -144,6 +144,9 @@ func Run(ctx context.Context, o Options) error {
 	if o.WebURL != "" && o.Bus != nil {
 		o.Bus.Emit(event.Event{
 			Time: time.Now(), Service: "web", Class: event.Lifecycle, Level: event.Info,
+			// "also", here: under the interface the board is a second view of
+			// the same thing, which is what `--tui --web` deliberately asks
+			// for. In log mode it is the only one, and says so instead.
 			Kind: "listening", Text: "the board is also at " + o.WebURL,
 		})
 	}

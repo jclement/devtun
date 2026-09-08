@@ -70,6 +70,9 @@ import (
 	"github.com/jclement/devtun/internal/tunnels"
 )
 
+// loopbackAny is a port the kernel chooses, on this machine only.
+const loopbackAny = "127.0.0.1:0"
+
 //go:embed assets/*
 var assets embed.FS
 
@@ -114,6 +117,9 @@ type Options struct {
 	// chooses, which is the right default: a fixed port is one another program
 	// can be sitting on, and nothing needs to guess this one.
 	Addr string
+	// FixedAddr says Addr was named by the user rather than defaulted, so a
+	// port already in use is an error rather than something to work around.
+	FixedAddr bool
 	// Token authenticates every request. Empty means one is generated, which
 	// is what you want unless a test needs to know it in advance.
 	Token string
@@ -150,8 +156,13 @@ type Server struct {
 	// as a cookie and the trade would have bought nothing.
 	session string
 	mux     *http.ServeMux
-	// url is filled in once the listener is bound.
-	url string
+	// url is filled in once the listener is bound, by Run's goroutine, and read
+	// by whoever wants to announce it — a different goroutine in every caller
+	// there is. Hence the lock: this was a genuine data race in shipped code,
+	// found by a test that raced Run against URL the way `devtun --web`
+	// already did.
+	urlMu sync.Mutex
+	url   string
 
 	mu sync.Mutex
 	// spentAt is when the token was traded. Zero until it has been.
@@ -191,20 +202,41 @@ func randomToken() (string, error) {
 
 // URL is the address to open, token included. It is empty until Run has bound
 // its listener.
-func (s *Server) URL() string { return s.url }
+func (s *Server) URL() string {
+	s.urlMu.Lock()
+	defer s.urlMu.Unlock()
+	return s.url
+}
+
+// setURL records where the board ended up.
+func (s *Server) setURL(url string) {
+	s.urlMu.Lock()
+	defer s.urlMu.Unlock()
+	s.url = url
+}
 
 // Run serves until the context is cancelled.
 func (s *Server) Run(ctx context.Context) error {
 	addr := s.opts.Addr
 	if addr == "" {
-		addr = "127.0.0.1:0"
+		addr = loopbackAny
 	}
 	var config net.ListenConfig
 	listener, err := config.Listen(ctx, "tcp", addr)
+	if err != nil && s.opts.Addr != "" {
+		// The default port is a convenience, not a requirement: a second devtun
+		// on this machine is an ordinary thing to want, and refusing to start
+		// over a port number would be a poor trade for a stable URL. An address
+		// somebody asked for explicitly is different — that one is honoured or
+		// reported.
+		if !s.opts.FixedAddr {
+			listener, err = config.Listen(ctx, "tcp", loopbackAny)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("the web interface could not listen on %s: %w", addr, err)
 	}
-	s.url = fmt.Sprintf("http://%s/?t=%s", listener.Addr().String(), url.QueryEscape(s.token))
+	s.setURL(fmt.Sprintf("http://%s/?t=%s", listener.Addr().String(), url.QueryEscape(s.token)))
 
 	server := &http.Server{
 		Handler: s.mux,

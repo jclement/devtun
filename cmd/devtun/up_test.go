@@ -157,6 +157,14 @@ func TestModeSelection(t *testing.T) {
 		{"a pipe never gets the interface", upFlags{}, false, false},
 		{"--tui cannot force it into a pipe", upFlags{tui: true}, false, false},
 		{"--tui on a terminal is the default anyway", upFlags{tui: true}, true, true},
+
+		// A board and an interface are two implementations of one surface.
+		// Asking for the board says where you intend to interact, so the
+		// terminal becomes the record rather than a second copy of the board.
+		{"--web makes the terminal a log", upFlags{web: "on"}, true, false},
+		{"--web with an address does too", upFlags{web: "127.0.0.1:8765"}, true, false},
+		// ...unless you say otherwise. The command line is about this run.
+		{"--tui --web is both, deliberately", upFlags{web: "on", tui: true}, true, true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

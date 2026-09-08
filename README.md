@@ -340,9 +340,13 @@ Reconnection backs off 1s → 30s and resets after a connection holds for a minu
 ## The board in a browser
 
 ```sh
-devtun --web on bedev              # a port the kernel picks
-devtun --web 127.0.0.1:8765 bedev  # ...or one you can bookmark
+devtun --web bedev                 # 127.0.0.1:8422, or a free port if that's taken
+devtun --web 127.0.0.1:8765 bedev  # ...or one you name, which is honoured or reported
 ```
+
+**With `--web`, the terminal becomes the log and the board becomes the surface.** A board and the interface are two implementations of the same thing, and running both is redundant rather than complementary: the interface costs you the alt screen, the mouse and your scrollback, which is worth paying to interact there and worth nothing if you're interacting in a browser. A log is a different thing — a record you can scroll, select, grep and pipe, which is exactly what you want beside a board.
+
+If you want both — one on each monitor — say `--tui --web`, because the command line is about this run and gets to win.
 
 It **opens in your browser by itself** (`--web-open=false` if you would rather it did not), and prints the URL as well.
 
