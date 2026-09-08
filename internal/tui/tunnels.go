@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jclement/devtun/internal/session"
@@ -32,8 +33,14 @@ const (
 	// A very wide terminal should not stretch PROCESS across the whole screen:
 	// that strands AGE/CONNS/IN/OUT far from the row they describe and leaves a
 	// canyon of whitespace in between. Past this the table just stops growing.
-	maxProc = 56
+	// It is generous rather than tight because the alternative is ~35 dead
+	// columns on a wide terminal and a command cut mid-flag.
+	maxProc = 96
 )
+
+// legendMaxRows is the table size below which the glyph legend goes in the
+// space under it. Above it the space belongs to the rows.
+const legendMaxRows = 8
 
 // Recency windows for the activity marker. These are what make a busy table
 // scannable: the thing you just started, and the thing you are actually using,
@@ -66,16 +73,9 @@ func activityOf(s tunnels.State, now time.Time) activity {
 	return activityNone
 }
 
-// tunnelsView renders the column header and the table.
+// tunnelsView renders the summary strip, the column header and the table.
 func (m *Model) tunnelsView() string {
-	var lines []string
-	end := m.offset() + m.listHeight()
-	if end > len(m.rows) {
-		end = len(m.rows)
-	}
-	for i := m.offset(); i < end; i++ {
-		lines = append(lines, m.rowView(m.rows[i], i == m.cursor()))
-	}
+	lines, _ := m.tableRows()
 
 	empty := "no services yet — start something on the remote and it will appear here"
 	switch {
@@ -85,8 +85,155 @@ func (m *Model) tunnelsView() string {
 		empty = "waiting for the connection…"
 	}
 
-	return m.boxLine(ui.Header.Render(m.columnHeader())) + "\n" +
-		m.listView(lines, m.listHeight(), empty)
+	return m.boxLine(m.summaryStrip()) + "\n" +
+		m.boxLine(ui.Header.Render(m.columnHeader())) + "\n" +
+		m.listView(m.withLegend(lines), m.listHeight(), empty)
+}
+
+// tableRows renders the visible slice of the table and reports which row each
+// line belongs to.
+//
+// A row is one line unless a bind error wraps, so the slice cannot be taken by
+// index arithmetic the way every other tab's can: after a wrapped row, every
+// line is one further down the screen than its row index says, and a click
+// would select the row above the one under the pointer.
+func (m *Model) tableRows() (lines []string, rowOf []int) {
+	height := m.listHeight()
+	offset := m.offset()
+	for {
+		lines, rowOf = m.tableRowsFrom(offset, height)
+		// clampCursor sizes the window in rows, so a wrapped row above the
+		// cursor pushes the cursor off the bottom of a window it believes it
+		// is inside. Give up the extra row here rather than leave the
+		// selection somewhere the eye cannot follow it.
+		if offset >= len(m.rows)-1 || m.cursor() == noSelection ||
+			(len(rowOf) > 0 && rowOf[len(rowOf)-1] >= m.cursor()) {
+			break
+		}
+		offset++
+	}
+	m.offsets[tabTunnels] = offset
+	return lines, rowOf
+}
+
+func (m *Model) tableRowsFrom(offset, height int) (lines []string, rowOf []int) {
+	for i := offset; i < len(m.rows) && len(lines) < height; i++ {
+		for _, line := range m.rowView(m.rows[i], i == m.cursor()) {
+			if len(lines) == height {
+				break
+			}
+			lines = append(lines, line)
+			rowOf = append(rowOf, i)
+		}
+	}
+	return lines, rowOf
+}
+
+// withLegend fills the space under a short table with what the glyphs mean.
+//
+// Six of them carry the whole state of a row and none is documented on screen.
+// A table with room to spare is exactly the table somebody seeing devtun for
+// the first time is looking at, and the space was blank anyway.
+func (m *Model) withLegend(lines []string) []string {
+	if len(lines) == 0 || len(lines) >= legendMaxRows || len(lines)+2 > m.listHeight() {
+		return lines
+	}
+	legend := m.legend()
+	if legend == "" {
+		return lines
+	}
+	return append(lines, "", legend)
+}
+
+func (m *Model) legend() string {
+	keys := [][2]string{
+		{"●", "live"}, {"◦", "new"}, {"≠", "remapped"},
+		{"✕", "hidden"}, {"+", "always on"}, {"!", "error"},
+	}
+	var b strings.Builder
+	for _, k := range keys {
+		part := k[0] + " " + k[1]
+		if b.Len() > 0 {
+			part = "   " + part
+		}
+		// Dropped whole, from the end: half a legend entry explains nothing.
+		if ansi.StringWidth(b.String())+ansi.StringWidth(part) > m.tableWidth() {
+			break
+		}
+		b.WriteString(part)
+	}
+	return ui.Muted.Render(b.String())
+}
+
+// summaryStrip is the one line that answers "is anything wrong" without
+// reading thirty rows: how many ports are in each state, and what is moving
+// through all of them together.
+func (m *Model) summaryStrip() string {
+	hidden := m.d.tunnels.Hidden()
+	if len(m.rows) == 0 && hidden == 0 {
+		return ""
+	}
+
+	now := m.d.now()
+	var live, fresh, failed int
+	var in, out uint64
+	for _, r := range m.rows {
+		switch activityOf(r, now) {
+		case activityLive:
+			live++
+		case activityFresh:
+			fresh++
+		}
+		if r.Status == tunnels.StatusError {
+			failed++
+		}
+		in, out = in+r.BytesIn, out+r.BytesOut
+	}
+
+	// Ordered as the eye reads them, but given up in the order a narrow
+	// terminal can afford: the error count is the last thing standing, because
+	// it is the one state on this line that is asking for something.
+	chips := []struct {
+		style      lipgloss.Style
+		glyph, key string
+		n, keep    int
+	}{
+		{ui.Active, "●", "live", live, 3},
+		{ui.Fresh, "◦", "new", fresh, 1},
+		{ui.Muted, "✕", "hidden", hidden, 2},
+		{ui.Error, "!", "error", failed, 4},
+	}
+
+	for {
+		var parts []string
+		width, weakest, weakestAt := 0, 5, -1
+		for i, c := range chips {
+			if c.n == 0 {
+				continue
+			}
+			if len(parts) > 0 {
+				width += 3
+			}
+			text := fmt.Sprintf("%s %s %d", c.glyph, c.key, c.n)
+			parts = append(parts, c.style.Render(text))
+			width += ansi.StringWidth(text)
+			if c.keep < weakest {
+				weakest, weakestAt = c.keep, i
+			}
+		}
+
+		left := strings.Join(parts, "   ")
+		right := ui.Muted.Render(FormatBytes(in) + "↓  " + FormatBytes(out) + "↑")
+		// The throughput goes before any count does: it is the part you can
+		// also read off a row, and a count cut mid-number says nothing at all.
+		switch gap := m.tableWidth() - width - ansi.StringWidth(right); {
+		case gap >= 2:
+			return left + strings.Repeat(" ", gap) + right
+		case width <= m.tableWidth() || weakestAt < 0:
+			return clampWidth(left, m.tableWidth())
+		}
+		chips[weakestAt].n = 0
+	}
 }
 
 type columnKind int
@@ -166,7 +313,7 @@ func (m *Model) columns() []column {
 	// goes last of all, and only when nothing else is left: it is one cell
 	// wide, it is where the ✕ says which of these rows you hid, and it is a
 	// control — a column you click to change the port's mode.
-	fits := func() bool { return widthOf(build(minProc)) <= m.inner() }
+	fits := func() bool { return widthOf(build(minProc)) <= m.tableWidth() }
 	if !fits() {
 		showTraffic = false
 	}
@@ -184,7 +331,7 @@ func (m *Model) columns() []column {
 	}
 
 	cols := build(minProc)
-	extra := m.inner() - widthOf(cols)
+	extra := m.tableWidth() - widthOf(cols)
 	procW := minProc
 	if extra > 0 {
 		procW += extra
@@ -201,6 +348,12 @@ func (m *Model) columns() []column {
 	}
 	return cols
 }
+
+// tableWidth is the width the table lays out in: everything inside the frame
+// except the last cell, which belongs to the scroll track. Reserving it at
+// every size costs one column and keeps a right-aligned byte count from being
+// clipped by a scrollbar that appeared when a port did.
+func (m *Model) tableWidth() int { return max(m.inner()-1, 1) }
 
 // columnAt returns the column under a terminal x position.
 func (m *Model) columnAt(x int) (column, bool) {
@@ -258,8 +411,9 @@ func modeGlyph(mode tunnels.Mode) string {
 	}
 }
 
-// rowView renders one service.
-func (m *Model) rowView(s tunnels.State, selected bool) string {
+// rowView renders one service, as one line or — when a bind error has to wrap
+// — two.
+func (m *Model) rowView(s tunnels.State, selected bool) []string {
 	now := m.d.now()
 
 	local, arrow, remote := "————", " ", itoa(s.RemotePort)
@@ -281,34 +435,41 @@ func (m *Model) rowView(s tunnels.State, selected bool) string {
 	}
 
 	act := activityOf(s, now)
-	line := clampWidth(m.rowText(s, act, local, arrow, remote, cmd, now), m.inner())
+	text, wrapped := m.rowText(s, act, local, arrow, remote, cmd, now)
+	lines := []string{clampWidth(text, m.tableWidth())}
+	if wrapped != "" {
+		lines = append(lines, clampWidth(errorIndent+wrapped, m.tableWidth()))
+	}
 
-	if selected {
-		// Pad the selection to the full inner width so the highlight is a bar.
-		if w := ansi.StringWidth(line); w < m.inner() {
-			line += strings.Repeat(" ", m.inner()-w)
+	for i, line := range lines {
+		if selected {
+			// Pad the selection to the full table width so the highlight is a
+			// bar, and over both lines so a wrapped row highlights as one row.
+			if w := ansi.StringWidth(line); w < m.tableWidth() {
+				line += strings.Repeat(" ", m.tableWidth()-w)
+			}
+			// Reverse video rather than a background colour of its own: it is
+			// the one highlight that still reads on a stripped palette.
+			lines[i] = ui.Selected.Reverse(true).Render(ansi.Strip(line))
+			continue
 		}
-		// Reverse video rather than a background colour of its own: it is the
-		// one highlight that still reads on a stripped palette.
-		return ui.Selected.Reverse(true).Render(ansi.Strip(line))
+		switch {
+		case s.Status == tunnels.StatusError:
+			lines[i] = ui.Error.Render(line)
+		case s.Status != tunnels.StatusActive:
+			lines[i] = ui.Muted.Render(line)
+		case act == activityLive:
+			lines[i] = ui.Active.Render(line)
+		case act == activityFresh:
+			lines[i] = ui.Fresh.Render(line)
+		}
 	}
-
-	switch {
-	case s.Status == tunnels.StatusError:
-		return ui.Error.Render(line)
-	case s.Status != tunnels.StatusActive:
-		return ui.Muted.Render(line)
-	case act == activityLive:
-		return ui.Active.Render(line)
-	case act == activityFresh:
-		return ui.Fresh.Render(line)
-	default:
-		return line
-	}
+	return lines
 }
 
-// rowText lays out one row's columns without applying the row-level style.
-func (m *Model) rowText(s tunnels.State, act activity, local, arrow, remote, cmd string, now time.Time) string {
+// rowText lays out one row's columns without applying the row-level style,
+// and returns whatever of a bind error would not fit on the line.
+func (m *Model) rowText(s tunnels.State, act activity, local, arrow, remote, cmd string, now time.Time) (line, wrapped string) {
 	prefix := marker(act) + " "
 	cols := m.columns()
 	procAt := -1
@@ -353,7 +514,9 @@ func (m *Model) rowText(s tunnels.State, act activity, local, arrow, remote, cmd
 		case colProcess:
 			value = displayProcess(s, cmd)
 			if reason != "" && !hasTail {
-				value = reason
+				// Narrow enough that PROCESS is the last column, so this is
+				// where the reason goes — and where it wraps from.
+				value, wrapped = splitReason(s, reason, c.w)
 			}
 		case colAge:
 			value = FormatAge(now.Sub(s.Created))
@@ -370,11 +533,56 @@ func (m *Model) rowText(s tunnels.State, act activity, local, arrow, remote, cmd
 			values = append(values, pad(value, c.w))
 		}
 	}
-	line := prefix + strings.Join(values, strings.Repeat(" ", gap))
-	if reason != "" && hasTail {
-		line += strings.Repeat(" ", gap) + reason
+	line = prefix + strings.Join(values, strings.Repeat(" ", gap))
+	if reason == "" || !hasTail {
+		return line, wrapped
 	}
-	return line
+	line += strings.Repeat(" ", gap)
+	head, rest := splitReason(s, reason, m.tableWidth()-ansi.StringWidth(line))
+	return line + head, rest
+}
+
+const (
+	// errorIndent is where a wrapped error's second line starts: clear of the
+	// activity marker, and short enough that the width it buys is the point.
+	errorIndent = "    "
+	// minReasonHead is the least room worth starting the sentence in. Below it
+	// the whole message goes to the second line: a row ending "liste" is not a
+	// first line, it is a hyphenation without the hyphen.
+	minReasonHead = 8
+)
+
+// splitReason decides how much of a row's reason the row itself carries and
+// how much wraps onto the line beneath it.
+//
+// Only an error wraps. The other reasons are two words devtun wrote and they
+// fit; a bind failure is a sentence sshd wrote, it is the whole content of the
+// row, and at 80 columns the tail after PROCESS cut it to "listen tcp 12" — a
+// row that looks like data and says nothing.
+func splitReason(s tunnels.State, reason string, room int) (head, rest string) {
+	if s.Status != tunnels.StatusError || ansi.StringWidth(reason) <= room {
+		return reason, ""
+	}
+	if room < minReasonHead {
+		return "", reason
+	}
+	return splitAt(reason, room)
+}
+
+// splitAt breaks text at the last space that fits, falling back to a hard cut
+// when one word is wider than the room available.
+func splitAt(text string, width int) (head, rest string) {
+	if width <= 0 {
+		return "", text
+	}
+	runes := []rune(text)
+	cut := min(width, len(runes))
+	for i := cut; i > width/2; i-- {
+		if runes[i-1] == ' ' {
+			return string(runes[:i-1]), string(runes[i:])
+		}
+	}
+	return string(runes[:cut]), string(runes[cut:])
 }
 
 // schemeLabel marks a pinned scheme, so a protocol you chose is visibly a
@@ -455,11 +663,24 @@ func (m *Model) handleTunnelsKey(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
+// tableRowAt maps a terminal row to a table row. It goes through the same
+// layout the renderer used rather than through rowAt's arithmetic, which
+// assumes one line per row and so points a click after a wrapped error at the
+// row above the one under the pointer.
+func (m *Model) tableRowAt(y int) int {
+	_, rowOf := m.tableRows()
+	i := y - m.listTop()
+	if i < 0 || i >= len(rowOf) {
+		return -1
+	}
+	return rowOf[i]
+}
+
 // handleTunnelsClick handles the parts of the table that are controls rather
 // than readouts.
 func (m *Model) handleTunnelsClick(e tea.Mouse) tea.Cmd {
 	// Clicking a column header sorts by it, and clicking it again reverses.
-	if e.Y == rowBody {
+	if e.Y == m.listTop()-1 {
 		if c, ok := m.columnAt(e.X); ok && c.sortable {
 			if m.sortKey == c.sort {
 				m.reverse = !m.reverse
@@ -473,7 +694,7 @@ func (m *Model) handleTunnelsClick(e tea.Mouse) tea.Cmd {
 		return nil
 	}
 
-	idx := m.rowAt(e.Y)
+	idx := m.tableRowAt(e.Y)
 	if idx < 0 {
 		return nil
 	}

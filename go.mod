@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/creativeprojects/go-selfupdate v1.6.0
 	github.com/kevinburke/ssh_config v1.6.0
+	github.com/sahilm/fuzzy v0.1.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.56.0
 	golang.org/x/mod v0.40.0

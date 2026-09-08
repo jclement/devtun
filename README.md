@@ -157,7 +157,9 @@ The interface:
 ╰─ ↑↓ move · x hide · b browser · enter detail · c config · ? help ╯
 ```
 
-`●` means traffic is flowing right now, `◦` means it just showed up, `≠` means the local port isn't the one you asked for. The activity pane sits under every tab, so a 1Password approval is never off-screen; it takes about a quarter of the window, up to eight lines, and gives way entirely on a window too short to spare them.
+A summary strip across the top counts what is live, new, hidden and broken, with total throughput — so "is anything wrong" is one glance rather than thirty rows. A scrollbar and an `n–m of N` in the bottom border say when the list is cut, which matters because forwarding everything above 1024 means a busy box is thirty rows, not five. `●` means traffic is flowing right now, `◦` means it just showed up, `≠` means the local port isn't the one you asked for — and when the table is short enough to leave room, a legend spelling all of that out sits underneath it.
+
+`/` searches, and it is a **fuzzy** match ranked by relevance: `vite` finds `node vite` and puts it above a port that merely sorts earlier. The activity pane sits under every tab, so a 1Password approval is never off-screen; it takes about a quarter of the window, up to eight lines, and gives way entirely on a window too short to spare them.
 
 ### Keys
 

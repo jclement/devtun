@@ -192,7 +192,8 @@ func (m *Model) bodyHeight() int {
 // listTop is the first terminal row occupied by a selectable row.
 func (m *Model) listTop() int {
 	if m.tab == tabTunnels {
-		return rowBody + 1 // the column header sits above the data
+		// The summary strip and the column header sit above the data.
+		return rowBody + 2
 	}
 	return rowBody
 }
@@ -257,18 +258,26 @@ func (m *Model) boxLine(content string) string {
 
 // listView lays out a list of already-rendered lines inside the frame,
 // padding to the full height so the frame never changes shape.
+//
+// The last cell of every line belongs to the scroll track. Nothing else on
+// screen said a list was cut: a busy box forwards more ports than fit, and the
+// rows past the fold looked exactly like rows that were not there.
 func (m *Model) listView(lines []string, height int, empty string) string {
 	if len(lines) == 0 {
 		return m.emptyView(height, empty)
 	}
+	track := m.scrollTrack(height)
 	out := make([]string, 0, height)
 	for _, line := range lines {
-		out = append(out, m.boxLine(line))
+		if len(out) == height {
+			break
+		}
+		out = append(out, m.boxLine(m.withTrack(line, track[len(out)])))
 	}
 	for len(out) < height {
-		out = append(out, m.boxLine(""))
+		out = append(out, m.boxLine(m.withTrack("", track[len(out)])))
 	}
-	return strings.Join(out[:height], "\n")
+	return strings.Join(out, "\n")
 }
 
 // emptyView explains an empty list rather than showing a blank rectangle.
@@ -497,6 +506,13 @@ func (m *Model) viewChip() string {
 			parts = append(parts, ui.Muted.Render("edits → "+m.d.host))
 		}
 	}
+	// Which slice of the list is on screen, and how big the list is. The
+	// scroll track says a list is cut; this says by how much, and it is the
+	// only place a count of what a search matched appears at all.
+	if n := m.rowCount(); n > 0 {
+		parts = append(parts, ui.Muted.Render(fmt.Sprintf("%d–%d of %d",
+			m.offset()+1, min(m.offset()+m.listHeight(), n), n)))
+	}
 	return strings.Join(parts, ui.Muted.Render(" · "))
 }
 
@@ -552,7 +568,12 @@ func (m *Model) keyBar() string {
 	keys = append(keys, [2]string{":", "commands"}, [2]string{"?", "help"}, [2]string{"esc", "quit"})
 
 	// Reserve room for the right-hand chip plus the border decorations.
-	budget := m.width - 6 - ansi.StringWidth(m.viewChip())
+	// Eight, not six: borderIn reserves four for the corners and their edge
+	// segments and then *two more around each label*, so a bar sized to six
+	// lands two cells over exactly often enough to notice — at eight widths
+	// between 60 and 140, the whole right-hand chip was silently dropped, and
+	// the chip is where the scroll position and the config target live.
+	budget := m.width - 8 - ansi.StringWidth(m.viewChip())
 
 	// Drop from the middle outwards. Dropping in order meant a narrow terminal
 	// lost `? help` and `esc quit` first — leaving somebody who has just

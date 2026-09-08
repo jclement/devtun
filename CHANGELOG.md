@@ -7,6 +7,18 @@ this is 0.x, a minor bump may break something.
 
 ### Added
 
+- **The Tunnels tab is a board rather than a list.** A summary strip counting
+  what is live, new, hidden and broken with total throughput; a scrollbar and an
+  `n–m of N` count, because forwarding everything above 1024 makes thirty rows
+  the normal case and nothing on screen said the list was cut; a bind error
+  wrapped onto a second line instead of truncated to `listen tcp 12`, which is
+  the one row where the text *is* the content; and a legend for `≠ ✕ + ● ◦ !` in
+  the space under a short table, which is exactly when somebody new is looking.
+  The scrollbar lives in the shared list renderer, so every tab has one.
+- **Searching is fuzzy and ranked.** `vite` finds `node vite` and puts it above
+  a port that merely sorts earlier. The Activity tab matches fuzzily but keeps
+  time order — a scrollback reordered by score stops being a scrollback.
+
 - **A command palette on `:`.** Every action devtun has, searchable by name,
   each showing the tab it lives on and the key that runs it. Choosing one
   switches to that tab first, so the row it acts on is in front of you rather
@@ -22,6 +34,15 @@ this is 0.x, a minor bump may break something.
   Each entry runs the tab's own key handler rather than reimplementing it, so
   the two cannot drift, and a test walks the tabs' handlers and fails on any key
   the catalogue has forgotten.
+
+### Fixed
+
+- **The bottom border's right-hand chip vanished at some widths.** The key bar
+  sized its own budget to six cells of chrome while the border reserves eight —
+  four for the corners and their edge segments, then two more around each
+  label — so at eight widths between 60 and 140, including 77 and 88, the bar
+  fitted its own budget, overran the border's, and the chip was dropped. That
+  chip is where the scroll position and the Config tab's edit target live.
 
 ## v0.1.8
 
