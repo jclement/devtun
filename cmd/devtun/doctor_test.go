@@ -92,3 +92,26 @@ func TestDoctorDistinguishesTheAgentFailures(t *testing.T) {
 		t.Errorf("with --no-agent: %+v", got)
 	}
 }
+
+// A request nobody hears is a request that times out, and a timeout reads as a
+// refusal nobody made — so whether this machine can make a sound is worth
+// reporting before the fact rather than after.
+func TestDoctorReportsWhetherAnApprovalWillBeHeard(t *testing.T) {
+	section := &doctor.Section{}
+	doctorAlert(section)
+
+	got := find(t, section, "alert")
+	switch got.Status {
+	case doctor.StatusOK:
+		if !strings.Contains(got.Detail, "plays a sound") {
+			t.Errorf("a machine that can play says %q", got.Detail)
+		}
+	case doctor.StatusWarn:
+		// A headless box is a legitimate answer, but it has to say what to do.
+		if !strings.Contains(got.Fix, "bell") {
+			t.Errorf("a silent machine was not told what to do about it: %q", got.Fix)
+		}
+	default:
+		t.Errorf("the alert check reported %q, which is neither", got.Status)
+	}
+}

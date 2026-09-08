@@ -447,3 +447,21 @@ func TestANumberAnswersTheQuestion(t *testing.T) {
 		t.Error("the band is still on screen after being answered")
 	}
 }
+
+// The alert is what reaches somebody in another window, so the request has to
+// actually ask for it — a modal that appears in silence is one that times out.
+func TestAnArrivingRequestAsksForTheAlert(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub()})
+	request := prompt.Request{Host: "bedev", Subject: "op://V/I/F", TTL: 5 * time.Minute}
+
+	cmd := m.openApproval(approvalMsg{
+		request: request, options: prompt.MenuFor(request),
+		reply: make(chan prompt.Choice, 1),
+	})
+	if cmd == nil {
+		t.Fatal("a request arrived and nothing was scheduled to announce it")
+	}
+	if _, ok := cmd().(bellMsg); !ok {
+		t.Errorf("the request scheduled %T, not the alert", cmd())
+	}
+}

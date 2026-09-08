@@ -299,6 +299,25 @@ What differs between brokers is only what a subject *is* and how to describe it
 to a human — which is why `prompt.Request` carries the wording (the noun, the
 scope, the detail rows, where the cursor starts) and everything else is shared.
 
+**7b-bis. One question, several surfaces, one answer.** A request is registered
+on a desk (`internal/approval`) and offered simultaneously to whichever prompter
+the session was built with and to anything else watching — in practice, the web
+board. Whichever answers first wins; the other is withdrawn.
+
+This is the shape it is because devtun runs in a window you are not looking at,
+which is the tool's whole premise. A board that could show a secret being asked
+for and then send you elsewhere to say yes turns every approval into a race
+against its own timeout.
+
+Exposing that over HTTP needs one thing the loopback checks do not give: an
+answer must not be replayable or aimable at the wrong question. So a request
+carries an unguessable id, spent on first use, and a choice is checked against
+the menu built for that one request. "Approve whatever is pending" is not an
+operation — between reading the board and clicking, the pending one may be a
+different question entirely. The desk wraps *outside* whatever `prompt:` chose,
+so `deny` still denies: a session told to answer nothing does not become
+answerable by opening a browser tab.
+
 **7c. The dialog is somebody else's program.** devtun raises a desktop dialog
 where it can, because the window devtun runs in is usually not the window you are
 looking at, and an approval nobody sees is an approval that times out into a
@@ -362,14 +381,47 @@ Security is violet with a lock, network is cyan, and the hues are far enough
 apart to separate in peripheral vision, which is the only kind of attention a
 scrolling log actually gets.
 
-**10a. Two glyph widths, stated rather than measured.** 🔒 is an
-emoji-presentation code point and occupies two cells; `⇄` occupies one. Width
-libraries disagree about this, and the symptom is subtle — every secret line
-sits one column right of every tunnel line, which quietly destroys the alignment
-the log exists to have. `ui.GlyphCells` is a table, because we choose the glyphs
-and can simply know.
+**10a. No glyph devtun draws is an emoji.** Every one is a single-cell text
+glyph — `⇄ ❖ ◈ ✎ ◱ ⧉ ·` — and that is a rule with a test behind it rather than a
+convention.
 
-**10a-bis. An optional interface is found by asking, never by a list.** Every
+It was not always. The security class was 🔒 and the SSH agent 🔑, and they cost
+twice over. They rendered in the terminal's colour-emoji font, at a different
+weight and baseline from the `⇄` beside them, which simply looks wrong on a
+monospace board. And an emoji-presentation code point occupies two cells while
+width libraries report one, so every secret line sat a column right of every
+tunnel line — destroying the alignment the log exists to have, in the interface
+only, while the log file got it right.
+
+There was a `GlyphCells` table working around the second half. Removing the
+emoji removed the need for it, and both renderers now write the glyph with no
+padding arithmetic at all. `TestEveryGlyphIsOneCell` is what keeps that safe: a
+new glyph is added to it, and an emoji fails before anyone sees it.
+
+**10b. The question goes in the middle of the screen, and makes a noise.**
+
+Both halves were once wrong and both are worth recording, because the reasoning
+that produced them was plausible.
+
+The request was briefly drawn as two bands down the top and bottom edges, on the
+theory that you would want the board visible while deciding. In front of a real
+terminal the theory did not survive: edges are where an interface puts the
+things you are meant to ignore, and a question that has stopped the world
+belongs in the middle of it. It is a centred popup on every surface — terminal,
+desktop dialog, web board — framed in red rather than the violet it used to
+share with the help, because it is the only overlay that is a question rather
+than something to dismiss.
+
+And it was announced by the terminal bell, which is the wrong instrument: half
+of terminals have it off and the other half use it for tab completion, so it
+means "something happened somewhere" rather than "devtun has stopped and needs
+an answer". A request nobody hears becomes a timeout, and a timeout reads as a
+refusal nobody made. devtun plays a sound of its own with whatever the machine
+already has — the same bargain as the dialog, for the same reason — and rings
+the bell as well, since a terminal that badges its tab on one is doing exactly
+the job.
+
+**10c. An optional interface is found by asking, never by a list.** Every
 place devtun discovers what a service can do — a socket handler, an advisor, a
 config contributor, a prompter — iterates the registry and type-asserts. That is
 not a style preference; it is the fix for a bug that shipped. The approval modal
@@ -381,13 +433,13 @@ omission silent: nothing errors, nothing logs, the feature is simply dead.
 A list of services that can do X will be missing the next service that can do X.
 Asking cannot be.
 
-**10b. Safety owns the border, not a chip on it.** When tunnels are bound
+**10d. Safety owns the border, not a chip on it.** When tunnels are bound
 somewhere other than loopback the whole top edge is drawn in the danger colour.
 A LAN-exposed session is the one condition on screen where the cost of not
 noticing is somebody else reaching your dev box, and a warning rendered at the
 same weight as `3 fwd` is one you have stopped seeing by the second day.
 
-**10c. A setting is a value *and* the file it came from.** The Config tab is a
+**10e. A setting is a value *and* the file it came from.** The Config tab is a
 tab rather than the popup it replaced because of one column. With a global file
 and a file per host, `prompt: auto` on screen answers nothing on its own — the
 question somebody has is whether that is this box's answer or the fall-through,
@@ -407,7 +459,7 @@ The one row that cannot honour this is a service's own setting, because
 report `host`, which is where an edit lands. Extending that seam to levels is
 deferred, not forgotten.
 
-**10d. A setting that will not work here says so on the row.** `prompt: dialog`
+**10f. A setting that will not work here says so on the row.** `prompt: dialog`
 on a machine with no osascript, zenity, kdialog or yad falls back to asking in
 the terminal — correct behaviour, and completely invisible from a screen that
 renders the word "dialog" and stops there. The row names what to install

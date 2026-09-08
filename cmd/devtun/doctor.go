@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -100,6 +101,7 @@ func localChecks(ctx context.Context, report *doctor.Report, flags upFlags) {
 	}
 
 	doctorApprovals(out, store, flags)
+	doctorAlert(out)
 	doctorOnePassword(ctx, out, flags)
 	doctorAgent(out, flags)
 	doctorBrowser(out)
@@ -134,6 +136,23 @@ func doctorApprovals(out *doctor.Section, store *hostcfg.Store, flags upFlags) {
 		}
 		out.OK("approvals", "auto — in the interface, or in the terminal under --log")
 	}
+}
+
+// doctorAlert reports whether a waiting approval will actually be heard.
+//
+// devtun runs in a window you are not looking at, which is the whole premise —
+// so a request that makes no sound is one that times out unheard, and a timeout
+// reads as a refusal nobody made. That makes "this machine will be silent" a
+// thing to know now rather than after the fact.
+func doctorAlert(out *doctor.Section) {
+	player := ui.AlertPlayer()
+	if player == "" {
+		out.Warn("alert", "no way to play a sound here — only the terminal bell",
+			"install a player (afplay, canberra-gtk-play, paplay), or make sure your terminal's bell is on\n"+
+				"a request you do not hear is one that times out, and a timeout is a refusal you did not make")
+		return
+	}
+	out.OK("alert", "an approval plays a sound with "+filepath.Base(player))
 }
 
 // doctorOnePassword checks the CLI devtun drives on *this* side. The remote box

@@ -34,6 +34,15 @@ const alertTimeout = 5 * time.Second
 // already use, which is the whole point of picking one rather than beeping.
 const macSound = "/System/Library/Sounds/Submarine.aiff"
 
+// AlertPlayer names the program that will make the noise, empty when there is
+// none. `devtun doctor` reports it: an alert nobody hears is the failure mode
+// this whole arrangement exists to prevent, and "it will be silent here" is
+// worth knowing before a request times out rather than after.
+func AlertPlayer() string {
+	name, _ := alertPlayer()
+	return name
+}
+
 // Alert plays the approval sound and rings the terminal bell.
 //
 // It never blocks the caller and never reports a failure: this is a courtesy on

@@ -388,6 +388,7 @@ this machine
   ! 1password    op 2.39.0 at /opt/homebrew/bin/op, but no account answered
     → run `op account add`, or sign in to the app and enable the CLI integration
   ✓ ssh-agent    1 key(s) via /Users/jsc/.gnupg/S.gpg-agent.ssh
+  ✓ alert        an approval plays a sound with afplay
   ✓ browser      URLs open with open
 
 bedev

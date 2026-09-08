@@ -3,6 +3,24 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Added
+
+- **`devtun doctor` reports whether an approval will actually be heard.** It
+  already said where a request would appear; a machine that cannot make a sound
+  is the other half of the same question, and a request nobody hears is one that
+  times out — which reads as a refusal nobody made. A silent machine is a
+  warning with something to do about it, not a failure.
+
+### Changed
+
+- `DESIGN.md` caught up with the last two releases: the approval desk and what
+  makes it safe to answer over HTTP, the no-emoji rule and the padding
+  arithmetic its removal retired, and why the question is a centred popup that
+  makes a noise rather than a pair of bands. The section letters in §10 were
+  renumbered, having grown a second `10b` and a second `10c`.
+
 ## v0.1.12
 
 ### Changed
