@@ -24,6 +24,10 @@ type fakeConn struct {
 	listener net.Listener
 	closed   atomic.Bool
 	uploads  atomic.Int32
+	// socketGone makes the socket check answer that the published socket has
+	// been taken away, and noise is whatever the login shell prints alongside.
+	socketGone atomic.Bool
+	noise      string
 }
 
 func newFakeConn(t *testing.T) *fakeConn {
@@ -43,6 +47,14 @@ func (c *fakeConn) Output(_ context.Context, script string) (string, error) {
 		return c.probe, nil
 	case contains(script, "--devtun-shim"):
 		return "devtun-shim test\n", nil
+	case contains(script, markGone):
+		// The socket check, answered the way a remote shell would: the marker
+		// line only when the socket is actually gone, and whatever the login
+		// shell felt like printing either way.
+		if c.socketGone.Load() {
+			return c.noise + markGone + " /run/user/1000/devtun.sock\n", nil
+		}
+		return c.noise, nil
 	default:
 		return "ok\n", nil
 	}
@@ -527,4 +539,43 @@ func (i *orderedInstance) Run(ctx context.Context) error {
 func (i *orderedInstance) Close() error {
 	i.owner.closedAfterRun.Store(!i.owner.running.Load())
 	return nil
+}
+
+// A reverse-forwarded socket can be taken away with nothing on this side
+// noticing: another devtun pointed at the same box removes the path and binds
+// its own, and if that one later exits, this session holds a listener sshd will
+// never route to again. It goes on reporting itself connected while every `op`
+// on the remote says there is no session — working, according to the thing that
+// is broken.
+func TestALostSocketEndsTheConnectionSoItCanBeRepublished(t *testing.T) {
+	conn := &fakeConn{probe: goodProbe}
+	conn.socketGone.Store(true)
+
+	missing, err := missingSockets(context.Background(), conn, []string{"/run/user/1000/devtun.sock"})
+	if err != nil {
+		t.Fatalf("missingSockets: %v", err)
+	}
+	if len(missing) != 1 || missing[0] != "/run/user/1000/devtun.sock" {
+		t.Fatalf("a socket that is gone was not reported: %v", missing)
+	}
+
+	conn.socketGone.Store(false)
+	if missing, err := missingSockets(context.Background(), conn, []string{"/run/user/1000/devtun.sock"}); err != nil || len(missing) != 0 {
+		t.Errorf("a socket that is present was reported missing: %v %v", missing, err)
+	}
+}
+
+// The check tears a working session down, so anything that is not the marker
+// must be ignored. A login shell printing a MOTD would otherwise cause exactly
+// the outage the check exists to prevent.
+func TestChatterOnTheRemoteIsNotAMissingSocket(t *testing.T) {
+	conn := &fakeConn{probe: goodProbe, noise: "Welcome to Ubuntu 24.04\n*** System restart required ***\n"}
+
+	missing, err := missingSockets(context.Background(), conn, []string{"/run/user/1000/devtun.sock"})
+	if err != nil {
+		t.Fatalf("missingSockets: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Errorf("a chatty login shell was read as a missing socket: %v", missing)
+	}
 }

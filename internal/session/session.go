@@ -26,7 +26,12 @@ const (
 	// only thing that notices. The timeout is the load-bearing half: without
 	// it the session sits there looking healthy and dead.
 	keepAliveInterval = 15 * time.Second
-	keepAliveTimeout  = 20 * time.Second
+	// socketCheckInterval is how often the published sockets are confirmed to
+	// still be there. Slower than the keepalive on purpose: losing a socket is
+	// rare and costs a shell round trip to notice, while losing the connection
+	// is common and costs nothing.
+	socketCheckInterval = 30 * time.Second
+	keepAliveTimeout    = 20 * time.Second
 
 	minReconnectDelay = 1 * time.Second
 	maxReconnectDelay = 30 * time.Second

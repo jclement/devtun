@@ -275,7 +275,7 @@ func TestSecretsYankCopiesTheReferenceOnly(t *testing.T) {
 func TestServicesTabShowsWhyAServiceIsUnavailable(t *testing.T) {
 	services := []service.Service{
 		stubService{meta: service.Meta{ID: "tunnels", Title: "Tunnels", Glyph: "⇄", Short: "forward ports"}},
-		stubService{meta: service.Meta{ID: "1password", Title: "1Password", Glyph: "🔒", Short: "serve op"}},
+		stubService{meta: service.Meta{ID: "1password", Title: "1Password", Glyph: "❖", Short: "serve op"}},
 	}
 	m := newTestModel(t, deps{tunnels: newStub(), services: services, store: newTestStore(t)})
 
@@ -296,7 +296,7 @@ func TestServicesTabShowsWhyAServiceIsUnavailable(t *testing.T) {
 
 func TestServicesToggleIsPersisted(t *testing.T) {
 	services := []service.Service{
-		stubService{meta: service.Meta{ID: "1password", Title: "1Password", Glyph: "🔒"}},
+		stubService{meta: service.Meta{ID: "1password", Title: "1Password", Glyph: "❖"}},
 	}
 	store := newTestStore(t)
 	m := newTestModel(t, deps{tunnels: newStub(), services: services, store: store})

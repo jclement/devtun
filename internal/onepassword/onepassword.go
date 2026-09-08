@@ -134,7 +134,7 @@ func (s *Service) Meta() service.Meta {
 	return service.Meta{
 		ID:    "1password",
 		Title: "1Password",
-		Glyph: "🔒",
+		Glyph: "❖",
 		Class: event.Security,
 		Short: "Serve `op` from your unlocked vault to the remote box, one approval at a time",
 	}

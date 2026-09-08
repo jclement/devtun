@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/jclement/devtun/internal/event"
 )
 
@@ -75,6 +77,48 @@ func TestOpenURLRefusesNonWebSchemes(t *testing.T) {
 	} {
 		if err := OpenURL(t.Context(), raw); err == nil {
 			t.Errorf("%q should be refused before it reaches a launcher", raw)
+		}
+	}
+}
+
+// Every glyph devtun draws must be one terminal cell and must not be an
+// emoji-presentation code point.
+//
+// Both halves matter and each was violated. An emoji renders in the terminal's
+// colour-emoji font — different weight, different baseline, different family
+// from the ⇄ and ◱ beside it — which looks wrong on a monospace board. And it
+// is two cells wide while lipgloss reports one, so a whole class of line ends
+// up a column right of every other line.
+//
+// This is the enforcement. A glyph added anywhere in devtun should be added
+// here too, and an emoji should fail before it is ever seen.
+func TestEveryGlyphIsOneCell(t *testing.T) {
+	glyphs := map[string]string{
+		"security":   ClassGlyph(event.Security),
+		"network":    ClassGlyph(event.Network),
+		"lifecycle":  ClassGlyph(event.Lifecycle),
+		"diagnostic": ClassGlyph(event.Diagnostic),
+		// The service glyphs, copied from each service's Meta. They cannot be
+		// read from here without an import cycle, so they are restated — and a
+		// mismatch is caught by the reader, which is the trade this makes.
+		"tunnels":   "⇄",
+		"1password": "❖",
+		"ssh-agent": "◈",
+		"gpg-agent": "✎",
+		"browser":   "◱",
+	}
+
+	for name, glyph := range glyphs {
+		if got := ansi.StringWidth(glyph); got != 1 {
+			t.Errorf("%s glyph %q measures %d cells, want 1", name, glyph, got)
+		}
+		for _, r := range glyph {
+			// The emoji planes. A code point up here is drawn by the colour
+			// font whatever its declared width, which is the part that looks
+			// wrong even when the arithmetic happens to work out.
+			if r >= 0x1F300 {
+				t.Errorf("%s glyph %q is an emoji (U+%04X); devtun draws text glyphs", name, glyph, r)
+			}
 		}
 	}
 }

@@ -3,6 +3,31 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Fixed
+
+- **A session no longer deletes a socket it does not own.** Two devtun sessions
+  pointed at the same box share one socket path; the second takes it over,
+  which is deliberate — but the first one's shutdown then ran an unconditional
+  `rm -f` and deleted the *second's* socket. The survivor kept running, still
+  reporting itself connected, while every `op` on the remote said there was no
+  session at all. Shutdown now leaves alone a socket something is listening on.
+- **A session notices when its socket is taken away.** The other half of the
+  same failure: a reverse-forwarded socket can be removed with nothing on this
+  side knowing, leaving a listener sshd will never route to again. That is the
+  worst shape a failure can have — working, according to the thing that is
+  broken. A check every thirty seconds ends the connection so the supervisor
+  republishes it, and says so in the log.
+- **No more colour emoji.** The security class was `🔒` and the SSH agent `🔑`,
+  and they cost twice over: they rendered in the terminal's colour-emoji font,
+  at a different weight and baseline from the `⇄` and `◱` beside them, which
+  looked wrong on a monospace board — and they are two cells wide while width
+  libraries report one, so every security line sat a column right of every
+  other line. They are `❖` and `◈` now, every glyph is one cell, both renderers
+  dropped the padding arithmetic that existed to work around the old ones, and
+  a test fails on any emoji added anywhere in devtun.
+
 ## v0.1.10
 
 ### Fixed

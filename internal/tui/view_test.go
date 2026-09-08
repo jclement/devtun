@@ -58,7 +58,7 @@ func TestViewNeverExceedsTheTerminalWidth(t *testing.T) {
 		{Host: strings.Repeat("h", 90), Subject: "op://" + strings.Repeat("v", 200), Action: authz.ActionAllow, Note: strings.Repeat("n", 80)},
 	}}
 	services := []service.Service{stubService{meta: service.Meta{
-		ID: "1password", Title: "1Password", Glyph: "🔒", Short: strings.Repeat("s", 200),
+		ID: "1password", Title: "1Password", Glyph: "❖", Short: strings.Repeat("s", 200),
 	}}}
 
 	for _, width := range []int{40, 41, 60, 80, 100, 200} {
@@ -251,7 +251,7 @@ func TestTickerUsesTheSharedClassTreatment(t *testing.T) {
 		Text: "op://Personal/Docker/PAT allowed 5m",
 	}))
 	view := m.frame()
-	if !strings.Contains(ansi.Strip(view), "🔒 op") {
+	if !strings.Contains(ansi.Strip(view), "❖ op") {
 		t.Errorf("the security glyph and short service name are missing:\n%s", ansi.Strip(view))
 	}
 	// The class style is applied to the service column, not just the glyph.

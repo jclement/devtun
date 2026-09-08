@@ -124,7 +124,7 @@ func (s *Service) Meta() service.Meta {
 	return service.Meta{
 		ID:    "ssh-agent",
 		Title: "SSH Agent",
-		Glyph: "🔑",
+		Glyph: "◈",
 		Class: event.Security,
 		Short: "Forward your SSH agent to the remote box, one approved signature at a time",
 	}

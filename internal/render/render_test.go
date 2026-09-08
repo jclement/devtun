@@ -50,7 +50,7 @@ func TestLogLineCarriesTimeServiceAndText(t *testing.T) {
 }
 
 // Every secret line must start its text in the same column as every tunnel
-// line. 🔒 is two cells and ⇄ is one, so this only holds if the glyph column
+// line. This only holds if the glyph column
 // is padded by the width we declare rather than the one a width table guesses.
 func TestGlyphColumnIsFixedAcrossClasses(t *testing.T) {
 	var buf bytes.Buffer

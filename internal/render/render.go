@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 	"sync"
 	"time"
 
@@ -58,10 +57,7 @@ func (l *Log) Event(e event.Event) {
 	style := ui.ClassStyle(e.Class)
 	line := fmt.Sprintf("%s %s %s  %s",
 		ui.Muted.Render(e.Time.Format("15:04:05")),
-		// Padded to a fixed two cells using the width we declare rather than one
-		// measured: 🔒 is two cells and ⇄ is one, and a log whose left margin
-		// wanders is a log you have to read rather than skim.
-		ui.ClassGlyph(e.Class)+strings.Repeat(" ", 2-ui.GlyphCells(e.Class)),
+		ui.ClassGlyph(e.Class),
 		style.Render(pad(ui.ShortService(e.Service), 9)),
 		ui.LevelStyle(e.Level).Render(e.Text),
 	)

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"path"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/service"
@@ -100,13 +102,17 @@ func (s *Session) serveOnce(ctx context.Context, conn Conn) (err error) {
 	s.reportSetup(ctx, conn, facts, paths, label, advisors, adviceHost)
 
 	// One channel, one buffer slot per goroutine, so nothing leaks blocked on
-	// a send once the first failure has been taken.
-	failures := make(chan error, len(instances)+len(own)+2)
+	// a send once the first failure has been taken. The three are the control
+	// socket, the keepalive and the socket watcher — miscount them and
+	// shutdown hangs on the goroutine with nowhere to put its result, which is
+	// what TestCloseHappensAfterRunReturns is for.
+	failures := make(chan error, len(instances)+len(own)+3)
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	go func() { failures <- socket.serve(serveCtx, listener) }()
 	go func() { failures <- conn.KeepAlive(serveCtx, keepAliveInterval, keepAliveTimeout) }()
+	go func() { failures <- s.watchSockets(serveCtx, conn, socketPaths(paths, own)) }()
 	for _, o := range own {
 		go func(o ownSocket) {
 			failures <- annotate(o.id, o.serve(serveCtx, o.listener))
@@ -301,6 +307,97 @@ func annotate(id string, err error) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %w", id, err)
+}
+
+// socketPaths is every socket this session published: the control socket, plus
+// the one each service that speaks somebody else's protocol needs of its own.
+func socketPaths(paths shim.RemotePaths, own []ownSocket) []string {
+	out := make([]string, 0, len(own)+1)
+	out = append(out, paths.Socket)
+	for _, o := range own {
+		out = append(out, o.path)
+	}
+	return out
+}
+
+// watchSockets ends the connection if a socket this session published stops
+// being there.
+//
+// A reverse-forwarded socket can be taken away without anything on this side
+// noticing. Another devtun pointed at the same box removes the path and binds
+// its own — that is a deliberate takeover — and if that one later exits, or if
+// anything else on the remote deletes the file, this session is left holding a
+// listener that sshd will never route to again. It goes on reporting itself
+// connected, its services go on reporting themselves ready, and every `op` on
+// the remote says there is no session at all. That is the worst shape a failure
+// can have: working, according to the thing that is broken.
+//
+// Returning an error here tears the connection down and hands it to the
+// supervisor, which reconnects and republishes. Recovery is the point; the
+// alternative is telling somebody to notice for themselves.
+func (s *Session) watchSockets(ctx context.Context, conn Conn, paths []string) error {
+	ticker := time.NewTicker(socketCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+
+		missing, err := missingSockets(ctx, conn, paths)
+		if err != nil {
+			// A probe that could not run says nothing about the sockets, and
+			// tearing down a working session over a failed `test` would be a
+			// worse bug than the one this exists to catch. The keepalive is
+			// what notices a connection that has actually gone.
+			continue
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		s.events.Emit(event.Event{
+			Kind: "socket-lost", Class: event.Lifecycle, Level: event.Warn,
+			Text:   "the remote socket " + missing[0] + " is gone — something else took it over; reconnecting",
+			Fields: []any{"socket", missing[0]},
+		})
+		return fmt.Errorf("the socket %s was removed on the remote host", missing[0])
+	}
+}
+
+// markGone prefixes each path the remote reports as no longer a socket.
+//
+// A marker rather than a bare path, because this decides whether to tear a
+// working session down. A login shell that prints a MOTD, a warning out of a
+// profile script, anything at all on stdout would otherwise read as a missing
+// socket and cause exactly the outage this check exists to prevent. A check
+// that fires wrongly is worse than no check.
+const markGone = "@@DEVTUN-GONE"
+
+// missingSockets asks the remote which of these paths are no longer sockets, in
+// one round trip rather than one per path.
+func missingSockets(ctx context.Context, conn Conn, paths []string) ([]string, error) {
+	var script strings.Builder
+	for _, p := range paths {
+		fmt.Fprintf(&script, "[ -S %s ] || printf '%s %%s\\n' %s; ", shellQuote(p), markGone, shellQuote(p))
+	}
+	out, err := conn.Output(ctx, script.String())
+	if err != nil {
+		return nil, err
+	}
+
+	var missing []string
+	for _, line := range strings.Split(out, "\n") {
+		rest, found := strings.CutPrefix(strings.TrimSpace(line), markGone+" ")
+		if !found {
+			continue
+		}
+		if rest = strings.TrimSpace(rest); rest != "" {
+			missing = append(missing, rest)
+		}
+	}
+	return missing, nil
 }
 
 // Prepare connects once, brings the remote helper up to date, reports what the

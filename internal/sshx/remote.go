@@ -85,9 +85,9 @@ func (c *Client) DialTCP(ctx context.Context, address string) (net.Conn, error) 
 //
 // x/crypto/ssh has no equivalent of OpenSSH's StreamLocalBindUnlink, so a
 // socket left behind by a previous run would make the bind fail. Removing it
-// first is safe: if another devtun really is live on that path, its own socket
-// is gone but its SSH connection is not, and the second listener will simply
-// take over new connections.
+// first is what makes a second run work at all — but it is a takeover, not a
+// tidy-up, and the caller is told when it displaced something live so the fact
+// that two sessions are now pointed at one box is not a silent one.
 func (c *Client) ListenSocket(ctx context.Context, socketPath string) (net.Listener, error) {
 	directory := path.Dir(socketPath)
 	prepare := fmt.Sprintf("mkdir -p %s && chmod 700 %s && rm -f %s",
@@ -115,10 +115,44 @@ func (c *Client) ListenSocket(ctx context.Context, socketPath string) (net.Liste
 	return listener, nil
 }
 
-// RemoveSocket cleans up on shutdown. Failures are not worth reporting to the
-// user: the socket is unusable the moment the SSH connection drops.
+// RemoveSocket cleans up on shutdown, and only if the socket is still ours.
+//
+// It used to be an unconditional `rm -f`, and that is a foot-gun the moment two
+// devtun sessions point at the same box: the second takes the path over — which
+// ListenSocket does deliberately — and then the *first* one's shutdown deletes
+// the second's socket. The survivor is left running, believing it is serving,
+// while every `op` on the remote says there is no session at all.
+//
+// So the check is "is anything listening here now?". If something is, it is not
+// us — our listener closed a moment ago — and the file belongs to whoever took
+// over. Leaving a stale socket behind costs nothing: ListenSocket removes one
+// on the way in, and a shim that finds a socket with nobody behind it reports a
+// refused connection, which is a truer description of "devtun was here and is
+// not running now" than a missing file.
+//
+// Failures are not worth reporting: the socket is unusable the moment the SSH
+// connection drops either way.
 func (c *Client) RemoveSocket(ctx context.Context, socketPath string) {
-	_, _ = c.Output(ctx, fmt.Sprintf("rm -f %s", shellQuote(socketPath)))
+	_, _ = c.Output(ctx, removeIfUnusedScript(socketPath))
+}
+
+// removeIfUnusedScript deletes the socket unless somebody is listening on it.
+//
+// The test is a connect attempt, because that is the only thing that
+// distinguishes a socket with a live peer from an abandoned file, and it is
+// done with whichever of these the box has rather than requiring any of them.
+// A box with none of them keeps its stale socket, which is the safe way to be
+// wrong: a socket nobody removed is a confusing error, a socket removed out
+// from under a live session is a broken one.
+func removeIfUnusedScript(socketPath string) string {
+	quoted := shellQuote(socketPath)
+	return fmt.Sprintf(`if [ -S %s ]; then
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -U %s >/dev/null 2>&1 || rm -f %s
+  elif command -v socat >/dev/null 2>&1; then
+    socat -u OPEN:/dev/null UNIX-CONNECT:%s >/dev/null 2>&1 || rm -f %s
+  fi
+fi`, quoted, quoted, quoted, quoted, quoted)
 }
 
 // Upload writes a local file to the remote host with the given mode. It writes

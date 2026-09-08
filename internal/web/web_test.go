@@ -54,7 +54,7 @@ type fakeBroker struct {
 }
 
 func (b *fakeBroker) Meta() service.Meta {
-	return service.Meta{ID: "1password", Title: "1Password", Glyph: "🔒", Short: "the vault"}
+	return service.Meta{ID: "1password", Title: "1Password", Glyph: "❖", Short: "the vault"}
 }
 
 func (b *fakeBroker) Rules() []authz.Rule       { return b.rules }

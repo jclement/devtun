@@ -163,7 +163,7 @@ func ClassStyle(c event.Class) lipgloss.Style {
 func ClassGlyph(c event.Class) string {
 	switch c {
 	case event.Security:
-		return "🔒"
+		return "❖"
 	case event.Network:
 		return "⇄"
 	case event.Diagnostic:
@@ -173,23 +173,19 @@ func ClassGlyph(c event.Class) string {
 	}
 }
 
-// GlyphCells is how many terminal cells ClassGlyph occupies.
+// Every glyph ClassGlyph returns is exactly one terminal cell, and that is a
+// rule rather than an observation: **no glyph devtun draws may be an
+// emoji-presentation code point.**
 //
-// It is a table rather than a measurement on purpose. Width libraries disagree
-// about emoji — lipgloss reports U+1F512 as one cell while every terminal draws
-// it as two — and the symptom is subtle: every secret line sits one column
-// right of every tunnel line, which quietly destroys the alignment the log
-// exists to have. We choose the glyphs, so we can simply know.
-func GlyphCells(c event.Class) int {
-	if c == Security {
-		return 2 // 🔒 is an emoji-presentation code point
-	}
-	return 1
-}
-
-// Security re-exports the class so GlyphCells reads without an import cycle in
-// callers that only need the width.
-const Security = event.Security
+// It was 🔒 for the security class and 🔑 for the SSH agent, and they cost
+// twice over. They rendered in the terminal's colour-emoji font — a different
+// weight, baseline and family from the ⇄ and ◱ beside them — which simply
+// looked wrong on a monospace board. And they are two cells wide while width
+// libraries report one, so every security line sat a column right of every
+// other line, destroying the alignment the log exists to have.
+//
+// Both renderers therefore write the glyph with no padding arithmetic at all.
+// TestEveryGlyphIsOneCell is what keeps that safe.
 
 // LevelStyle returns the style for a severity, for the parts of a line that
 // carry severity rather than class.

@@ -873,7 +873,7 @@ func TestGrantsSurviveAReconnect(t *testing.T) {
 
 func TestMeta(t *testing.T) {
 	meta := New(Options{}).Meta()
-	if meta.ID != "1password" || meta.Title != "1Password" || meta.Glyph != "🔒" {
+	if meta.ID != "1password" || meta.Title != "1Password" || meta.Glyph != "❖" {
 		t.Errorf("meta = %+v", meta)
 	}
 	if meta.Class != event.Security {

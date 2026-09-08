@@ -668,13 +668,7 @@ func (m *Model) ticker() string {
 func eventLine(e event.Event) string {
 	return fmt.Sprintf("%s %s %s  %s",
 		ui.Muted.Render(e.Time.Format("15:04:05")),
-		// Padded to the width we declare rather than the one a terminal
-		// measures: 🔒 is two cells and ⇄ is one, so without this every
-		// security line sat a column right of every other line — in the
-		// interface only, while the log file got it right. "A line read here
-		// and the same line read in a log file must look like the same line"
-		// is the rule this was quietly breaking.
-		ui.ClassGlyph(e.Class)+strings.Repeat(" ", 2-ui.GlyphCells(e.Class)),
+		ui.ClassGlyph(e.Class),
 		ui.ClassStyle(e.Class).Render(pad(ui.ShortService(e.Service), ui.ServiceWidth)),
 		ui.LevelStyle(e.Level).Render(e.Text),
 	)
