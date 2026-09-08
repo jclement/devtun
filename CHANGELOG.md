@@ -3,6 +3,18 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Fixed
+
+- On a Linux desktop with no dialog program, the Config tab's approvals row
+  listed three things to install and the ellipsis ate the last one. Commas
+  instead of "or" buy the six columns that makes the difference. The test that
+  should have caught it was itself measuring at a width where the help — which
+  is by design the first thing a narrow terminal drops — could not fit, so it
+  passed on macOS, where there is only ever one name to print, and failed on
+  Linux.
+
 ## v0.1.9
 
 ### Added

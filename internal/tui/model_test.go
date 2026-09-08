@@ -495,6 +495,12 @@ func TestThePromptRowSaysWhatThisMachineCanActuallyDo(t *testing.T) {
 	send(m, "c")
 	m.reload()
 
+	// Wide, deliberately. This asserts what the row *says*, and the help is by
+	// design the first thing a narrow terminal gives way on — so at 100 columns
+	// on a machine with three choosers to name (Linux; macOS has one) it was
+	// the test, not the interface, that was wrong.
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 30})
+
 	row := configRowText(t, m, "prompt")
 	if !strings.Contains(row, "no dialog program here") {
 		t.Errorf("the row does not say a dialog cannot be drawn here:\n%s", row)

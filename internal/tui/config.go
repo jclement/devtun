@@ -188,7 +188,11 @@ func (m *Model) promptHelp() string {
 	chooser := m.dialogChooser()
 	base := "where an approval appears · dialog uses " + chooser + " here"
 	if chooser == "" {
-		base = "no dialog program here: install " + strings.Join(prompt.ChooserNames(), " or ") +
+		// Commas rather than " or ": on Linux there are three choosers, and the
+		// difference between "zenity or kdialog or yad" and "zenity, kdialog,
+		// yad" is six columns — which is the difference between the last name
+		// being readable and being the bit the ellipsis eats.
+		base = "no dialog program here: install " + strings.Join(prompt.ChooserNames(), ", ") +
 			" · otherwise approvals appear in this window"
 	}
 	// The command line beats both files for this run, so a session started with
