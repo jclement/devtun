@@ -7,6 +7,49 @@ this is 0.x, a minor bump may break something.
 
 ### Fixed
 
+A TUI expert audited the interface at seven window sizes; these are what it
+found, each verified before it was fixed.
+
+- **You could not select or copy anything.** Mouse reporting was on with no way
+  off, so the terminal handed drags to devtun and its own selection was dead —
+  which made every URL on screen unreachable. `m` now releases the mouse.
+- **The help was clipped at every height from 34 to 47 rows**, an ordinary
+  40-row terminal included: the threshold was 34 and the box was 48 lines, and
+  the line it cut was `? or esc to close`. The help did not say how to dismiss
+  the help. It is now chosen by measuring, in two columns when there is width
+  for them, with a short form for a window that can take neither.
+- **Overlays truncated their own load-bearing sentences.** At 60 columns the
+  approval modal cut "caller details come from the remote box and are not
+  ve" — the words saying the provenance is unverified, on the most
+  security-critical surface in the app. Overlays wrap now.
+- **`y` on a live grant copied the empty string** and wiped the clipboard while
+  the toast said "copied". It read `.rule`, and a grant keeps its subject in
+  `.grant`; grants are the first rows on that tab.
+- **The "connection lost" box was not modal.** A click still moved the cursor
+  and `x` still hid a port, behind a box saying the link was gone.
+- **Every security line sat one column right of every other line** — in the
+  interface only, while the log file got it right, breaking the rule the code
+  states: a line read in one must look like the same line read in the other.
+  `🔒` is two cells and `⇄` is one. The abbreviation table was also duplicated
+  and had drifted: neither copy knew about the SSH agent, so with a four-wide
+  column every signing event rendered as `ssh…` — indistinguishable from `ssh`,
+  which means the SSH session. There is one table now, and it is five wide.
+- **The narrow key bar dropped `? help` and `esc quit` first**, leaving a
+  first-run user at 45 columns with nothing on screen saying how to learn the
+  keyboard or how to get out. Those two are now the last to go.
+- The activity pane no longer draws a labelled separator over blank rows on a
+  fresh connection; the sort arrow is `▲`/`▼` and points the right way; the
+  detail box shows `mode: auto` instead of omitting the field the whole
+  hide-and-show model turns on.
+
+### Added
+
+- **`R` reconnects from anywhere.** `r` meant reverse-sort, revoke, or
+  reconnect depending on whether the link happened to be up — and there was no
+  way at all to force a reconnect while connected, though the web board had one.
+
+### Fixed
+
 - **The web board opens itself**, and `w` in the interface opens it and copies
   its URL. It printed a forty-character URL with a token in it into a log the
   mouse cannot select — the mouse belongs to the port table — which is the worst

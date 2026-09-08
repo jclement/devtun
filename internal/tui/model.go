@@ -179,6 +179,10 @@ type Model struct {
 
 	showHelp   bool
 	showDetail bool
+	// mouseOff suspends mouse reporting so the terminal's own selection works
+	// again. See View: while devtun is reading the mouse, you cannot drag
+	// across a URL to copy it.
+	mouseOff bool
 	// protocolPrompt asks http or https before opening a port we cannot
 	// classify.
 	protocolPrompt bool
@@ -263,9 +267,15 @@ func (m *Model) Err() error { return m.fatal }
 func (m *Model) editing() bool { return m.editor != editorNone }
 
 // overlayOpen reports whether a modal layer is covering the body.
+// overlayOpen reports whether a modal layer is covering the body.
+//
+// offline() belongs here and was missing, which made the "connection lost" box
+// the one overlay you could act straight through: a click still moved the
+// table's cursor and `x` still hid a port, behind a box that said the
+// connection was gone.
 func (m *Model) overlayOpen() bool {
 	return m.approval != nil || m.setup != nil || m.confirming || m.showHelp ||
-		m.showDetail || m.protocolPrompt || m.editing() || m.menu.open
+		m.showDetail || m.protocolPrompt || m.editing() || m.menu.open || m.offline()
 }
 
 // Update handles one message.
@@ -665,6 +675,14 @@ func (m *Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, true
 	case "w":
 		return m.openWeb(), true
+	case "R":
+		return m.reconnect(), true
+	case "m":
+		m.mouseOff = !m.mouseOff
+		if m.mouseOff {
+			return m.showToast(toastMsg{text: "mouse off — the terminal can select text again; m to switch back"}), true
+		}
+		return m.showToast(toastMsg{text: "mouse on — rows and tabs are clickable"}), true
 	}
 	return nil, false
 }
@@ -713,16 +731,29 @@ func (m *Model) handleConfirmKey(msg tea.KeyPressMsg) tea.Cmd {
 
 // handleOfflineKey handles the reconnect screen. Only the key it owns is
 // claimed; quitting and the rest of the interface still work behind it.
+// handleOfflineKey answers the reconnect box.
+//
+// `r` works here for the hands that already learned it, but the binding that
+// matters is the global `R`: `r` means "reverse the sort" on the tunnels tab
+// and "revoke" on the access tab, so which of the three it meant depended on
+// whether the link happened to be up. A key whose meaning changes with the
+// connection state is a key nobody can rely on.
 func (m *Model) handleOfflineKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if msg.String() != "r" {
 		return nil, false
 	}
+	return m.reconnect(), true
+}
+
+// reconnect cuts the backoff short. It is what you press after opening a
+// laptop lid: the wait was measured against an outage that has already ended.
+func (m *Model) reconnect() tea.Cmd {
 	if m.d.retry == nil {
-		return nil, true
+		return nil
 	}
 	m.d.retry()
 	m.status.NextRetry = time.Time{}
-	return m.showToast(toastMsg{text: "reconnecting…"}), true
+	return m.showToast(toastMsg{text: "reconnecting…"})
 }
 
 func (m *Model) handleEditorKey(msg tea.KeyPressMsg) tea.Cmd {
@@ -804,8 +835,11 @@ func (m *Model) handleClick(e tea.Mouse) tea.Cmd {
 		return nil
 	}
 
-	// A request waiting on an answer is not something to click past.
-	if m.approval != nil || m.setup != nil {
+	// A request waiting on an answer is not something to click past — and
+	// neither is a lost connection, which used to be the one box you could
+	// reach through: a click behind it still moved the cursor, and `x` still
+	// hid a port, while the box said the link was gone.
+	if m.approval != nil || m.setup != nil || m.offline() {
 		return nil
 	}
 	if m.protocolPrompt {

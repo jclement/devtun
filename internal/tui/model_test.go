@@ -11,6 +11,7 @@ import (
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/service"
+	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
 )
 
@@ -711,5 +712,88 @@ func TestDenyRefusesWhatItCannotTighten(t *testing.T) {
 	}
 	if !strings.Contains(plainView(m), "edit it there") {
 		t.Errorf("nothing said why:\n%s", plainView(m))
+	}
+}
+
+// --- regressions the audit turned up ---------------------------------------
+
+// The owner's complaint: you could not select or copy anything, because mouse
+// reporting is on and the terminal hands drags to devtun instead.
+func TestMouseCanBeTurnedOffSoTheTerminalCanSelect(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node"))})
+	if m.View().MouseMode == 0 {
+		t.Fatal("mouse reporting is off by default, so rows would not be clickable")
+	}
+
+	send(m, "m")
+	if m.View().MouseMode != 0 {
+		t.Error("m did not release the mouse")
+	}
+	if !strings.Contains(plainView(m), "select text") {
+		t.Errorf("nothing said what just happened:\n%s", plainView(m))
+	}
+
+	send(m, "m")
+	if m.View().MouseMode == 0 {
+		t.Error("m did not take the mouse back")
+	}
+}
+
+// A grant keeps its subject in .grant and leaves .rule zero. Reading .rule
+// copied the empty string and wiped the clipboard, while the toast said
+// "copied" — and grants are the first rows on the tab.
+func TestCopyingAGrantCopiesItsSubject(t *testing.T) {
+	secrets := &stubSecrets{live: []authz.Grant{
+		{Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: authz.ActionAllow},
+	}}
+	m := newTestModel(t, deps{tunnels: newStub(), secrets: oneSource(secrets)})
+	send(m, "3")
+	send(m, "down")
+	send(m, "y")
+
+	view := plainView(m)
+	if !strings.Contains(view, "copied op://Personal/Docker/PAT") {
+		t.Errorf("the grant's subject was not copied:\n%s", view)
+	}
+}
+
+// The reconnect box was the one overlay you could act straight through: a
+// click still moved the cursor and x still hid a port, behind a box saying the
+// connection was gone.
+func TestTheReconnectBoxCannotBeActedThrough(t *testing.T) {
+	stub := newStub(row(3000, 3000, "node"), row(8080, 8080, "python3"))
+	m := newTestModel(t, deps{tunnels: stub})
+	m.status = session.Status{State: session.Disconnected}
+	m.everConnected = true
+
+	if !m.overlayOpen() {
+		t.Fatal("a lost connection is a modal and must report itself as one")
+	}
+
+	// Every visible row is still auto: nothing behind the box was touched.
+	click(m, 5, rowBody+1)
+	send(m, "x")
+	for _, st := range stub.States() {
+		if st.Mode == tunnels.ModeHidden {
+			t.Errorf("port %d was hidden from behind the reconnect box", st.RemotePort)
+		}
+	}
+	if m.cursor() != noSelection {
+		t.Errorf("a click behind the box moved the cursor to %d", m.cursor())
+	}
+}
+
+// r meant reverse-sort, revoke, or reconnect depending on whether the link
+// happened to be up. R means reconnect, always.
+func TestReconnectHasAKeyOfItsOwn(t *testing.T) {
+	var retried int
+	m := newTestModel(t, deps{
+		tunnels: newStub(row(3000, 3000, "node")),
+		retry:   func() { retried++ },
+	})
+
+	send(m, "R")
+	if retried != 1 {
+		t.Errorf("R did not reconnect while connected (%d)", retried)
 	}
 }

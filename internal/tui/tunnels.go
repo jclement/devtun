@@ -222,9 +222,12 @@ func (m *Model) columnHeader() string {
 		title := c.title
 		// Mark the active sort so the header explains the current ordering.
 		if c.sortable && c.sort == m.sortKey {
-			arrow := "↓"
+			// ▲ for ascending, which is the default. It read ↓ for ascending,
+			// under a column already headed ↓REMOTE — two arrows on one line
+			// meaning two different things, one of them backwards.
+			arrow := "▲"
 			if m.reverse {
-				arrow = "↑"
+				arrow = "▼"
 			}
 			if c.right {
 				title = arrow + title
@@ -781,7 +784,7 @@ func (m *Model) tunnelDetailBox() string {
 	if s.Skip != "" {
 		b.WriteString(row("reason", string(s.Skip)))
 	}
-	b.WriteString(row("mode", string(s.Mode)))
+	b.WriteString(row("mode", modeName(s.Mode)))
 	if s.PinnedLocal > 0 {
 		b.WriteString(row("pinned to", fmt.Sprintf("local %d", s.PinnedLocal)))
 	}
@@ -857,4 +860,16 @@ func (m *Model) reconnectBox() string {
 		ui.Banner.Render("esc") + ui.Muted.Render(" quit"))
 
 	return m.boxOf(b.String())
+}
+
+// modeName spells out a port's standing decision for the detail box.
+//
+// ModeAuto's string is empty and `row` drops empty values, so the one field
+// the whole hide-and-show model turns on was invisible in the one place that
+// exists to explain a port.
+func modeName(mode tunnels.Mode) string {
+	if mode == "" {
+		return string(tunnels.ModeAuto)
+	}
+	return string(mode)
 }

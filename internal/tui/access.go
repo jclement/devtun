@@ -274,7 +274,18 @@ func (m *Model) copyReference() tea.Cmd {
 	if i < 0 || i >= len(m.accessRows) {
 		return m.needSelection()
 	}
-	ref := m.accessRows[i].rule.Subject
+	// A grant keeps its subject in .grant and leaves .rule zero, so reading
+	// .rule.Subject on the grant rows — which are the *first* rows on this tab
+	// — copied the empty string and wiped whatever you had on the clipboard,
+	// while the toast cheerfully said "copied".
+	row := m.accessRows[i]
+	ref := row.rule.Subject
+	if row.isGrant {
+		ref = row.grant.Subject
+	}
+	if ref == "" {
+		return m.showToast(toastMsg{text: "nothing on this row to copy", bad: true})
+	}
 	return tea.Batch(yank(ref), m.showToast(toastMsg{text: "copied " + ref}))
 }
 

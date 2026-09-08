@@ -153,6 +153,11 @@ func TestLANWarningSurvivesANarrowHeader(t *testing.T) {
 // than hard-coding a number.
 func TestTickerShowsTheMostRecentUnderEveryTab(t *testing.T) {
 	m := newTestModel(t, deps{tunnels: newStub()})
+	// One event first: the pane has no height until it has something to show,
+	// so asking for its height on an empty log correctly answers zero.
+	m.Update(eventMsg(event.Event{
+		Time: testNow, Service: "tunnels", Class: event.Network, Kind: "opened", Text: "seed",
+	}))
 	lines := m.tickerHeight()
 	if lines < tickerMin {
 		t.Fatalf("the test window is too short to have a ticker at all")
@@ -190,6 +195,11 @@ func TestTickerShowsTheMostRecentUnderEveryTab(t *testing.T) {
 // where every line it takes is a port row you cannot see.
 func TestTickerScalesWithTheWindowAndVanishesOnShortOnes(t *testing.T) {
 	m := newTestModel(t, deps{tunnels: newStub()})
+	// The pane is not drawn over an empty log, so it needs something in it
+	// before its height means anything.
+	m.Update(eventMsg(event.Event{
+		Time: testNow, Service: "tunnels", Class: event.Network, Kind: "opened", Text: "remote 3000",
+	}))
 	for _, tc := range []struct {
 		height int
 		want   int
@@ -348,5 +358,89 @@ func TestALongToastIsTruncatedNotDropped(t *testing.T) {
 	}
 	if w := ansi.StringWidth(last); w != 60 {
 		t.Errorf("the border is %d cells wide, want 60", w)
+	}
+}
+
+// The help box is chosen by measuring, not by a threshold. The threshold was
+// 34 rows and the box it guarded was 48, so at every height in between — an
+// ordinary 40-row terminal included — the help was clipped, and the line it
+// clipped was the one saying how to close it.
+func TestTheHelpAlwaysFitsAndSaysHowToClose(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node"))})
+	for _, size := range [][2]int{{80, 24}, {100, 30}, {120, 40}, {80, 40}, {90, 20}, {60, 16}, {160, 50}} {
+		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		m.showHelp = true
+
+		view := plainView(m)
+		if got := strings.Count(view, "\n") + 1; got != size[1] {
+			t.Errorf("%dx%d: the frame is %d lines", size[0], size[1], got)
+		}
+		if !strings.Contains(view, "esc") {
+			t.Errorf("%dx%d: the help does not say how to close it:\n%s", size[0], size[1], view)
+		}
+	}
+}
+
+// The narrow key bar dropped hints in order, so `? help` and `esc quit` were
+// the first two to go — leaving a first-run user with nothing on screen saying
+// how to learn the keyboard or how to get out.
+func TestTheKeyBarKeepsHelpAndQuitLongest(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node"))})
+	for _, width := range []int{40, 45, 55, 70} {
+		m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+		bar := ansi.Strip(m.keyBar())
+		if !strings.Contains(bar, "?") || !strings.Contains(bar, "esc") {
+			t.Errorf("at %d columns the bar lost its way out: %q", width, bar)
+		}
+	}
+}
+
+// A security line is two cells of glyph and every other line is one, so
+// without padding by the declared width the whole security class sat a column
+// to the right — in the interface only, while the log file got it right.
+func TestEveryEventLineStartsInTheSameColumn(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub()})
+	for i, e := range []event.Event{
+		{Time: testNow, Service: "tunnels", Class: event.Network, Kind: "opened", Text: "network"},
+		{Time: testNow, Service: "1password", Class: event.Security, Kind: "asked", Text: "security"},
+		{Time: testNow, Service: "ssh-agent", Class: event.Security, Kind: "signed", Text: "agent"},
+	} {
+		e.Time = testNow.Add(time.Duration(i) * time.Second)
+		m.Update(eventMsg(e))
+	}
+
+	var starts []int
+	for _, line := range strings.Split(plainView(m), "\n") {
+		for _, text := range []string{"network", "security", "agent"} {
+			if i := strings.Index(line, text); i >= 0 {
+				starts = append(starts, i)
+			}
+		}
+	}
+	if len(starts) < 3 {
+		t.Fatalf("expected three event lines, found %d:\n%s", len(starts), plainView(m))
+	}
+	for _, at := range starts[1:] {
+		if at != starts[0] {
+			t.Errorf("the event text starts at differing columns %v — the left margin wanders", starts)
+			break
+		}
+	}
+}
+
+// An overlay wraps rather than truncating. At 60 columns the approval modal
+// used to cut "caller details come from the remote box and are not ve" — the
+// sentence saying the provenance is unverified.
+func TestOverlaysWrapRatherThanTruncate(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub()})
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+
+	long := "this is a deliberately long sentence that will not fit inside a sixty column frame without being folded"
+	box := ansi.Strip(m.boxOf(long))
+	if strings.Contains(box, "…") {
+		t.Errorf("the body was truncated rather than wrapped:\n%s", box)
+	}
+	if !strings.Contains(box, "folded") {
+		t.Errorf("the end of the sentence was lost:\n%s", box)
 	}
 }

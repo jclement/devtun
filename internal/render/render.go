@@ -62,7 +62,7 @@ func (l *Log) Event(e event.Event) {
 		// measured: 🔒 is two cells and ⇄ is one, and a log whose left margin
 		// wanders is a log you have to read rather than skim.
 		ui.ClassGlyph(e.Class)+strings.Repeat(" ", 2-ui.GlyphCells(e.Class)),
-		style.Render(pad(short(e.Service), 9)),
+		style.Render(pad(ui.ShortService(e.Service), 9)),
 		ui.LevelStyle(e.Level).Render(e.Text),
 	)
 	// The structured fields are for NDJSON. Repeating them after a sentence
@@ -85,21 +85,6 @@ func (l *Log) Event(e event.Event) {
 // short abbreviates service ids to keep the column narrow. The names are ours,
 // so this is a lookup rather than a truncation, and an unknown service keeps
 // its full name rather than being silently mangled.
-func short(service string) string {
-	switch service {
-	case "1password":
-		return "op"
-	case "tunnels":
-		return "tun"
-	case "browser":
-		return "web"
-	case "session":
-		return "ssh"
-	default:
-		return service
-	}
-}
-
 func pad(s string, width int) string {
 	for lipgloss.Width(s) < width {
 		s += " "

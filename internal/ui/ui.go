@@ -215,3 +215,36 @@ func IsInteractive() bool {
 // IsTTY reports whether stdout is a terminal, which is what decides between a
 // rendered presentation and machine-readable output.
 func IsTTY() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
+
+// ShortService abbreviates a service id for the fixed column both the log and
+// the interface draw it in.
+//
+// One table rather than two. There were two, identical, in internal/render and
+// internal/tui — and they drifted exactly as you would expect: neither learned
+// about the SSH agent, so with a 4-wide column every signing event rendered as
+// "ssh…", indistinguishable from "ssh", which means the SSH session itself.
+// Every event in devtun's flagship feature was mislabelled as something else.
+func ShortService(service string) string {
+	switch service {
+	case "1password":
+		return "op"
+	case "tunnels":
+		return "tun"
+	case "ssh-agent":
+		return "key"
+	case "gpg-agent":
+		return "gpg"
+	case "browser":
+		return "web"
+	case "session":
+		return "ssh"
+	case "web":
+		// The board, which is not the browser bridge; "web" is taken.
+		return "board"
+	default:
+		return service
+	}
+}
+
+// ServiceWidth is the column ShortService is padded to.
+const ServiceWidth = 5

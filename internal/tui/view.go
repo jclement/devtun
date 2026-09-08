@@ -67,9 +67,18 @@ const (
 func (m *Model) View() tea.View {
 	view := tea.NewView(m.frame())
 	view.AltScreen = true
-	// Cell motion rather than all motion: everything clickable is a press, and
-	// all-motion is the mode terminals support least well.
-	view.MouseMode = tea.MouseModeCellMotion
+	// Mouse reporting is a trade, not a free win: while it is on the terminal
+	// hands drags to devtun, and the terminal's own text selection stops
+	// working. That makes any URL on screen unreachable — you cannot drag
+	// across it and you cannot copy it — which is exactly the complaint that
+	// put `m` on the keyboard. Clicking a row is worth more than selecting one
+	// most of the time, so it defaults on; `m` turns it off for the moment you
+	// want to copy something.
+	if !m.mouseOff {
+		// Cell motion rather than all motion: everything clickable is a press,
+		// and all-motion is the mode terminals support least well.
+		view.MouseMode = tea.MouseModeCellMotion
+	}
 	return view
 }
 
@@ -192,6 +201,15 @@ func (m *Model) listTop() int {
 // eight rows you have is not helping — and otherwise grows toward tickerWant
 // without ever taking more than a quarter of the screen.
 func (m *Model) tickerHeight() int {
+	// Nothing to show means no pane at all — not a labelled separator over
+	// blank rows, which is the rule the frame states. It has to be decided
+	// here rather than in ticker(): chrome() sizes the body from this, so a
+	// pane that reserved rows and then rendered nothing left the frame shorter
+	// than the terminal.
+	if !m.hasRecent() {
+		return 0
+	}
+
 	// Everything the body and the pane share, the pane's own rule included.
 	available := m.height - baseChrome
 	if available < tickerMin+1+tickerRoomFor {
@@ -515,6 +533,20 @@ func (m *Model) keyBar() string {
 	// Reserve room for the right-hand chip plus the border decorations.
 	budget := m.width - 6 - ansi.StringWidth(m.viewChip())
 
+	// Drop from the middle outwards. Dropping in order meant a narrow terminal
+	// lost `? help` and `esc quit` first — leaving somebody who has just
+	// started devtun for the first time with no way on screen to learn either
+	// the keyboard or how to get out. Those two are the last to go.
+	keep := len(keys)
+	for keep > 2 {
+		if barWidth(keys[:keep]) <= budget {
+			break
+		}
+		// Remove the last hint before `?`/`esc`, which live at the end.
+		keys = append(keys[:keep-3], keys[keep-2:]...)
+		keep--
+	}
+
 	sep := ui.Muted.Render(" · ")
 	var bar strings.Builder
 	used := 0
@@ -550,6 +582,17 @@ func (m *Model) keyBar() string {
 // service, sentence. A line read here and the same line read in a log file must
 // look like the same line, because the class colouring is the thing that makes
 // a secret leaving your vault distinguishable from a port opening at a glance.
+// hasRecent reports whether anything would appear in the activity pane. The
+// pane drops diagnostics, so "there are events" is not the same question.
+func (m *Model) hasRecent() bool {
+	for i := len(m.log) - 1; i >= 0; i-- {
+		if m.log[i].Class != event.Diagnostic {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Model) ticker() string {
 	height := m.tickerHeight()
 	if height == 0 {
@@ -566,7 +609,6 @@ func (m *Model) ticker() string {
 		}
 		recent = append(recent, m.log[i])
 	}
-
 	// Oldest at the top, so the newest line is nearest the key bar and the pane
 	// reads downward like the log it mirrors.
 	lines := make([]string, height)
@@ -584,30 +626,16 @@ func (m *Model) ticker() string {
 func eventLine(e event.Event) string {
 	return fmt.Sprintf("%s %s %s  %s",
 		ui.Muted.Render(e.Time.Format("15:04:05")),
-		ui.ClassGlyph(e.Class),
-		ui.ClassStyle(e.Class).Render(pad(shortService(e.Service), 4)),
+		// Padded to the width we declare rather than the one a terminal
+		// measures: 🔒 is two cells and ⇄ is one, so without this every
+		// security line sat a column right of every other line — in the
+		// interface only, while the log file got it right. "A line read here
+		// and the same line read in a log file must look like the same line"
+		// is the rule this was quietly breaking.
+		ui.ClassGlyph(e.Class)+strings.Repeat(" ", 2-ui.GlyphCells(e.Class)),
+		ui.ClassStyle(e.Class).Render(pad(ui.ShortService(e.Service), ui.ServiceWidth)),
 		ui.LevelStyle(e.Level).Render(e.Text),
 	)
-}
-
-// shortService abbreviates service ids to keep the column narrow.
-//
-// It mirrors render.short, which is unexported: the names are ours, so both are
-// a lookup rather than a truncation, and both must produce the same three
-// letters or the ticker and the log would name the same service differently.
-func shortService(service string) string {
-	switch service {
-	case "1password":
-		return "op"
-	case "tunnels":
-		return "tun"
-	case "browser":
-		return "web"
-	case "session":
-		return "ssh"
-	default:
-		return service
-	}
 }
 
 // overlayCenter composites box over base, centred, preserving the styling of
@@ -633,8 +661,14 @@ func overlayCenter(base, box string, width, height int) string {
 	}
 
 	baseLines := strings.Split(base, "\n")
-	for len(baseLines) < y+len(boxLines) {
-		baseLines = append(baseLines, "")
+	// The frame is exactly as tall as the terminal, and an overlay must not
+	// change that. This used to append rows to make a tall box fit, which made
+	// View return more lines than the terminal has — so the bottom of the box
+	// scrolled off, taking with it the line that says how to dismiss it.
+	// Clipping loses the same rows, but it loses them without also pushing the
+	// frame's own border off the top.
+	if len(boxLines) > len(baseLines) {
+		boxLines = boxLines[:len(baseLines)]
 	}
 
 	for i, bl := range boxLines {
@@ -669,28 +703,51 @@ func ring() {
 // boxOf renders an overlay panel, clamped so it can never be wider than the
 // frame it sits on.
 func (m *Model) boxOf(body string) string {
+	return ui.Panel.Render(m.wrapBody(body))
+}
+
+// wrapBody fits an overlay's text to the frame by folding it, not by cutting
+// it off.
+//
+// Truncating was the original behaviour and it was wrong in the one place it
+// mattered most: at 60 columns the approval modal cut "caller details come
+// from the remote box and are not ve" — the sentence saying the provenance is
+// unverified, on the most security-critical surface in the app. An overlay is
+// prose; prose that has been cut mid-word has not been read.
+func (m *Model) wrapBody(body string) string {
 	// Two border cells and two of padding on each side.
 	limit := m.width - 6
 	if limit < 10 {
 		limit = 10
 	}
+	wrap := lipgloss.NewStyle().Width(limit)
 	var lines []string
 	for _, line := range strings.Split(body, "\n") {
-		lines = append(lines, clampWidth(line, limit))
+		// Only lines that do not fit: Width() on a short line would pad it out
+		// to the full width and stretch every box to the edge of the screen.
+		if ansi.StringWidth(line) > limit {
+			lines = append(lines, wrap.Render(line))
+			continue
+		}
+		lines = append(lines, line)
 	}
-	return ui.Panel.Render(strings.Join(lines, "\n"))
+	return strings.Join(lines, "\n")
 }
 
 // boxOfStyle is boxOf with a caller-chosen frame, for the one overlay that
 // must not look like the others.
 func (m *Model) boxOfStyle(style lipgloss.Style, body string) string {
-	limit := m.width - 6
-	if limit < 10 {
-		limit = 10
+	return style.Render(m.wrapBody(body))
+}
+
+// barWidth is how wide a set of key hints renders, separators included.
+func barWidth(keys [][2]string) int {
+	width := 0
+	for i, k := range keys {
+		if i > 0 {
+			width += 3 // " · "
+		}
+		width += ansi.StringWidth(k[0]) + 1 + ansi.StringWidth(k[1])
 	}
-	var lines []string
-	for _, line := range strings.Split(body, "\n") {
-		lines = append(lines, clampWidth(line, limit))
-	}
-	return style.Render(strings.Join(lines, "\n"))
+	return width
 }

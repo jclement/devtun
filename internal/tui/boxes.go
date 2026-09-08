@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/jclement/devtun/internal/ui"
 )
 
@@ -27,11 +29,54 @@ func (m *Model) confirmBox() string {
 }
 
 // helpBox lists the whole keyboard surface, grouped by what it acts on.
+//
+// Which layout it uses is decided by measuring, not by a threshold. The
+// threshold was 34 rows and the box it guarded was 48, so at every height from
+// 34 to 47 — which includes an ordinary 40-row terminal — the help was clipped,
+// and the line it clipped was "? or esc to close". The help did not say how to
+// dismiss the help.
 func (m *Model) helpBox() string {
-	if m.height < 34 {
-		return m.compactHelpBox()
+	// The box carries its own border, so the only reservation is one frame row
+	// above and below — enough that it reads as an overlay rather than as a
+	// replacement for the screen.
+	room := m.height - 2
+	for _, layout := range []func() string{m.wideHelpBox, m.tallHelpBox, m.compactHelpBox, m.tinyHelpBox} {
+		box := layout()
+		if strings.Count(box, "\n")+1 <= room {
+			return box
+		}
 	}
+	return m.tinyHelpBox()
+}
 
+// tinyHelpBox is for a window too short for even the compact list: the keys
+// somebody stuck in a twenty-row terminal actually needs, and — first, so that
+// it survives any clipping — how to get out of this box.
+func (m *Model) tinyHelpBox() string {
+	var b strings.Builder
+	b.WriteString(ui.Banner.Render("? or esc") + ui.Muted.Render(" closes this") + "\n\n")
+	for _, k := range [][2]string{
+		{"tab, ← →", "switch tab"},
+		{"↑↓ / j k", "move"},
+		{"x · H", "hide a port · list hidden"},
+		{"b · y", "browser · copy"},
+		{"c · /", "settings · search"},
+		{"m", "mouse off, to select text"},
+		{"esc, q", "quit"},
+	} {
+		b.WriteString("  " + ui.Banner.Render(pad(k[0], 10)) + ui.Muted.Render(k[1]) + "\n")
+	}
+	b.WriteString(ui.Muted.Render("a taller window shows the rest"))
+	return m.boxOf(b.String())
+}
+
+// helpSections is the whole keyboard surface, in one place so the layouts
+// cannot disagree about what the keys are — which is exactly how the compact
+// box came to be missing three of them.
+func (m *Model) helpSections() []struct {
+	title string
+	keys  [][2]string
+} {
 	sections := []struct {
 		title string
 		keys  [][2]string
@@ -43,6 +88,8 @@ func (m *Model) helpBox() string {
 			{"/", "search this tab"},
 			{"c", "settings: what is listed and how"},
 			{"w", "open the web board here, and copy its URL"},
+			{"m", "mouse off — lets the terminal select and copy text"},
+			{"R", "reconnect now"},
 			{"esc, q", "quit (asks first)"},
 			{"ctrl+c", "quit immediately"},
 		}},
@@ -81,16 +128,73 @@ func (m *Model) helpBox() string {
 		}},
 	}
 
+	return sections
+}
+
+// tallHelpBox is one column: every section, one under the other.
+func (m *Model) tallHelpBox() string {
 	var b strings.Builder
 	b.WriteString(ui.Banner.Render("devtun " + m.d.version))
 	b.WriteString("\n")
-	for _, sec := range sections {
+	for _, sec := range m.helpSections() {
 		b.WriteString("\n" + ui.Muted.Render(sec.title) + "\n")
 		for _, k := range sec.keys {
 			b.WriteString("  " + ui.Banner.Render(pad(k[0], 14)) + ui.Muted.Render(k[1]) + "\n")
 		}
 	}
 	b.WriteString("\n" + ui.Muted.Render("? or esc to close"))
+	return m.boxOf(b.String())
+}
+
+// wideHelpBox is the same content in two columns, which is what makes the whole
+// keyboard fit on a normal terminal without abbreviating any of it.
+func (m *Model) wideHelpBox() string {
+	const columnWidth = 46
+	if m.width < columnWidth*2+8 {
+		// Two columns in a narrow frame is worse than one; say so by failing
+		// the fit test rather than rendering something cramped.
+		return strings.Repeat("\n", m.height+1)
+	}
+
+	sections := m.helpSections()
+	var left, right []string
+	// Split by rendered height rather than by count, so a long section does
+	// not leave one column twice the length of the other.
+	total := 0
+	for _, sec := range sections {
+		total += len(sec.keys) + 2
+	}
+	used := 0
+	for _, sec := range sections {
+		lines := []string{ui.Muted.Render(sec.title)}
+		for _, k := range sec.keys {
+			lines = append(lines, "  "+ui.Banner.Render(pad(k[0], 13))+ui.Muted.Render(k[1]))
+		}
+		lines = append(lines, "")
+		if used*2 < total {
+			left = append(left, lines...)
+		} else {
+			right = append(right, lines...)
+		}
+		used += len(sec.keys) + 2
+	}
+
+	var b strings.Builder
+	b.WriteString(ui.Banner.Render("devtun "+m.d.version) + "\n\n")
+	for i := 0; i < max(len(left), len(right)); i++ {
+		var l, r string
+		if i < len(left) {
+			l = left[i]
+		}
+		if i < len(right) {
+			r = right[i]
+		}
+		if w := ansi.StringWidth(l); w < columnWidth {
+			l += strings.Repeat(" ", columnWidth-w)
+		}
+		b.WriteString(strings.TrimRight(l+r, " ") + "\n")
+	}
+	b.WriteString(ui.Muted.Render("? or esc to close"))
 	return m.boxOf(b.String())
 }
 
@@ -106,6 +210,7 @@ func (m *Model) compactHelpBox() string {
 	b.WriteString(row("tab, ←→, 1-4", "switch tab"))
 	b.WriteString(row("↑↓ / j k / gG", "move / first / last"))
 	b.WriteString(row("/ · c · w", "search · settings · web board"))
+	b.WriteString(row("m · R", "mouse off (select text) · reconnect"))
 	b.WriteString(ui.Muted.Render("a port") + "\n")
 	b.WriteString(row("enter, d", "detail"))
 	b.WriteString(row("x · H", "hide · list hidden"))
