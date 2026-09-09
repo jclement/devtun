@@ -3,7 +3,7 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
-## Unreleased
+## v0.1.17
 
 ### Fixed
 
