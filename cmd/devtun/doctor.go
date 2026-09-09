@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jclement/devtun/internal/approval"
 	"github.com/jclement/devtun/internal/buildinfo"
 	"github.com/jclement/devtun/internal/doctor"
 	"github.com/jclement/devtun/internal/event"
@@ -111,31 +112,53 @@ func localChecks(ctx context.Context, report *doctor.Report, flags upFlags) {
 // doctorApprovals reports where an approval would appear, which is the check
 // people most often want after configuring `prompt:`.
 func doctorApprovals(out *doctor.Section, store *hostcfg.Store, flags upFlags) {
-	backend := promptBackend(flags, store, "")
-	dialog := prompt.DialogBackend()
-
-	switch backend {
-	case prompt.BackendDeny:
+	raw := promptSetting(flags, store, "")
+	want, err := prompt.ParseSurfaces(raw)
+	if err != nil {
+		out.Fail("approvals", err.Error(), "fix `prompt:` in your config, or pass --prompt")
+		return
+	}
+	if !want.Any() {
 		out.Warn("approvals", "deny — nothing outside your rules will be allowed",
 			"remove `prompt: deny` to be asked instead")
-	case prompt.BackendDialog:
-		if dialog == "" {
-			out.Fail("approvals", "dialog, but this machine has no program to draw one",
-				"install one of "+strings.Join(prompt.ChooserNames(), ", ")+", or set `prompt: auto`")
-			return
+		return
+	}
+
+	// doctor is not a session, so it reports what each surface would do here
+	// rather than pretending to know whether this run will have a board.
+	var here, missing []string
+	for _, surface := range prompt.AllSurfaces {
+		if !want.Has(surface) {
+			continue
 		}
-		out.OK("approvals", "a desktop dialog, drawn with "+dialog)
+		switch surface {
+		case prompt.SurfaceTUI:
+			if ui.IsInteractive() {
+				here = append(here, "the terminal")
+			} else {
+				missing = append(missing, "tui ("+prompt.Why(surface)+")")
+			}
+		case prompt.SurfaceNative:
+			if dialog := prompt.DialogBackend(); dialog != "" {
+				here = append(here, "a desktop dialog, drawn with "+dialog)
+			} else {
+				missing = append(missing, "native (no dialog program: install one of "+
+					strings.Join(prompt.ChooserNames(), ", ")+")")
+			}
+		case prompt.SurfaceWeb:
+			here = append(here, "the web board, when you run --web")
+		}
+	}
+
+	switch {
+	case len(here) == 0:
+		out.Fail("approvals", raw+", and none of those exist here: "+strings.Join(missing, "; "),
+			"a question nobody can answer is a refusal nobody made")
+	case len(missing) > 0:
+		out.Warn("approvals", strings.Join(here, ", ")+" — but "+strings.Join(missing, "; "),
+			"`prompt: all` would ask wherever this machine can")
 	default:
-		if dialog != "" {
-			out.OK("approvals", "auto — a desktop dialog, drawn with "+dialog)
-			return
-		}
-		if !ui.IsInteractive() {
-			out.Warn("approvals", "auto — and there is no terminal and no dialog program here",
-				"a prompt nobody can answer is a refusal; run devtun from a terminal")
-			return
-		}
-		out.OK("approvals", "auto — in the interface, or in the terminal under --log")
+		out.OK("approvals", strings.Join(here, ", "))
 	}
 }
 
@@ -170,7 +193,8 @@ func doctorAlert(out *doctor.Section) {
 // was open in front of the person the whole time — a surface perfectly able to
 // answer, never asked.
 func doctorEveryGateCanAsk(out *doctor.Section, store *hostcfg.Store, flags upFlags) {
-	services, _, err := buildServices(flags, store, promptBackendOf(flags), false, nil)
+	services, _, err := buildServices(flags, store, prompt.MustParseSurfaces("all"), false,
+		approval.New(approval.Options{}))
 	if err != nil {
 		out.Warn("gates", "could not assemble the services to check: "+err.Error(), "")
 		return
@@ -187,16 +211,6 @@ func doctorEveryGateCanAsk(out *doctor.Section, store *hostcfg.Store, flags upFl
 		return
 	}
 	out.OK("gates", "every gated service has somewhere to put a question")
-}
-
-// promptBackendOf is what doctor assumes about a run it is not making. The
-// config files are not consulted: this check is about the wiring, and the
-// wiring is the same whichever backend the files name.
-func promptBackendOf(flags upFlags) prompt.Backend {
-	if v := strings.TrimSpace(flags.promptBackend); v != "" {
-		return prompt.Backend(v)
-	}
-	return prompt.BackendAuto
 }
 
 // doctorOnePassword checks the CLI devtun drives on *this* side. The remote box
@@ -316,12 +330,15 @@ func remoteChecks(ctx context.Context, report *doctor.Report, flags upFlags) err
 	store := hostcfg.OpenDefault()
 	// Same reason as runUp: Err() can only report files that have been read.
 	store.LoadHost(dest.Label())
-	backend := promptBackend(flags, store, dest.Label())
+	surfaces, err := prompt.ParseSurfaces(promptSetting(flags, store, dest.Label()))
+	if err != nil {
+		return err
+	}
 
 	// The registry is built exactly as a session builds it, so that what is
 	// probed is what would actually run — including the services switched off
 	// for this host, which doctor reports rather than hides.
-	services, _, err := buildServices(flags, store, backend, false, nil)
+	services, _, err := buildServices(flags, store, surfaces, false, approval.New(approval.Options{}))
 	if err != nil {
 		return err
 	}

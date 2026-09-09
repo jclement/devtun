@@ -89,11 +89,11 @@ func (p *pending) resolve(choice prompt.Choice) bool {
 // Desk is the registry of waiting questions. The zero value is not usable; use
 // New.
 type Desk struct {
-	// inner is the prompter the session was built with — the interface's modal,
-	// a desktop dialog, the terminal. It is asked in parallel with publishing,
-	// so the surface somebody is actually looking at is never slower than the
-	// one they are not.
-	inner prompt.Prompter
+	// asking are the surfaces a question is put to, all at once. Several
+	// rather than one because a question you did not see is a timeout, and a
+	// timeout reads as a refusal nobody made — so the default is every surface
+	// this session has, and the first answer wins.
+	asking []prompt.Prompter
 	// notify is called whenever the waiting set changes, so a surface can
 	// redraw without polling. Optional.
 	notify func()
@@ -123,16 +123,17 @@ func New(opts Options) *Desk {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Desk{
-		inner:   opts.Prompter,
+	desk := &Desk{
 		notify:  opts.Changed,
 		now:     opts.Now,
 		waiting: map[string]*pending{},
 	}
+	desk.AddPrompter(opts.Prompter)
+	return desk
 }
 
-// Ask publishes the request, offers it to the inner prompter, and returns the
-// first answer from either.
+// Ask publishes the request, puts it to every surface at once, and returns the
+// first answer from any of them.
 //
 // Every way out that is not a deliberate choice returns ChoiceDeny, which is
 // the zero Choice: a timeout, a cancelled context, an interface that has gone.
@@ -178,12 +179,16 @@ func (d *Desk) Ask(ctx context.Context, request prompt.Request) (prompt.Choice, 
 	innerCtx, withdraw := context.WithCancel(ctx)
 	defer withdraw()
 
-	if inner := d.prompter(); inner != nil {
+	// Every surface at once, and the first answer wins. resolve takes exactly
+	// one, so the losers are simply cancelled — a dialog left on screen after
+	// the question was answered on the board is worse than no dialog.
+	for _, surface := range d.prompters() {
 		go func() {
-			choice, err := inner.Ask(innerCtx, request)
+			choice, err := surface.Ask(innerCtx, request)
 			if err != nil {
-				// A prompter with nobody to ask is not an answer. The desk is
-				// still published, and the deadline is still the backstop.
+				// A surface with nobody at it is not an answer. The others are
+				// still asking, the desk is still published, and the deadline
+				// is still the backstop.
 				return
 			}
 			p.resolve(choice)
@@ -205,13 +210,14 @@ func (d *Desk) Ask(ctx context.Context, request prompt.Request) (prompt.Choice, 
 	}
 }
 
-// askInner is the degraded path: no id, so nothing is published.
+// askInner is the degraded path: no id, so nothing is published and the board
+// cannot answer. The first surface is asked directly.
 func (d *Desk) askInner(ctx context.Context, request prompt.Request) (prompt.Choice, error) {
-	inner := d.prompter()
-	if inner == nil {
+	asking := d.prompters()
+	if len(asking) == 0 {
 		return prompt.ChoiceDeny, prompt.ErrNoPrompter
 	}
-	return inner.Ask(ctx, request)
+	return asking[0].Ask(ctx, request)
 }
 
 // SetPrompter replaces the surface asked alongside the desk.
@@ -224,14 +230,81 @@ func (d *Desk) askInner(ctx context.Context, request prompt.Request) (prompt.Cho
 func (d *Desk) SetPrompter(p prompt.Prompter) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.inner = p
+	if p == nil {
+		d.asking = nil
+		return
+	}
+	d.asking = []prompt.Prompter{p}
+}
+
+// Fill puts a prompter on the desk for each surface a question should go to.
+//
+// One implementation, called from both the interface and the plain session,
+// because "where does an approval appear" answered twice is answered
+// differently the first time either changes.
+//
+// tuiPrompter is the interface's modal, which only the interface can build —
+// its Bubble Tea program has to exist first. Nil means there is no interface,
+// and the terminal surface is a form in the terminal instead.
+//
+// SurfaceWeb adds nothing: the board watches this desk rather than being asked,
+// which is exactly what lets it show a question a dialog is showing at the same
+// moment, and answer it out from under that dialog.
+func (d *Desk) Fill(surfaces prompt.Surfaces, tuiPrompter prompt.Prompter) {
+	var asking []prompt.Prompter
+	for _, surface := range prompt.AllSurfaces {
+		if !surfaces.Has(surface) {
+			continue
+		}
+		if surface == prompt.SurfaceTUI && tuiPrompter != nil {
+			asking = append(asking, tuiPrompter)
+			continue
+		}
+		// A surface that cannot be built here is skipped rather than refused.
+		// Whether it is acceptable for one to be missing is a decision about
+		// what the user asked for — `all` is a wish and naming one is an
+		// instruction — and that decision belongs where the setting is read,
+		// not here. Making this total means there is one place that can get it
+		// wrong instead of two.
+		if prompter, err := prompt.PrompterFor(surface); err == nil && prompter != nil {
+			asking = append(asking, prompter)
+		}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.asking = asking
+}
+
+// AddPrompter adds a surface to ask alongside the others.
+//
+// Separate from SetPrompter, which replaces: the interface installs its modal
+// when its program starts and may install it again when the setting changes,
+// and neither of those should quietly drop the desktop dialog.
+func (d *Desk) AddPrompter(p prompt.Prompter) {
+	if p == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.asking = append(d.asking, p)
+}
+
+// Asking reports how many surfaces a question is put TO, which does not count
+// the ones watching the desk. A session whose only surface is the board asks
+// nobody and is still perfectly answerable.
+func (d *Desk) Asking() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.asking)
 }
 
 // prompter reads the inner prompter under the lock.
-func (d *Desk) prompter() prompt.Prompter {
+// prompters copies the list, so a question in flight is not asking a surface
+// the settings screen removed underneath it.
+func (d *Desk) prompters() []prompt.Prompter {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.inner
+	return append([]prompt.Prompter(nil), d.asking...)
 }
 
 // Waiting lists the questions, oldest first, so a surface showing one shows the

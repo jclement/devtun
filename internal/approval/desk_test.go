@@ -239,3 +239,156 @@ func TestIDsAreUnguessable(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+// recorder is a surface that says when it was asked and can be told what to
+// answer, so a test can watch several of them at once.
+type recorder struct {
+	asked   chan struct{}
+	answer  chan prompt.Choice
+	dropped chan struct{}
+}
+
+func newRecorder() *recorder {
+	return &recorder{
+		asked:   make(chan struct{}, 8),
+		answer:  make(chan prompt.Choice, 1),
+		dropped: make(chan struct{}, 8),
+	}
+}
+
+func (r *recorder) Ask(ctx context.Context, _ prompt.Request) (prompt.Choice, error) {
+	r.asked <- struct{}{}
+	select {
+	case choice := <-r.answer:
+		return choice, nil
+	case <-ctx.Done():
+		r.dropped <- struct{}{}
+		return prompt.ChoiceDeny, ctx.Err()
+	}
+}
+
+func (r *recorder) wasAsked(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.asked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("this surface was never asked")
+	}
+}
+
+// The default is every surface at once. devtun runs in a window you are not
+// looking at, so whichever single surface you pick is the one you will miss —
+// and a question nobody sees becomes a timeout, which reads as a refusal
+// nobody made.
+func TestAQuestionGoesToEverySurfaceAtOnce(t *testing.T) {
+	terminal, dialog := newRecorder(), newRecorder()
+	desk := New(Options{Prompter: terminal})
+	desk.AddPrompter(dialog)
+
+	if got := desk.Asking(); got != 2 {
+		t.Fatalf("the desk is asking %d surfaces, want 2", got)
+	}
+
+	go func() { _, _ = desk.Ask(context.Background(), testRequest()) }()
+	terminal.wasAsked(t)
+	dialog.wasAsked(t)
+
+	// And the board, which watches the desk rather than being a prompter.
+	if items := waitFor(t, desk, 1); items[0].Request.Subject == "" {
+		t.Error("the question was not published for the board")
+	}
+}
+
+// The first answer wins and the rest are taken down. A dialog still on screen
+// after the question was answered on the board is worse than no dialog: the
+// next thing you do is answer a question that has already been decided.
+func TestTheFirstSurfaceToAnswerTakesTheOthersDown(t *testing.T) {
+	terminal, dialog := newRecorder(), newRecorder()
+	desk := New(Options{Prompter: terminal})
+	desk.AddPrompter(dialog)
+
+	got := make(chan prompt.Choice, 1)
+	go func() {
+		choice, _ := desk.Ask(context.Background(), testRequest())
+		got <- choice
+	}()
+	terminal.wasAsked(t)
+	dialog.wasAsked(t)
+
+	terminal.answer <- prompt.ChoiceAllowSecretSession
+
+	select {
+	case choice := <-got:
+		if choice != prompt.ChoiceAllowSecretSession {
+			t.Errorf("the asker got %v", choice)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the answer never came back")
+	}
+	select {
+	case <-dialog.dropped:
+	case <-time.After(2 * time.Second):
+		t.Error("the other surface was left asking a question that had been answered")
+	}
+}
+
+// A surface with nobody at it must not decide anything. A dialog on a machine
+// with no window server fails immediately; if that counted as an answer, every
+// request would be refused the instant it was made and the surfaces that *do*
+// have somebody at them would never get a chance.
+func TestASurfaceThatFailsDoesNotAnswerForTheOthers(t *testing.T) {
+	broken := prompt.PrompterFunc(func(context.Context, prompt.Request) (prompt.Choice, error) {
+		return prompt.ChoiceDeny, errors.New("no window server")
+	})
+	good := newRecorder()
+	desk := New(Options{Prompter: broken})
+	desk.AddPrompter(good)
+
+	got := make(chan prompt.Choice, 1)
+	go func() {
+		choice, _ := desk.Ask(context.Background(), testRequest())
+		got <- choice
+	}()
+
+	good.wasAsked(t)
+	select {
+	case choice := <-got:
+		t.Fatalf("a broken surface answered %v for the whole desk", choice)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	good.answer <- prompt.ChoiceAllowOnce
+	select {
+	case choice := <-got:
+		if choice != prompt.ChoiceAllowOnce {
+			t.Errorf("the working surface's answer came back as %v", choice)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the working surface's answer never arrived")
+	}
+}
+
+// SetPrompter replaces and AddPrompter adds. The interface installs its modal
+// when its program starts, and again when the setting changes; neither should
+// quietly drop the desktop dialog beside it.
+func TestReplacingASurfaceDoesNotDropTheRest(t *testing.T) {
+	desk := New(Options{Prompter: newRecorder()})
+	desk.AddPrompter(newRecorder())
+	if got := desk.Asking(); got != 2 {
+		t.Fatalf("Asking = %d, want 2", got)
+	}
+	desk.SetPrompter(newRecorder())
+	if got := desk.Asking(); got != 1 {
+		t.Errorf("after SetPrompter the desk asks %d surfaces, want 1", got)
+	}
+	desk.AddPrompter(newRecorder())
+	if got := desk.Asking(); got != 2 {
+		t.Errorf("after AddPrompter the desk asks %d surfaces, want 2", got)
+	}
+	// Nil is not a surface, and adding one must not create a hole that looks
+	// like somewhere to ask.
+	desk.AddPrompter(nil)
+	if got := desk.Asking(); got != 2 {
+		t.Errorf("a nil surface was counted: %d", got)
+	}
+}

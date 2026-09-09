@@ -163,12 +163,12 @@ type Deps struct {
 	// ServiceDetail is why a service cannot run here, empty when it can. That
 	// sentence is the one the user has to act on, so it displaces the help.
 	ServiceDetail func(id string) string
-	// PromptNow is the backend this run is actually using, which the command
-	// line can override for the run without touching either file.
-	PromptNow func() prompt.Backend
+	// PromptNow is where approvals are actually appearing this run, which the
+	// command line can override without touching either file.
+	PromptNow func() string
 	// ApplyPrompt puts a changed prompt setting into effect now rather than at
 	// the next connection.
-	ApplyPrompt func(prompt.Backend)
+	ApplyPrompt func(string)
 	// ReloadServices is called after a service is toggled, so the surface's own
 	// list of what is running is not left stale.
 	ReloadServices func()
@@ -212,12 +212,25 @@ func (d Deps) Find(key string) *Setting {
 
 func (d Deps) approvalSettings() []*Setting {
 	promptRow := d.storeSetting("prompt", "Approvals appear", "", hostcfg.KeyPrompt, BothLevels, "auto")
-	promptRow.Options = []string{OptInherit, "auto", "tui", "dialog", "deny"}
+	// all first, because it is the default and the right answer: devtun runs
+	// in a window you are not looking at, so asking everywhere is what stops a
+	// question becoming a timeout. The rest narrow it deliberately.
+	promptRow.Options = []string{OptInherit, "all", "tui", "native", "web", "deny"}
 	promptRow.Help = func() string { return d.promptHelp() }
 	promptRow.Unusable = func() string {
 		value, _ := promptRow.Value()
-		if value == string(prompt.BackendDialog) && d.chooser() == "" {
-			return "no dialog program here — approvals will appear in this window"
+		surfaces, err := prompt.ParseSurfaces(value)
+		if err != nil {
+			return "not a place approvals can appear"
+		}
+		// Only a surface that was NAMED is worth warning about. `all` asking
+		// in fewer places than it could is the arrangement working, not a
+		// problem to report.
+		if value == "all" || value == "auto" {
+			return ""
+		}
+		if surfaces.Has(prompt.SurfaceNative) && d.chooser() == "" {
+			return "no dialog program here — nothing will draw that"
 		}
 		return ""
 	}
@@ -226,7 +239,7 @@ func (d Deps) approvalSettings() []*Setting {
 			return
 		}
 		value, _ := promptRow.Value()
-		d.ApplyPrompt(prompt.Backend(value))
+		d.ApplyPrompt(value)
 	}
 	settings := []*Setting{promptRow}
 
@@ -256,7 +269,7 @@ func (d Deps) promptHelp() string {
 	// It is the only part of the line somebody can act on, and the help is the
 	// first thing to give way on a narrow terminal.
 	chooser := d.chooser()
-	base := "where an approval appears · dialog uses " + chooser + " here"
+	base := "where an approval appears · native uses " + chooser + " here"
 	if chooser == "" {
 		// Commas rather than " or ": on Linux there are three choosers, and the
 		// difference between "zenity or kdialog or yad" and "zenity, kdialog,
@@ -269,8 +282,8 @@ func (d Deps) promptHelp() string {
 	// --prompt is asking somewhere other than what the files say. Saying which
 	// is cheaper than letting somebody wonder why the screen disagrees.
 	if d.PromptNow != nil {
-		if configured, _ := d.ConfiguredPrompt(); string(d.PromptNow()) != configured {
-			base += " · this run: " + string(d.PromptNow())
+		if configured, _ := d.ConfiguredPrompt(); d.PromptNow() != configured {
+			base += " · this run: " + d.PromptNow()
 		}
 	}
 	return base
@@ -280,7 +293,7 @@ func (d Deps) promptHelp() string {
 // resolves it.
 func (d Deps) ConfiguredPrompt() (string, Level) {
 	if d.Store == nil {
-		return string(prompt.BackendAuto), LevelNone
+		return "all", LevelNone
 	}
 	if v := d.Store.Setting(d.Host, "", hostcfg.KeyPrompt); v != "" {
 		return v, LevelHost
@@ -288,7 +301,7 @@ func (d Deps) ConfiguredPrompt() (string, Level) {
 	if v := d.Store.Setting("", "", hostcfg.KeyPrompt); v != "" {
 		return v, LevelGlobal
 	}
-	return string(prompt.BackendAuto), LevelNone
+	return "all", LevelNone
 }
 
 // serviceSettings are the toggles and then whatever each service says is

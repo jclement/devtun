@@ -164,11 +164,11 @@ type Options struct {
 	Store settings.Store
 	// PromptNow is where approvals are appearing for this run, which the
 	// command line can override without touching either config file.
-	PromptNow func() prompt.Backend
+	PromptNow func() string
 	// ApplyPrompt puts a changed prompt setting into effect now rather than at
 	// the next connection — the setting somebody changes *because* they are
 	// missing approvals.
-	ApplyPrompt func(prompt.Backend)
+	ApplyPrompt func(string)
 	// DialogChooser names the program this machine would raise a desktop
 	// dialog with, empty when there is none.
 	DialogChooser func() string

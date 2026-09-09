@@ -3,6 +3,34 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Changed
+
+- **Approvals now appear on every surface at once, and the first answer wins.**
+  `--prompt` used to pick one place; the shape was wrong. devtun runs in a
+  window you are not looking at, so whichever single surface you picked was the
+  one you would miss — and a question nobody sees becomes a timeout, which reads
+  as a refusal nobody made. Answering anywhere takes the question down
+  everywhere else, so you never come back to a dialog asking something you have
+  already decided.
+
+  `--prompt` (and `prompt:`) now take `all` (the default), `tui`, `native`,
+  `web`, `deny`, or a list like `tui,web`. Naming a surface is an instruction
+  rather than a wish: `--prompt web` without `--web` is an error at startup, not
+  a session that quietly answers nothing. The old spellings still work — `auto`
+  means `all`, `dialog` means `native`.
+
+### Added
+
+- **prettyprompt is used for the desktop dialog when it is installed.**
+  AppleScript's `choose from list` is a 1993 list box with the question crammed
+  into a line above it; for "a remote box wants to sign with your key, right
+  now" that is doing a lot of heavy lifting. prettyprompt draws a themed panel
+  in the middle of the display you are looking at, in its danger theme, with the
+  destination rendered as markdown. Nothing to configure — it is used when it is
+  on PATH, and osascript is still there when it is not.
+
 ## v0.1.18
 
 ### Changed

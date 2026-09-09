@@ -2,10 +2,10 @@ package tui
 
 import (
 	"context"
-	"strings"
 	"testing"
+	"time"
 
-	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/approval"
 	"github.com/jclement/devtun/internal/prompt"
 )
 
@@ -18,14 +18,27 @@ func (s *stubPrompter) Ask(context.Context, prompt.Request) (prompt.Choice, erro
 	return prompt.ChoiceAllowOnce, nil
 }
 
-// The default is the modal: somebody is looking at this window, and the
-// question belongs in it.
-func TestApproverDefaultsToTheModal(t *testing.T) {
+// The interface's modal is one surface among several now, and the desk is what
+// puts a question to all of them. These used to test approverFor, which picked
+// exactly one place to ask; the behaviours it guarded still matter, and they
+// belong to Desk.Fill.
+
+// Under the interface, the terminal surface is the modal — not a form drawn
+// over the alt screen, which is what would happen if the plain terminal
+// prompter were used here.
+func TestTheInterfaceSuppliesTheModalAsItsTerminalSurface(t *testing.T) {
 	modal := &stubPrompter{}
-	for _, backend := range []prompt.Backend{"", prompt.BackendAuto, prompt.BackendTUI} {
-		if got := approverFor(backend, modal, nil); got != prompt.Prompter(modal) {
-			t.Errorf("backend %q did not get the modal", backend)
-		}
+	desk := approval.New(approval.Options{})
+
+	desk.Fill(prompt.MustParseSurfaces("tui"), modal)
+	if got := desk.Asking(); got != 1 {
+		t.Fatalf("the desk asks %d surfaces for `tui`, want 1", got)
+	}
+	if _, err := desk.Ask(t.Context(), prompt.Request{Host: "bedev", Subject: "op://V/I/F"}); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if !modal.asked {
+		t.Error("the modal was not the surface asked")
 	}
 }
 
@@ -33,43 +46,35 @@ func TestApproverDefaultsToTheModal(t *testing.T) {
 // answer nothing must not put up a modal that anyone walking past could
 // approve — which is what happened before, since the interface installed its
 // modal over whatever had been asked for.
-func TestApproverHonoursDenyUnderTheInterface(t *testing.T) {
+func TestDenyLeavesNoSurfaceUnderTheInterface(t *testing.T) {
 	modal := &stubPrompter{}
-	approver := approverFor(prompt.BackendDeny, modal, nil)
+	desk := approval.New(approval.Options{})
 
-	got, err := approver.Ask(t.Context(), prompt.Request{Host: "bedev", Subject: "op://V/I/F"})
-	if got != prompt.ChoiceDeny {
-		t.Errorf("choice = %v, want deny", got)
-	}
-	if err == nil {
-		t.Error("a refusal with no human should say why")
+	desk.Fill(prompt.MustParseSurfaces("deny"), modal)
+	if got := desk.Asking(); got != 0 {
+		t.Errorf("`deny` left %d surfaces to ask", got)
 	}
 	if modal.asked {
 		t.Error("the modal was shown for a session that answers nothing")
 	}
 }
 
-// Asking for a desktop dialog either gets one or says, once and in the log,
-// that this machine has none — and never leaves the session unable to ask.
-func TestApproverFallsBackToTheModalWithNoDialogProgram(t *testing.T) {
-	modal := &stubPrompter{}
-	bus := event.NewBus(16)
-	approver := approverFor(prompt.BackendDialog, modal, bus)
-
-	if approver == nil {
-		t.Fatal("no prompter at all")
+// The board is a surface a person chooses, and it is not a Prompter: it
+// watches the desk. Asking for it alone must not leave the desk thinking it
+// has somewhere to put a question that it can also draw.
+func TestTheBoardIsASurfaceWithoutBeingAPrompter(t *testing.T) {
+	desk := approval.New(approval.Options{})
+	desk.Fill(prompt.MustParseSurfaces("web"), &stubPrompter{})
+	if got := desk.Asking(); got != 0 {
+		t.Errorf("the board was installed as a prompter: %d", got)
 	}
-	if approver != prompt.Prompter(modal) {
-		// This machine can draw a dialog; there is nothing to warn about.
-		return
-	}
-	var said bool
-	for _, e := range bus.History() {
-		if e.Kind == "prompt" && strings.Contains(e.Text, "interface") {
-			said = true
+	// It is still published, which is how the board gets it.
+	go func() { _, _ = desk.Ask(t.Context(), prompt.Request{Host: "bedev", Subject: "op://V/I/F"}) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(desk.Waiting()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("a `web` question was never published for the board to see")
 		}
-	}
-	if !said {
-		t.Errorf("the fallback to the modal was silent: %+v", bus.History())
+		time.Sleep(time.Millisecond)
 	}
 }

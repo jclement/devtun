@@ -133,7 +133,7 @@ func TestSteppingStartsFromTheArmedLevelNotTheValueOnScreen(t *testing.T) {
 	if !ok {
 		t.Fatal("a setting with options did not step")
 	}
-	if value != "auto" {
+	if value != "all" {
 		t.Errorf("stepping the silent host level gave %q, want the option after inherit", value)
 	}
 

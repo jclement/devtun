@@ -12,7 +12,11 @@ import (
 )
 
 // choosers is what this platform can ask with, best first.
-func choosers() []chooser { return []chooser{osascriptChooser{}} }
+//
+// prettyprompt leads when it is installed, because the difference between the
+// two is whether the person actually reads the question. osascript is what
+// every Mac has, so it is the one that is always there.
+func choosers() []chooser { return []chooser{prettyPromptChooser{}, osascriptChooser{}} }
 
 type osascriptChooser struct{}
 

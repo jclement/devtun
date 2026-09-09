@@ -282,25 +282,65 @@ machine can actually draw a dialog with, and names what to install if the answer
 is nothing.
 
 
-Three places, and it is a setting rather than only a flag, because the right
-answer is a property of the machine you sit at:
+**By default it asks everywhere at once, and the first answer wins.**
+
+That is not indecision, it is the point. devtun runs in a window you are not
+looking at — that is the entire premise — so "which single place should the
+question appear" has no good answer. Put it in the terminal and you miss it
+because you're in a browser. Put it on the board and you miss it because the
+board is on the other monitor. Whichever one you pick is the one you weren't
+looking at, and a request nobody sees becomes a timeout, and a timeout reads as
+a refusal you never made.
+
+So the question goes up in all three places, and answering it anywhere takes it
+down everywhere else — you will not come back to a dialog asking something you
+already decided.
 
 | `prompt:` | asks |
 |---|---|
-| `tui` | in the interface's modal, or as a form in the terminal in log mode |
-| `dialog` | in a **desktop dialog**, raised in front of whatever you are doing |
-| `auto` | the dialog if this machine can draw one, otherwise the terminal (default) |
+| `all` | every surface this session has (default) |
+| `tui` | the interface's modal, or a form in the terminal in log mode |
+| `native` | a **desktop dialog**, raised in front of whatever you are doing |
+| `web` | the board, and only the board |
 | `deny` | nobody. Everything not already covered by a rule is refused |
+
+Naming one narrows it deliberately, and you can name several — `tui,web`. The
+difference between `all` and naming is what happens when a surface isn't there:
+`all` is a wish, so a machine with no dialog program simply has one fewer place
+to ask; naming is an instruction, so `--prompt web` without `--web` is an error
+at startup rather than a session that silently answers nothing.
 
 ```yaml
 # ~/.config/devtun/config.yaml
-prompt: dialog          # everywhere
+prompt: all             # everywhere, which is the default anyway
 
 # ~/.config/devtun/hosts/bedev.yaml
-prompt: tui             # ...except this box, which I only touch from a terminal
+prompt: native,web      # ...except this box, where the terminal is a log
 ```
 
-`--prompt` beats both, because the command line is about this run.
+`--prompt` beats both, because the command line is about this run. The old
+spellings still work: `auto` was the old default and means `all`, and `dialog`
+is what `native` used to be called.
+
+#### prettyprompt, if you have it
+
+`native` uses whatever the platform gives it — `osascript` on macOS, `zenity`,
+`kdialog` or `yad` on Linux, PowerShell on Windows. AppleScript's `choose from
+list` is a system list box from 1993 with the question crammed into a line above
+it, and for *"a remote box wants to sign with your key, right now"* that is
+doing a lot of heavy lifting. Someone who glances at it and clicks the top item
+has not really been asked.
+
+So if [prettyprompt](https://github.com/jclement/prettyprompt) is on your PATH,
+devtun uses it instead: a themed panel dead centre on the display you're
+actually looking at, in the danger theme, with the destination in markdown.
+
+```bash
+brew install jclement/tap/prettyprompt
+```
+
+Nothing to configure — it's used when it's there. `devtun doctor` tells you
+which one you'd get.
 
 There is no bundled GUI toolkit and there is not going to be one: every Go
 option that draws its own window wants cgo, and devtun is a static binary you
@@ -439,7 +479,7 @@ One file per host, because the per-host state *is* the interesting state: it's w
 
 ```yaml
 # hosts/bedev.yaml
-prompt: dialog
+prompt: all
 services:
   1password: {enabled: true}
   ssh-agent: {enabled: true}
@@ -470,7 +510,7 @@ The ones you'll actually use:
 | `--min-port` / `--max-port` | the window (default `1024`–`65535`) |
 | `--same-port` | never remap; a busy local port is an error |
 | `--cache` | hold fetched secrets in memory (see below) |
-| `--prompt` | `auto`, `tui`, `dialog`, `deny` — overrides `prompt:` in your config |
+| `--prompt` | `all`, `tui`, `native`, `web`, `deny`, or a list — overrides `prompt:` |
 | `--setup` | the remote rc: `ask`, `auto`, `never` (default: your config, else ask) |
 | `--web` | also serve the board in a browser: `on`, or an address (it opens by itself) |
 | `--wait` | keep retrying until the box finishes booting |

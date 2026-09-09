@@ -118,12 +118,87 @@ func TestZeroChoiceIsDeny(t *testing.T) {
 	}
 }
 
-func TestNewRejectsUnknownBackend(t *testing.T) {
-	if _, err := New("carrier-pigeon"); err == nil {
-		t.Fatal("an unknown backend should be an error")
+// A typo in a config file has to be caught when devtun starts, not at the
+// moment somebody's script is waiting on a secret.
+func TestParseSurfacesRejectsWhatItCannotHonour(t *testing.T) {
+	for _, bad := range []string{"carrier-pigeon", "tui,carrier-pigeon", "dialogue"} {
+		if _, err := ParseSurfaces(bad); err == nil {
+			t.Errorf("%q was accepted as somewhere to ask", bad)
+		}
 	}
-	if _, err := New(BackendDeny); err != nil {
-		t.Fatalf("New(deny): %v", err)
+}
+
+// The default is everywhere at once. Whichever single surface you pick is the
+// one you are not looking at.
+func TestTheDefaultIsEverySurface(t *testing.T) {
+	for _, value := range []string{"", "all", "  ALL  "} {
+		got, err := ParseSurfaces(value)
+		if err != nil {
+			t.Fatalf("ParseSurfaces(%q): %v", value, err)
+		}
+		for _, surface := range AllSurfaces {
+			if !got.Has(surface) {
+				t.Errorf("%q does not include %s", value, surface)
+			}
+		}
+		if got.String() != "all" {
+			t.Errorf("%q round-trips as %q", value, got.String())
+		}
+	}
+}
+
+// The two names this setting used to have keep working. A config file that has
+// been sitting on somebody's disk since before this changed is not a file they
+// should have to go and edit.
+func TestTheOldNamesStillParse(t *testing.T) {
+	auto, err := ParseSurfaces("auto")
+	if err != nil || auto.String() != "all" {
+		t.Errorf("auto = %q, %v — it was the old default and means all", auto.String(), err)
+	}
+	dialog, err := ParseSurfaces("dialog")
+	if err != nil {
+		t.Fatalf("dialog: %v", err)
+	}
+	if !dialog.Has(SurfaceNative) || dialog.String() != "native" {
+		t.Errorf("dialog = %q, want native", dialog.String())
+	}
+}
+
+// deny is a decision, not an absence: it has to survive being written to a
+// file and read back, and it must never round-trip into "ask everywhere".
+func TestDenyIsNowhereToAskAndSaysSo(t *testing.T) {
+	got, err := ParseSurfaces("deny")
+	if err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+	if got.Any() {
+		t.Error("deny left somewhere to ask")
+	}
+	if got.String() != "deny" {
+		t.Errorf("deny round-trips as %q", got.String())
+	}
+	again, _ := ParseSurfaces(got.String())
+	if again.Any() {
+		t.Error("deny stopped meaning deny after a round trip through a config file")
+	}
+}
+
+// Naming several is allowed, and the order is the one they are listed in
+// rather than the order they were typed — so a file does not churn.
+func TestASubsetKeepsAStableSpelling(t *testing.T) {
+	first, err := ParseSurfaces("web,tui")
+	if err != nil {
+		t.Fatalf("web,tui: %v", err)
+	}
+	second, _ := ParseSurfaces("tui, web")
+	if first.String() != second.String() {
+		t.Errorf("%q and %q spell the same set differently", first.String(), second.String())
+	}
+	if first.String() != "tui,web" {
+		t.Errorf("spelled %q, want the listed order", first.String())
+	}
+	if first.Has(SurfaceNative) {
+		t.Error("a surface nobody named is in the set")
 	}
 }
 

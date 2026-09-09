@@ -10,7 +10,6 @@ import (
 
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/hostcfg"
-	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 )
 
@@ -73,7 +72,7 @@ func configServer(t *testing.T, store *memStore, services ...service.Service) *S
 		Store:         store,
 		Services:      services,
 		Bus:           event.NewBus(100),
-		PromptNow:     func() prompt.Backend { return prompt.BackendAuto },
+		PromptNow:     func() string { return "all" },
 		DialogChooser: func() string { return "osascript" },
 	})
 }

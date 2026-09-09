@@ -42,7 +42,7 @@ type Options struct {
 	// needs to be able to move where approvals appear — but only the interface
 	// can do it, because the modal a live change installs does not exist until
 	// this program does.
-	ShareApplyPrompt func(func(prompt.Backend))
+	ShareApplyPrompt func(func(string))
 
 	Session *session.Session
 	Bus     *event.Bus
@@ -55,12 +55,11 @@ type Options struct {
 	Host     string
 	Version  string
 	Store    *hostcfg.Store
-	// Prompt is how approvals are asked for. The modal is the default and the
-	// right answer for someone looking at this window; BackendDialog says to
-	// raise a desktop dialog instead, which is what you want when devtun is
-	// running behind the browser and a secret request would otherwise sit
-	// unanswered on a screen nobody is on.
-	Prompt prompt.Backend
+	// Prompt is where approvals appear. By default every surface at once —
+	// this modal, a desktop dialog, and the board — because devtun runs in a
+	// window you are not looking at, and a question you did not see becomes a
+	// timeout that reads as a refusal nobody made.
+	Prompt prompt.Surfaces
 	// Approvals is the desk the web board reads and answers through. When one
 	// is given, every question also goes on it — so the same request is on
 	// screen here and on the board, and whichever is answered first wins.
@@ -100,16 +99,23 @@ func Run(ctx context.Context, o Options) error {
 	// where approvals appear, and that setting has to take effect now: somebody
 	// changing it is somebody who is missing approvals, and answering them with
 	// "reconnect first" is telling them to miss one more.
-	applyPrompt := func(backend prompt.Backend) {
-		approver := approverFor(backend, prompter, o.Bus)
-		// The desk wraps whatever the setting chose, rather than replacing it:
-		// the modal is still where somebody sitting here answers, and the desk
-		// is what lets the board answer the same question. Wrapping outside
-		// means `prompt: deny` still denies — a session told to answer nothing
-		// must not become answerable by opening a browser tab.
-		if o.Approvals != nil && backend != prompt.BackendDeny {
-			o.Approvals.SetPrompter(approver)
-			approver = o.Approvals
+	applyPrompt := func(value string) {
+		surfaces, err := prompt.ParseSurfaces(value)
+		if err != nil {
+			return
+		}
+		// The modal is this program's own surface, and the only one that could
+		// not be built before it existed. Everything else on the desk — the
+		// desktop dialog, and the board watching it — is filled in the same
+		// place the plain session fills it, so the two cannot disagree about
+		// where a question goes.
+		if o.Approvals == nil {
+			return
+		}
+		o.Approvals.Fill(surfaces, prompter)
+		var approver prompt.Prompter = o.Approvals
+		if !surfaces.Any() {
+			approver = prompt.DenyAll{}
 		}
 		for _, svc := range o.Services {
 			if p, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
@@ -141,7 +147,7 @@ func Run(ctx context.Context, o Options) error {
 	if o.ShareApplyPrompt != nil {
 		o.ShareApplyPrompt(applyPrompt)
 	}
-	applyPrompt(o.Prompt)
+	applyPrompt(o.Prompt.String())
 	if o.Session != nil {
 		o.Session.SetAskSetup(prompter.AskSetup)
 	}
@@ -360,37 +366,4 @@ func retryOf(s *session.Session) func() {
 		return nil
 	}
 	return s.RetryNow
-}
-
-// approverFor picks the prompter the brokers are given.
-//
-// The modal is the default and the right answer for somebody looking at this
-// window. The other two are deliberate settings: a desktop dialog for when
-// devtun's window is not the one you are looking at, and deny for a session
-// that must answer nothing at all — which has to hold here too, or a modal
-// anyone walking past could approve would quietly undo it.
-func approverFor(backend prompt.Backend, modal prompt.Prompter, bus *event.Bus) prompt.Prompter {
-	switch backend {
-	case prompt.BackendDeny:
-		return prompt.Serialize(prompt.DenyAll{})
-	case prompt.BackendDialog:
-		dialog, err := prompt.NewWithFallback(prompt.BackendDialog, modal)
-		if err != nil {
-			// Not fatal: the interface can ask perfectly well itself, and
-			// ending a session over a missing zenity would be absurd. Say so
-			// once, in the log everybody can see.
-			if bus != nil {
-				bus.Emit(event.Event{
-					Time: time.Now(), Service: "session", Class: event.Security, Level: event.Warn,
-					Kind: "prompt", Text: "asking in the interface instead: " + err.Error(),
-				})
-			}
-			return modal
-		}
-		// The modal stays the dialog's fallback, so a dialog that cannot be
-		// drawn on the day asks here rather than refusing on the user's behalf.
-		return dialog
-	default:
-		return modal
-	}
 }

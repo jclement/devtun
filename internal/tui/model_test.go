@@ -372,25 +372,25 @@ func TestConfigProvenanceNamesTheLevelAValueCameFrom(t *testing.T) {
 // The setting the owner could not find, doing the thing he wanted it to do: it
 // has to change where this session asks, not only what a future one would read.
 func TestThePromptSettingChangesWhereThisSessionAsks(t *testing.T) {
-	var applied []prompt.Backend
+	var applied []string
 	store := newTestStore(t)
 	m := newTestModel(t, deps{
 		tunnels:       newStub(),
 		store:         store,
-		promptBackend: prompt.BackendAuto,
-		applyPrompt:   func(b prompt.Backend) { applied = append(applied, b) },
+		promptBackend: prompt.MustParseSurfaces("all"),
+		applyPrompt:   func(v string) { applied = append(applied, v) },
 	})
 
 	send(m, "c")
 	moveConfigTo(t, m, "prompt")
-	send(m, "right") // inherit → auto
-	send(m, "right") // auto → tui
+	send(m, "right") // inherit → all
+	send(m, "right") // all → tui
 
 	if got := store.Setting("bedev", "", hostcfg.KeyPrompt); got != "tui" {
 		t.Errorf("the host file records %q, want tui", got)
 	}
-	if len(applied) == 0 || applied[len(applied)-1] != prompt.BackendTUI {
-		t.Errorf("the session was told %v, want the prompter rebuilt as tui", applied)
+	if len(applied) == 0 || applied[len(applied)-1] != "tui" {
+		t.Errorf("the session was told %v, want the surfaces rebuilt as tui", applied)
 	}
 
 	// And left is the way back, without a lap of the options: clearing the host
@@ -420,8 +420,8 @@ func TestTargetingWritesToTheFileThatIsArmed(t *testing.T) {
 	if got := store.Setting("", "", hostcfg.KeyPrompt); got != "dialog" {
 		t.Errorf("editing the host rewrote the global setting to %q", got)
 	}
-	if got := store.Setting("bedev", "", hostcfg.KeyPrompt); got != "auto" {
-		t.Errorf("the host file records %q, want auto", got)
+	if got := store.Setting("bedev", "", hostcfg.KeyPrompt); got != "all" {
+		t.Errorf("the host file records %q, want all", got)
 	}
 
 	// And with g armed the other way, the global file is what moves.
@@ -430,7 +430,7 @@ func TestTargetingWritesToTheFileThatIsArmed(t *testing.T) {
 	if got := store.Setting("", "", hostcfg.KeyPrompt); got == "dialog" {
 		t.Error("g did not aim the edit at the global file")
 	}
-	if got := store.Setting("bedev", "", hostcfg.KeyPrompt); got != "auto" {
+	if got := store.Setting("bedev", "", hostcfg.KeyPrompt); got != "all" {
 		t.Errorf("editing the global file changed the host's value to %q", got)
 	}
 
@@ -447,7 +447,7 @@ func TestTargetingWritesToTheFileThatIsArmed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the host file was not written: %v", err)
 	}
-	if !strings.Contains(string(host), "prompt: auto") {
+	if !strings.Contains(string(host), "prompt: all") {
 		t.Errorf("the host file holds no prompt setting:\n%s", host)
 	}
 }

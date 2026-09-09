@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jclement/devtun/internal/approval"
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/prompt"
@@ -184,7 +185,7 @@ func TestModeSelection(t *testing.T) {
 // at that.
 func TestTheAssembledRegistry(t *testing.T) {
 	store := hostcfg.Open(t.TempDir())
-	services, tunnelSvc, err := buildServices(defaults(), store, prompt.BackendDeny, false, nil)
+	services, tunnelSvc, err := buildServices(defaults(), store, prompt.MustParseSurfaces("all"), false, approval.New(approval.Options{}))
 	if err != nil {
 		t.Fatalf("buildServices: %v", err)
 	}
@@ -309,7 +310,7 @@ func TestTheAssembledRegistry(t *testing.T) {
 // nothing and devtun starts with no services at all.
 func TestOnlyAcceptsEveryServiceName(t *testing.T) {
 	store := hostcfg.Open(t.TempDir())
-	services, _, err := buildServices(defaults(), store, prompt.BackendDeny, false, nil)
+	services, _, err := buildServices(defaults(), store, prompt.MustParseSurfaces("all"), false, approval.New(approval.Options{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +334,7 @@ func TestABrokenHideListIsFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := buildServices(defaults(), hostcfg.Open(dir), prompt.BackendDeny, false, nil)
+	_, _, err := buildServices(defaults(), hostcfg.Open(dir), prompt.MustParseSurfaces("all"), false, approval.New(approval.Options{}))
 	if err == nil {
 		t.Fatal("an unparseable hide list must not be read as 'hide nothing'")
 	}
@@ -358,23 +359,24 @@ func TestPromptBackendResolution(t *testing.T) {
 	}
 	store := hostcfg.Open(dir)
 
-	if got := promptBackend(defaults(), store, "bedev"); got != prompt.BackendDialog {
-		t.Errorf("a host with no setting = %q, want the global dialog", got)
+	if got := promptSetting(defaults(), store, "bedev"); got != "dialog" {
+		t.Errorf("a host with no setting = %q, want the global one", got)
 	}
-	if got := promptBackend(defaults(), store, "quiet"); got != prompt.BackendTUI {
+	if got := promptSetting(defaults(), store, "quiet"); got != "tui" {
 		t.Errorf("a host that says tui = %q, want tui", got)
 	}
 
 	flags := defaults()
 	flags.promptBackend = "deny"
-	if got := promptBackend(flags, store, "bedev"); got != prompt.BackendDeny {
+	if got := promptSetting(flags, store, "bedev"); got != "deny" {
 		t.Errorf("--prompt lost to the config file: %q", got)
 	}
 
-	// And with nothing configured anywhere, auto — which is what makes the
-	// empty flag default readable as "not set" rather than as a choice.
-	if got := promptBackend(defaults(), hostcfg.Open(t.TempDir()), "bedev"); got != prompt.BackendAuto {
-		t.Errorf("an unconfigured machine = %q, want auto", got)
+	// And with nothing configured anywhere, all — every surface this session
+	// has, which is what makes the empty flag default readable as "not set"
+	// rather than as a choice.
+	if got := promptSetting(defaults(), hostcfg.Open(t.TempDir()), "bedev"); got != "all" {
+		t.Errorf("an unconfigured machine = %q, want all", got)
 	}
 }
 
@@ -414,16 +416,69 @@ func TestSetupModeResolution(t *testing.T) {
 	}
 }
 
-// A configured backend that this machine cannot do must fail at startup with
+// A prompt setting this session cannot honour must fail at startup with
 // something a person can act on, rather than at the moment a secret is asked
 // for.
-func TestAnUnknownPromptBackendIsRefusedUpFront(t *testing.T) {
-	_, _, err := buildServices(defaults(), hostcfg.Open(t.TempDir()), prompt.Backend("gui"), false, nil)
-	if err == nil {
-		t.Fatal("an unknown prompt backend was accepted")
-	}
-	if !strings.Contains(err.Error(), "gui") {
+func TestAPromptSettingThisSessionCannotHonourIsRefusedUpFront(t *testing.T) {
+	if _, err := resolveSurfaces("gui", true, true); err == nil {
+		t.Error("an unknown prompt surface was accepted")
+	} else if !strings.Contains(err.Error(), "gui") {
 		t.Errorf("the error does not name the setting: %v", err)
+	}
+
+	// Naming the board without running one is the case worth catching: it
+	// reads as configured and answers nothing.
+	_, err := resolveSurfaces("web", true, false)
+	if err == nil {
+		t.Fatal("--prompt web was accepted with no board to ask on")
+	}
+	if !strings.Contains(err.Error(), "--web") {
+		t.Errorf("the error does not say how to fix it: %v", err)
+	}
+
+	// The terminal, likewise, when there is no terminal.
+	if _, err := resolveSurfaces("tui", false, false); err == nil {
+		t.Error("--prompt tui was accepted with no terminal")
+	}
+}
+
+// `all` is a wish rather than an instruction: a surface this session does not
+// have is one fewer place to ask, not a refusal to start. That difference is
+// the whole reason naming one is worth doing.
+func TestAllQuietlyUsesWhateverThisSessionHas(t *testing.T) {
+	got, err := resolveSurfaces("all", true, false)
+	if err != nil {
+		t.Fatalf("all with no board: %v", err)
+	}
+	if got.Has(prompt.SurfaceWeb) {
+		t.Error("`all` kept the board on a session that has none")
+	}
+	if !got.Has(prompt.SurfaceTUI) {
+		t.Error("`all` dropped the terminal, which this session has")
+	}
+
+	// But `all` with nothing at all behind it is still an error: it means
+	// every request would be refused without anybody being asked, and that is
+	// worth saying at startup rather than discovering from a failed push.
+	//
+	// Through the injected check, because every Mac has osascript and no test
+	// running on one can reach this branch otherwise.
+	nothing := func(prompt.Surface) bool { return false }
+	if _, err := resolveSurfacesWith("all", nothing); err == nil {
+		t.Error("a session with nowhere to ask started anyway")
+	} else if !strings.Contains(err.Error(), "--prompt deny") {
+		t.Errorf("the error does not offer the way out: %v", err)
+	}
+}
+
+// deny is a decision, and must not be mistaken for having nowhere to ask.
+func TestDenyStartsFineWithNoSurfacesAtAll(t *testing.T) {
+	got, err := resolveSurfaces("deny", false, false)
+	if err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+	if got.Any() {
+		t.Error("deny left somewhere to ask")
 	}
 }
 

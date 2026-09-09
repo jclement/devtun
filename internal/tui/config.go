@@ -43,8 +43,8 @@ func (m *Model) settingsDeps() settings.Deps {
 		Host:          m.d.host,
 		Services:      m.d.services,
 		ServiceDetail: func(id string) string { return m.svcState[id].detail },
-		PromptNow:     func() prompt.Backend { return m.promptNow },
-		ApplyPrompt:   m.applyPromptBackend,
+		PromptNow:     func() string { return m.promptNow.String() },
+		ApplyPrompt:   m.applyPromptSurfaces,
 		// The rows are rebuilt after a toggle so the Services tab is not left
 		// describing a service by what it was doing a moment ago.
 		ReloadServices: m.reloadServices,
@@ -217,10 +217,14 @@ func (m *Model) applyConfigValue() tea.Cmd {
 // Where an approval appears is the setting somebody changes *because* they are
 // missing approvals, and answering that with "reconnect first" is telling them
 // to miss one more.
-func (m *Model) applyPromptBackend(backend prompt.Backend) {
-	m.promptNow = backend
+func (m *Model) applyPromptSurfaces(value string) {
+	surfaces, err := prompt.ParseSurfaces(value)
+	if err != nil {
+		return
+	}
+	m.promptNow = surfaces
 	if m.d.applyPrompt != nil {
-		m.d.applyPrompt(backend)
+		m.d.applyPrompt(value)
 	}
 }
 

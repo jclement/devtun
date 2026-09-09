@@ -123,7 +123,8 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	// No default: an empty value means "whatever the config says, else auto",
 	// and a flag defaulting to auto could not be told apart from someone
 	// typing it — which would make the config setting unreachable.
-	fl.StringVar(&f.promptBackend, "prompt", "", "approvals: auto, tui, dialog, deny (default: your config, else auto)")
+	fl.StringVar(&f.promptBackend, "prompt", "",
+		"where approvals appear: all, tui, native, web, deny — or a list (default: your config, else all)")
 	fl.StringVar(&f.account, "account", "", "pin 1Password requests to one account")
 	fl.BoolVar(&f.cache, "cache", false, "hold fetched secret values in memory")
 	fl.DurationVar(&f.cacheTTL, "cache-ttl", 0, "how long a cached secret is kept (default: the grant)")
@@ -222,18 +223,26 @@ func runUp(ctx context.Context, f upFlags) error {
 	// without being asked: a TUI written into a pipe is line noise.
 	useTUI := wantsTUI(f, ui.IsTTY())
 
-	backend := promptBackend(f, store, dest.Label())
-
-	// The desk is what lets one question be answered from more than one place.
-	// It is built whenever a board is, and only then: without a board there is
-	// no second surface, and every approval goes exactly where it always did.
-	var desk *approval.Desk
-	if f.web != "" {
-		desk = approval.New(approval.Options{})
+	// Where approvals will appear, resolved once and reported rather than
+	// discovered at the moment somebody is waiting on one.
+	surfaces, err := resolveSurfaces(promptSetting(f, store, dest.Label()), ui.IsInteractive(), f.web != "")
+	if err != nil {
+		return err
 	}
 
+	// The desk is what lets one question be answered from more than one place,
+	// and it is now always the thing services ask — a question goes to every
+	// surface this session has, and the first answer wins.
+	//
+	// It used to be built only under --web, because the board was the only
+	// second surface there was. That made "which one place should this appear"
+	// the shape of the setting, and the shape was wrong: devtun runs in a
+	// window you are not looking at, so whichever single surface you pick is
+	// the one you will miss.
+	desk := approval.New(approval.Options{})
+
 	bus := event.NewBus(historyLimit)
-	services, tunnelSvc, err := buildServices(f, store, backend, useTUI, desk)
+	services, tunnelSvc, err := buildServices(f, store, surfaces, useTUI, desk)
 	if err != nil {
 		return err
 	}
@@ -269,8 +278,8 @@ func runUp(ctx context.Context, f upFlags) error {
 	// this function, built here where the services and the desk both are.
 	applier := &promptApplier{}
 	if !useTUI {
-		applier.set(func(b prompt.Backend) {
-			rebuildPrompter(b, services, desk)
+		applier.set(func(value string) {
+			rebuildPrompter(value, services, desk, false, f.web != "")
 		})
 	}
 
@@ -280,7 +289,7 @@ func runUp(ctx context.Context, f upFlags) error {
 	var webURL string
 	if f.web != "" {
 		url, stop, err := serveWeb(ctx, f, bus, sess, tunnelSvc, services, dest.Label(), desk,
-			store, backend, applier)
+			store, surfaces, applier)
 		if err != nil {
 			return err
 		}
@@ -300,7 +309,7 @@ func runUp(ctx context.Context, f upFlags) error {
 			Host:             dest.Label(),
 			Version:          buildinfo.Version(),
 			Store:            store,
-			Prompt:           backend,
+			Prompt:           surfaces,
 			Approvals:        desk,
 			WebURL:           webURL,
 			NoDissolve:       f.noDissolve,
@@ -326,10 +335,10 @@ func runUp(ctx context.Context, f upFlags) error {
 // function fills it in.
 type promptApplier struct {
 	mu    sync.Mutex
-	apply func(prompt.Backend)
+	apply func(string)
 }
 
-func (p *promptApplier) set(fn func(prompt.Backend)) {
+func (p *promptApplier) set(fn func(string)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.apply = fn
@@ -338,19 +347,19 @@ func (p *promptApplier) set(fn func(prompt.Backend)) {
 // Apply is a no-op before anything has been installed. A setting changed that
 // early is still written and still takes effect on the next connection; what is
 // missed is only the "now" part.
-func (p *promptApplier) Apply(backend prompt.Backend) {
+func (p *promptApplier) Apply(value string) {
 	p.mu.Lock()
 	fn := p.apply
 	p.mu.Unlock()
 	if fn != nil {
-		fn(backend)
+		fn(value)
 	}
 }
 
 func serveWeb(
 	ctx context.Context, f upFlags, bus *event.Bus, sess *session.Session,
 	tunnelSvc *tunnels.Service, services []service.Service, label string, desk *approval.Desk,
-	store *hostcfg.Store, backend prompt.Backend, applier *promptApplier,
+	store *hostcfg.Store, surfaces prompt.Surfaces, applier *promptApplier,
 ) (string, func(), error) {
 	addr := strings.TrimSpace(f.web)
 	if addr == "on" || addr == "true" {
@@ -375,7 +384,7 @@ func serveWeb(
 		// not configure it, which is the half of the interface that was
 		// missing from it.
 		Store:         storeOrNil(store),
-		PromptNow:     func() prompt.Backend { return backend },
+		PromptNow:     func() string { return surfaces.String() },
 		ApplyPrompt:   applier.Apply,
 		DialogChooser: prompt.DialogBackend,
 	})
@@ -595,7 +604,7 @@ func resolveDestination(f upFlags) (*sshx.Destination, sshx.Options, error) {
 // because it is the one that needs nothing on the remote box: if everything
 // else fails, forwarding still works, which is very often why devtun was run.
 func buildServices(
-	f upFlags, store *hostcfg.Store, backend prompt.Backend, useTUI bool, desk *approval.Desk,
+	f upFlags, store *hostcfg.Store, surfaces prompt.Surfaces, useTUI bool, desk *approval.Desk,
 ) ([]service.Service, *tunnels.Service, error) {
 	policy, err := tunnelPolicy(f)
 	if err != nil {
@@ -615,20 +624,17 @@ func buildServices(
 		GlobalHide: hide,
 	})
 
-	prompter, err := buildPrompter(backend, useTUI)
-	if err != nil {
-		return nil, nil, err
+	// Under the interface the modal is added later, by tui.Run: it cannot
+	// exist until its program does. Everywhere else the terminal surface is a
+	// form, which can be built now.
+	if !useTUI {
+		desk.Fill(surfaces, nil)
 	}
-	// Outside whatever the setting chose, not instead of it: the terminal form
-	// or the desktop dialog is still where somebody at this machine answers,
-	// and the desk is what lets the board answer the same question. Wrapping
-	// outside is also what keeps `prompt: deny` meaning deny — a session told
+	// Every service asks the desk, and the desk asks every surface. `deny` is
+	// a desk with nothing on it, which refuses by construction — a session told
 	// to answer nothing must not become answerable by opening a browser tab.
-	//
-	// Under the interface this is nil and the wrapping happens in tui.Run
-	// instead, because the modal cannot exist until its program does.
-	if desk != nil && prompter != nil && backend != prompt.BackendDeny {
-		desk.SetPrompter(prompter)
+	var prompter prompt.Prompter
+	if surfaces.Any() {
 		prompter = desk
 	}
 	opRules, err := globalRules(store, "1password")
@@ -798,36 +804,76 @@ func setupMode(f upFlags, store *hostcfg.Store) (session.SetupMode, error) {
 // at — a desktop with zenity installed, or a laptop where devtun always runs in
 // a window behind the browser — and a setting you must remember to type is one
 // you will be missing on the day it mattered.
-func promptBackend(f upFlags, store *hostcfg.Store, label string) prompt.Backend {
+func promptSetting(f upFlags, store *hostcfg.Store, label string) string {
 	if v := strings.TrimSpace(f.promptBackend); v != "" {
-		return prompt.Backend(v)
+		return v
 	}
-	return prompt.Backend(store.Prompt(label, string(prompt.BackendAuto)))
+	if store == nil {
+		return "all"
+	}
+	return store.Prompt(label, "all")
 }
 
-// buildPrompter chooses how approvals are asked for outside the interface.
+// resolveSurfaces turns what was asked for into where a question will actually
+// go, and refuses rather than quietly asking somewhere else.
 //
-// Under the TUI the question is a modal inside it — a huh form in the terminal
-// would draw over the thing it is asking about — so this returns nil there and
-// lets the interface install its own. The exception is a desktop dialog, which
-// the interface handles itself: it is a separate window and does not touch the
-// terminal at all, and wanting one is precisely the case where devtun's window
-// is not the one you are looking at.
-func buildPrompter(backend prompt.Backend, useTUI bool) (prompt.Prompter, error) {
-	if useTUI {
-		// The value still has to be checked here. Under the interface nothing
-		// else parses it, and a typo in a config file that surfaced only when
-		// a secret was asked for would surface as a refusal nobody understood.
-		if !backend.Valid() {
-			return nil, fmt.Errorf("unknown prompt backend %q (want auto, tui, dialog or deny)", backend)
+// The distinction that matters is whether the surfaces were named. `all` is a
+// wish — every surface this session happens to have — so a machine with no
+// dialog program simply has one fewer place to ask. Naming `native` is an
+// instruction, and a session that cannot honour it must say so at startup
+// rather than at the moment somebody's push is waiting on an answer.
+func resolveSurfaces(raw string, interactive, web bool) (prompt.Surfaces, error) {
+	return resolveSurfacesWith(raw, func(surface prompt.Surface) bool {
+		return prompt.Available(surface, interactive, web)
+	})
+}
+
+// resolveSurfacesWith is resolveSurfaces with the availability check supplied.
+//
+// The seam exists for the branch that matters most and is otherwise untestable
+// here: a machine with nowhere at all to ask. Every Mac has osascript, so no
+// test running on one can reach that path through the real check — and it is
+// the path where devtun refuses to start rather than running as something that
+// denies everything silently.
+func resolveSurfacesWith(raw string, available func(prompt.Surface) bool) (prompt.Surfaces, error) {
+	want, err := prompt.ParseSurfaces(raw)
+	if err != nil {
+		return prompt.Surfaces{}, err
+	}
+	if !want.Any() {
+		// deny, which is a decision and not an absence.
+		return want, nil
+	}
+
+	named := !isDefaultSurfaces(raw)
+	have := want
+	for _, surface := range prompt.AllSurfaces {
+		if !want.Has(surface) || available(surface) {
+			continue
 		}
-		return nil, nil
+		if named {
+			return prompt.Surfaces{}, fmt.Errorf(
+				"--prompt %s: %s. use --prompt all to ask wherever this session can",
+				surface, prompt.Why(surface))
+		}
+		have = have.Without(surface)
 	}
-	if !ui.IsInteractive() && (backend == prompt.BackendAuto || backend == "") {
-		// Nobody can answer, and the zero value of a decision is no.
-		backend = prompt.BackendDeny
+	if !have.Any() {
+		return prompt.Surfaces{}, errors.New(
+			"there is nowhere to ask for an approval: no terminal, no desktop dialog, and no --web board.\n" +
+				"run devtun from a terminal, add --web, or use --prompt deny to refuse without asking")
 	}
-	return prompt.New(backend)
+	return have, nil
+}
+
+// isDefaultSurfaces reports whether the value means "wherever you can" rather
+// than naming particular places.
+func isDefaultSurfaces(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "all", "auto":
+		return true
+	}
+	return false
 }
 
 // knownHostsFiles are the files consulted to put a name on a signing
@@ -921,19 +967,21 @@ func installPrompter(prompter prompt.Prompter, services []service.Service) {
 
 // rebuildPrompter puts a changed prompt setting into effect without a
 // reconnect, for a session with no interface to own the modal.
-func rebuildPrompter(backend prompt.Backend, services []service.Service, desk *approval.Desk) {
-	prompter, err := buildPrompter(backend, false)
-	if err != nil || prompter == nil {
+func rebuildPrompter(raw string, services []service.Service, desk *approval.Desk, useTUI, web bool) {
+	surfaces, err := resolveSurfaces(raw, ui.IsInteractive(), web)
+	if err != nil {
+		// The settings screen refuses a value it cannot honour before it is
+		// written, so reaching here means the session changed under it — a
+		// board that has since stopped. Leaving the surfaces as they were is
+		// better than removing the last place anybody could answer.
 		return
 	}
-	// The desk wraps whatever the setting chose rather than replacing it, so
-	// `prompt: deny` still denies: a session told to answer nothing must not
-	// become answerable by opening a browser tab.
-	if desk != nil && backend != prompt.BackendDeny {
-		desk.SetPrompter(prompter)
-		prompter = desk
+	desk.Fill(surfaces, nil)
+	if !surfaces.Any() {
+		installPrompter(prompt.DenyAll{}, services)
+		return
 	}
-	installPrompter(prompter, services)
+	installPrompter(desk, services)
 }
 
 // storeOrNil hands the board a real store or nothing at all.

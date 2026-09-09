@@ -97,8 +97,8 @@ type deps struct {
 	// the one config change this session can honour immediately, and the one
 	// where waiting for the next connection would mean missing the request you
 	// were trying to catch.
-	promptBackend prompt.Backend
-	applyPrompt   func(prompt.Backend)
+	promptBackend prompt.Surfaces
+	applyPrompt   func(string)
 
 	host    string
 	version string
@@ -203,7 +203,7 @@ type Model struct {
 	dialogPick *string
 	// promptNow is where approvals are appearing, which the command line can
 	// have decided rather than the files.
-	promptNow prompt.Backend
+	promptNow prompt.Surfaces
 
 	// Inline editor in the bottom border.
 	editor        editorKind
