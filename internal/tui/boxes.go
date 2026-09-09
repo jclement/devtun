@@ -156,7 +156,10 @@ func (m *Model) tallHelpBox() string {
 // wideHelpBox is the same content in two columns, which is what makes the whole
 // keyboard fit on a normal terminal without abbreviating any of it.
 func (m *Model) wideHelpBox() string {
-	const columnWidth = 46
+	// 15, not 13: the widest key string ("tab, ← →, 1-5") is exactly 13 cells,
+	// so a 13-wide pad left no gap at all and rendered "1-5switch tab".
+	const keyWidth = 15
+	const columnWidth = 48
 	if m.width < columnWidth*2+8 {
 		// Two columns in a narrow frame is worse than one; say so by failing
 		// the fit test rather than rendering something cramped.
@@ -175,7 +178,12 @@ func (m *Model) wideHelpBox() string {
 	for _, sec := range sections {
 		lines := []string{ui.Muted.Render(sec.title)}
 		for _, k := range sec.keys {
-			lines = append(lines, "  "+ui.Banner.Render(pad(k[0], 13))+ui.Muted.Render(k[1]))
+			// Clamped to the column. Without this a long description simply
+			// ran on into whatever the right-hand column had on that row —
+			// "the command palette — every action, by nameaccess — rules and
+			// live grants" was one rendered line, not two.
+			entry := "  " + ui.Banner.Render(pad(k[0], keyWidth)) + ui.Muted.Render(k[1])
+			lines = append(lines, clampWidth(entry, columnWidth-1))
 		}
 		lines = append(lines, "")
 		if used*2 < total {

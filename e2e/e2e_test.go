@@ -361,3 +361,33 @@ func TestDoctorReportsTheBoxWithoutChangingIt(t *testing.T) {
 		t.Errorf("no local checks in the report:\n%s", report.raw)
 	}
 }
+
+// Two devtun sessions on one box must not quietly break each other.
+//
+// Taking over a live socket is how they used to: the newcomer binds the path
+// and the session that had it keeps running — still calling itself connected,
+// its services still listed as ready — while sshd routes nothing to it ever
+// again. Neither side said anything. The second session now refuses, and
+// --take-over is the way through for a first session that has gone away
+// without releasing the socket.
+func TestASecondSessionRefusesRatherThanBreakingTheFirst(t *testing.T) {
+	box := start(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	first := box.runDevtun(ctx)
+	first.await("the first session to publish its socket", settle, opened(8080))
+
+	// A second, with its own context so it can be reaped independently.
+	secondCtx, stopSecond := context.WithTimeout(context.Background(), 45*time.Second)
+	defer stopSecond()
+	second := box.runDevtun(secondCtx)
+
+	second.await("the second session to refuse", 40*time.Second, func(e evt) bool {
+		return strings.Contains(e.Text, "already attached") ||
+			strings.Contains(e.Text, "take-over")
+	})
+
+	// And the first is still working, which is the whole point.
+	first.await("the first session to still be forwarding", 20*time.Second, opened(3000))
+}

@@ -85,7 +85,11 @@ type unattendable interface {
 // Conn is one live SSH connection.
 type Conn interface {
 	remoteClient
-	ListenSocket(ctx context.Context, path string) (net.Listener, error)
+	// ListenSocket publishes a socket on the remote. takeOver displaces one
+	// another devtun is answering on, which is refused by default: the session
+	// that had it would keep running, still calling itself connected, while
+	// sshd routed nothing to it ever again.
+	ListenSocket(ctx context.Context, path string, takeOver bool) (net.Listener, error)
 	RemoveSocket(ctx context.Context, path string)
 	KeepAlive(ctx context.Context, interval, timeout time.Duration) error
 	Close() error
@@ -107,6 +111,9 @@ type Options struct {
 	Reconnect bool
 	// AutoInstall keeps the remote shim in step with this build.
 	AutoInstall bool
+	// TakeOver displaces another devtun already attached to this host, rather
+	// than refusing to start.
+	TakeOver bool
 	// ShimBinary overrides the shim uploaded to the remote.
 	ShimBinary string
 	// FetchShim downloads a helper built for another platform. Nil means one

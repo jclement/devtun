@@ -454,3 +454,44 @@ func TestAGlobalOnlySettingIsRefusedOnAHost(t *testing.T) {
 		t.Fatal("the global file accepted a setting that does not exist")
 	}
 }
+
+// A decision the interface calls "remembered" has to survive a kill.
+//
+// Writes used to mark the file dirty and wait for a clean exit, so a `Never`
+// deny rule written at ten in the morning was still only in memory at six —
+// and a session killed rather than quit lost it. A refusal the user believes
+// is protecting them is exactly the thing that must not depend on a tidy
+// shutdown.
+func TestAWriteIsOnDiskBeforeItIsAcknowledged(t *testing.T) {
+	dir := t.TempDir()
+	store := Open(dir)
+
+	if err := store.Section("bedev", "1password").Set("rules", []map[string]string{
+		{"host": "bedev", "subject": "op://Private/**", "action": "deny"},
+	}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Read it with a second store that has never seen the first — the same
+	// thing a fresh process does after the old one was killed.
+	var back []map[string]string
+	fresh := Open(dir)
+	ok, err := fresh.Section("bedev", "1password").GetLocal("rules", &back)
+	if err != nil || !ok {
+		t.Fatalf("the rule was not on disk: ok=%v err=%v", ok, err)
+	}
+	if len(back) != 1 || back[0]["action"] != "deny" {
+		t.Errorf("what landed on disk was %+v", back)
+	}
+}
+
+// Service toggles are the same promise, made by a different screen.
+func TestAServiceToggleIsOnDiskImmediately(t *testing.T) {
+	dir := t.TempDir()
+	store := Open(dir)
+	store.SetEnabled("bedev", "gpg-agent", true)
+
+	if !Open(dir).Enabled("bedev", "gpg-agent", false) {
+		t.Error("a service switched on was not written before the process could die")
+	}
+}

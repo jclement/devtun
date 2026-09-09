@@ -353,7 +353,7 @@ func (m *Model) columns() []column {
 // except the last cell, which belongs to the scroll track. Reserving it at
 // every size costs one column and keeps a right-aligned byte count from being
 // clipped by a scrollbar that appeared when a port did.
-func (m *Model) tableWidth() int { return max(m.inner()-1, 1) }
+func (m *Model) tableWidth() int { return m.listWidth() }
 
 // columnAt returns the column under a terminal x position.
 func (m *Model) columnAt(x int) (column, bool) {
@@ -640,7 +640,10 @@ func (m *Model) handleTunnelsKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.cycleScheme()
 	// b as well as o and space: b is what the key bar advertises and what a
 	// browser is called, and o is already three other things elsewhere.
-	case " ", "o", "b":
+	// "space", not " ": Bubble Tea v2 reports a space press as the named key
+	// `space`, so matching the literal never fired and the key README has
+	// advertised since the first release did nothing at all.
+	case "space", "o", "b":
 		return m.openSelected()
 	case "y":
 		return m.copySelected()

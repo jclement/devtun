@@ -270,6 +270,8 @@ func remoteChecks(ctx context.Context, report *doctor.Report, flags upFlags) err
 		return err
 	}
 	store := hostcfg.OpenDefault()
+	// Same reason as runUp: Err() can only report files that have been read.
+	store.LoadHost(dest.Label())
 	backend := promptBackend(flags, store, dest.Label())
 
 	// The registry is built exactly as a session builds it, so that what is

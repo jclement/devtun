@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"path"
@@ -12,6 +13,7 @@ import (
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/shim"
+	"github.com/jclement/devtun/internal/sshx"
 )
 
 // serveOnce runs everything for the life of one SSH connection and returns the
@@ -60,8 +62,20 @@ func (s *Session) serveOnce(ctx context.Context, conn Conn) (err error) {
 		}
 	}
 
-	listener, err := conn.ListenSocket(ctx, paths.Socket)
+	listener, err := conn.ListenSocket(ctx, paths.Socket, s.opts.TakeOver)
 	if err != nil {
+		if errors.Is(err, sshx.ErrSocketUnknown) {
+			return Fatal(fmt.Errorf(
+				"cannot tell whether another devtun is attached to %s (no /proc/net/unix, nc or socat there) — "+
+					"start with --take-over if you are sure this is the only one", label))
+		}
+		if errors.Is(err, sshx.ErrSocketInUse) {
+			// Fatal, not a blip: retrying finds the same session still there,
+			// and a reconnect loop against it would say nothing useful nine
+			// times a minute.
+			return Fatal(fmt.Errorf(
+				"another devtun is already attached to %s — quit it, or start this one with --take-over", label))
+		}
 		return err
 	}
 	defer func() {
@@ -174,7 +188,7 @@ func (s *Session) publishOwnSockets(
 			continue
 		}
 		path := path.Join(path.Dir(paths.Socket), provider.SocketName())
-		listener, err := conn.ListenSocket(ctx, path)
+		listener, err := conn.ListenSocket(ctx, path, s.opts.TakeOver)
 		if err != nil {
 			s.opts.Bus.For(inst.meta.ID).Emit(event.Event{
 				Kind: "socket-failed", Class: event.Lifecycle, Level: event.Warn,

@@ -403,3 +403,69 @@ func TestAnUnknownPromptBackendIsRefusedUpFront(t *testing.T) {
 		t.Errorf("the error does not name the setting: %v", err)
 	}
 }
+
+// A malformed host file must stop devtun, not read as an empty one.
+//
+// Host files load lazily and Err() reports only what has been read, so the
+// refusal gate used to be looking at the global file alone. A broken
+// hosts/<host>.yaml therefore became an empty host config — its deny rules and
+// hide ranges silently gone — and devtun carried on with wider access than the
+// file asked for. That is the exact failure the gate exists to prevent,
+// arriving through the door it was not watching.
+func TestABrokenHostFileStopsStartup(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "hosts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hosts", "bedev.yaml"),
+		[]byte("1password:\n  rules:\n   - {subject: \"op://Private/**\", action: deny}\n  bad\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := hostcfg.Open(dir)
+	if err := store.Err(); err != nil {
+		t.Fatalf("the global file is fine; Err() should be quiet until a host is read: %v", err)
+	}
+
+	store.LoadHost("bedev")
+	if store.Err() == nil {
+		t.Fatal("a host file that will not parse was read as an empty one, taking its deny rules with it")
+	}
+}
+
+// Each broker gets its own global rules.
+//
+// One slice used to be read from the 1Password section and handed to all three,
+// so a global 1Password deny also refused every signature and every browser
+// open, while ssh-agent and browser rules written globally were read by nobody.
+func TestEachBrokerReadsItsOwnGlobalRules(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`
+1password:
+  rules:
+    - {host: "**", subject: "op://Private/**", action: deny}
+ssh-agent:
+  rules:
+    - {host: "**", subject: "** → github.com", action: allow}
+browser:
+  rules:
+    - {host: "**", subject: "example.com", action: deny}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := hostcfg.Open(dir)
+
+	for _, tc := range []struct{ service, subject string }{
+		{"1password", "op://Private/**"},
+		{"ssh-agent", "** → github.com"},
+		{"browser", "example.com"},
+	} {
+		rules, err := globalRules(store, tc.service)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.service, err)
+		}
+		if len(rules) != 1 || rules[0].Subject != tc.subject {
+			t.Errorf("%s got %+v, want only its own rule", tc.service, rules)
+		}
+	}
+}

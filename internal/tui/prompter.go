@@ -201,7 +201,7 @@ func (m *Model) handleApprovalKey(msg tea.KeyPressMsg) tea.Cmd {
 		if a.cursor < len(a.options)-1 {
 			a.cursor++
 		}
-	case "enter", " ":
+	case "enter", "space":
 		if a.cursor >= 0 && a.cursor < len(a.options) {
 			return m.answer(a.options[a.cursor].Choice)
 		}

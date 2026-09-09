@@ -65,7 +65,7 @@ func (c *fakeConn) Upload(context.Context, string, string, os.FileMode) error {
 	return nil
 }
 func (c *fakeConn) DialTCP(context.Context, string) (net.Conn, error) { return nil, errors.New("no") }
-func (c *fakeConn) ListenSocket(context.Context, string) (net.Listener, error) {
+func (c *fakeConn) ListenSocket(context.Context, string, bool) (net.Listener, error) {
 	return c.listener, nil
 }
 func (c *fakeConn) RemoveSocket(context.Context, string) {}

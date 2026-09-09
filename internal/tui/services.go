@@ -125,11 +125,11 @@ func (m *Model) serviceLine(r serviceRow, selected bool) string {
 		line += ui.Muted.Render(r.meta.Short)
 	}
 
-	line = clampWidth(line, m.inner())
+	line = clampWidth(line, m.listWidth())
 	switch {
 	case selected:
-		if w := ansi.StringWidth(line); w < m.inner() {
-			line += strings.Repeat(" ", m.inner()-w)
+		if w := ansi.StringWidth(line); w < m.listWidth() {
+			line += strings.Repeat(" ", m.listWidth()-w)
 		}
 		return ui.Selected.Reverse(true).Render(ansi.Strip(line))
 	case !r.enabled:

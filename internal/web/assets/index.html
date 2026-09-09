@@ -189,7 +189,6 @@
 </header>
 
 <div class="banner bad" id="offline" role="status" hidden></div>
-<div class="banner ask" id="waiting" role="status" hidden></div>
 
 <main>
   <section>
@@ -258,10 +257,6 @@
 const $ = (id) => document.getElementById(id);
 
 let inFlight = false;
-// waiting maps a service to the request it is stuck on. A prompt blocks its
-// service, so the latest security event per service is the whole story: a
-// "requested" with nothing after it is a human being waited for.
-const waiting = new Map();
 let services = new Map();
 // noticeUntil keeps a refusal on screen for a few seconds: the poll is two
 // seconds away and would otherwise wipe the message before it was read.
@@ -672,24 +667,6 @@ function renderHeader(state) {
   document.title = state.host ? `devtun · ${state.host}` : "devtun";
 }
 
-function renderWaiting() {
-  const banner = $("waiting");
-  banner.replaceChildren();
-  banner.hidden = waiting.size === 0;
-  for (const [source, text] of waiting) {
-    const line = document.createElement("div");
-    const label = document.createElement("b");
-    label.textContent = who(source) + " is waiting: ";
-    line.append(label, document.createTextNode(text));
-    banner.append(line);
-  }
-  if (waiting.size) {
-    const how = document.createElement("div");
-    how.className = "muted";
-    how.textContent = "answer it where devtun is running — this page cannot approve";
-    banner.append(how);
-  }
-}
 
 async function refresh() {
   // A snapshot that is slow to come back must not stack the next poll behind
@@ -703,7 +680,6 @@ async function refresh() {
     renderPorts(state);
     renderGrants(state);
     renderRules(state);
-    renderWaiting();
     renderAsk(state.waiting ?? []);
     if (Date.now() > noticeUntil) $("offline").hidden = true;
   } catch (err) {
@@ -742,7 +718,6 @@ function stream() {
     // would otherwise leave the whole log on screen twice.
     log.replaceChildren();
     $("log-empty").hidden = false;
-    waiting.clear();
     refresh();
   };
   // The stream drops when devtun stops, and EventSource dials again by itself.
@@ -754,8 +729,7 @@ function stream() {
     if (e.class === "security") {
       if (e.kind === "requested") waiting.set(e.service, e.text);
       else waiting.delete(e.service);
-      renderWaiting();
-    }
+      }
     const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
     log.append(line(e));
     while (log.childElementCount > 500) log.firstElementChild.remove();

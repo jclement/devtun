@@ -12,6 +12,7 @@ package sshx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -84,11 +85,35 @@ func (c *Client) DialTCP(ctx context.Context, address string) (net.Conn, error) 
 // ListenSocket prepares the remote path and starts the reverse forward.
 //
 // x/crypto/ssh has no equivalent of OpenSSH's StreamLocalBindUnlink, so a
-// socket left behind by a previous run would make the bind fail. Removing it
-// first is what makes a second run work at all — but it is a takeover, not a
-// tidy-up, and the caller is told when it displaced something live so the fact
-// that two sessions are now pointed at one box is not a silent one.
-func (c *Client) ListenSocket(ctx context.Context, socketPath string) (net.Listener, error) {
+// socket left behind by a previous run would make the bind fail, and removing
+// it first is what makes a second run work at all.
+//
+// But a socket somebody is *answering* on is a different thing from one left
+// behind, and taking that one over is how two sessions quietly break each
+// other: the newcomer binds the path, and the session that had it keeps
+// running — still reporting itself connected, its services still ready —
+// while sshd routes nothing to it ever again. Nothing on either side says so.
+// The first session is simply dead and does not know.
+//
+// So a live socket is refused rather than displaced. ErrSocketInUse is what
+// the caller turns into an explanation, and takeOver is the escape hatch for
+// the case that makes refusal dangerous: a session on a laptop that has been
+// closed still holds the socket until sshd reaps it, and without a way through
+// you could not reconnect to your own box.
+func (c *Client) ListenSocket(ctx context.Context, socketPath string, takeOver bool) (net.Listener, error) {
+	if !takeOver {
+		// A probe that could not answer is not permission to take the socket.
+		// Reading an error as "nobody is there" is exactly how the first
+		// version of this let the takeover through on a box with no nc.
+		switch inUse, err := c.socketInUse(ctx, socketPath); {
+		case err != nil:
+			return nil, fmt.Errorf("%w: cannot tell whether %s is in use: %w",
+				ErrSocketUnknown, socketPath, err)
+		case inUse:
+			return nil, fmt.Errorf("%w: %s", ErrSocketInUse, socketPath)
+		}
+	}
+
 	directory := path.Dir(socketPath)
 	prepare := fmt.Sprintf("mkdir -p %s && chmod 700 %s && rm -f %s",
 		shellQuote(directory), shellQuote(directory), shellQuote(socketPath))
@@ -113,6 +138,72 @@ func (c *Client) ListenSocket(ctx context.Context, socketPath string) (net.Liste
 		return nil, fmt.Errorf("restricting permissions on %s: %w", socketPath, err)
 	}
 	return listener, nil
+}
+
+// ErrSocketInUse says another devtun already holds the remote socket.
+var ErrSocketInUse = errors.New("another devtun session is already attached to this host")
+
+// ErrSocketUnknown says the box could not be asked. It is separate from
+// ErrSocketInUse because the two need different advice: one means quit the
+// other session, the other means devtun cannot check and you decide.
+var ErrSocketUnknown = errors.New("cannot check whether another devtun is attached")
+
+// socketInUse reports whether something is answering on the socket.
+//
+// A connect attempt is the only thing that separates a live socket from a file
+// left behind by a session that died — and the distinction decides between
+// refusing to start and clearing up after a crash, which are opposite actions.
+// A box with neither nc nor socat cannot answer the question, and says so with
+// an error rather than a false negative: guessing "nobody is there" would put
+// the takeover back.
+func (c *Client) socketInUse(ctx context.Context, socketPath string) (bool, error) {
+	out, err := c.Output(ctx, socketInUseScript(socketPath))
+	if err != nil {
+		return false, err
+	}
+	return readSocketInUse(out)
+}
+
+// socketInUseScript asks the remote shell the question. Split out so the shell
+// itself can be tested, which is where a mistake would actually live.
+//
+// /proc/net/unix first, and it is the answer rather than a nicety: it is a file
+// the kernel maintains, present on every Linux box, needing no tool at all. The
+// first version of this asked nc and then socat, and the devtun test container
+// has neither — so the probe could not answer, the caller read "cannot tell" as
+// "go ahead", and the takeover this exists to prevent happened anyway. Plenty
+// of real dev boxes are that bare.
+//
+// A listening socket appears there as a named entry whose last field is the
+// path; a file left behind by a dead process has no entry at all, because the
+// inode is gone. awk compares the last field literally, so a path with regex
+// characters in it cannot be mismatched.
+//
+// nc and socat stay as the fallback for a remote that is not Linux. devtun's
+// remote is always Linux today, and that is a statement about today.
+func socketInUseScript(socketPath string) string {
+	quoted := shellQuote(socketPath)
+	return fmt.Sprintf(`if [ ! -S %s ]; then echo free
+elif [ -r /proc/net/unix ]; then
+  awk -v p=%s '$NF==p{f=1} END{exit !f}' /proc/net/unix && echo busy || echo free
+elif command -v nc >/dev/null 2>&1; then
+  nc -z -U %s >/dev/null 2>&1 && echo busy || echo free
+elif command -v socat >/dev/null 2>&1; then
+  socat -u OPEN:/dev/null UNIX-CONNECT:%s >/dev/null 2>&1 && echo busy || echo free
+else echo unknown
+fi`, quoted, quoted, quoted, quoted)
+}
+
+// readSocketInUse interprets the script's answer.
+func readSocketInUse(out string) (bool, error) {
+	switch strings.TrimSpace(out) {
+	case "busy":
+		return true, nil
+	case "free":
+		return false, nil
+	default:
+		return false, errors.New("cannot tell whether the socket is in use (no nc or socat)")
+	}
 }
 
 // RemoveSocket cleans up on shutdown, and only if the socket is still ours.

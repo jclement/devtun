@@ -68,10 +68,10 @@ func (m *Model) activityView() string {
 	var lines []string
 	end := min(m.offset()+m.listHeight(), len(m.logRows))
 	for i := m.offset(); i < end; i++ {
-		line := clampWidth(eventLine(m.logRows[i]), m.inner())
+		line := clampWidth(eventLine(m.logRows[i]), m.listWidth())
 		if i == m.cursor() {
-			if w := ansi.StringWidth(line); w < m.inner() {
-				line += strings.Repeat(" ", m.inner()-w)
+			if w := ansi.StringWidth(line); w < m.listWidth() {
+				line += strings.Repeat(" ", m.listWidth()-w)
 			}
 			line = ui.Selected.Reverse(true).Render(ansi.Strip(line))
 		}

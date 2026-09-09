@@ -6,7 +6,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -186,7 +188,9 @@ func TestListenSocketPreparesThePathAndExplainsARefusal(t *testing.T) {
 	server := startServer(t, serverOptions{noAuth: true})
 	client := connectTo(t, server)
 
-	_, err := client.ListenSocket(t.Context(), "/run/user/1000/devtun.sock")
+	// takeOver, so the in-use probe is skipped: this test server has no shell
+	// to answer it with, and the refusal being checked here is sshd's.
+	_, err := client.ListenSocket(t.Context(), "/run/user/1000/devtun.sock", true)
 	if err == nil {
 		t.Fatal("this server forwards nothing; ListenSocket should have failed")
 	}
@@ -218,5 +222,90 @@ func TestShellQuote(t *testing.T) {
 		if got := shellQuote(input); got != want {
 			t.Errorf("shellQuote(%q) = %s, want %s", input, got, want)
 		}
+	}
+}
+
+// A socket somebody is answering on is not a stale one, and taking it over is
+// how two sessions quietly break each other: the newcomer binds the path and
+// the session that had it keeps running — still calling itself connected,
+// still listing its services as ready — while sshd routes nothing to it ever
+// again. Neither side says a word.
+//
+// The script is run through a real shell here rather than through the test
+// SSH server, which has no shell to run it in. The shell is where a mistake
+// would live.
+func TestTheSocketInUseScriptTellsLiveFromStale(t *testing.T) {
+	// Linux only, and that is not a dodge: the remote devtun talks to is
+	// always Linux, and macOS's nc answers `-z -U` differently — it reports a
+	// socket with a listener behind it as free, which this test caught and
+	// which would be a real bug if the remote were ever a Mac. Verified by
+	// hand in a Debian container that both nc and socat get it right there.
+	// e2e/ runs this against a real box.
+	if runtime.GOOS != "linux" {
+		t.Skip("the probe's semantics are Linux's; e2e covers the real thing")
+	}
+	if _, err := exec.LookPath("nc"); err != nil {
+		if _, err := exec.LookPath("socat"); err != nil {
+			t.Skip("no nc or socat on this machine to answer the question with")
+		}
+	}
+
+	// A short path: a unix socket has about a hundred bytes to play with.
+	dir, err := os.MkdirTemp("", "sk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socketPath := filepath.Join(dir, "d.sock")
+
+	ask := func() string {
+		out, err := exec.Command("sh", "-c", socketInUseScript(socketPath)).Output()
+		if err != nil {
+			t.Fatalf("running the probe: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	if got := ask(); got != "free" {
+		t.Errorf("a path with no socket answered %q", got)
+	}
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listening: %v", err)
+	}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	if got := ask(); got != "busy" {
+		t.Errorf("a socket with a listener behind it answered %q, which puts the takeover back", got)
+	}
+
+	// A crashed session leaves the file behind, and that one must still be
+	// clearable or it locks you out of your own box.
+	_ = listener.Close()
+	_ = os.Remove(socketPath)
+	if got := ask(); got != "free" {
+		t.Errorf("a socket whose listener has gone answered %q", got)
+	}
+}
+
+// The answer is read strictly: a box that cannot run the probe says so rather
+// than guessing "nobody is there", which would put the takeover back silently.
+func TestAnUnanswerableProbeIsAnErrorNotAFalseNegative(t *testing.T) {
+	if _, err := readSocketInUse("unknown\n"); err == nil {
+		t.Error("a box with no nc or socat was read as a free socket")
+	}
+	if inUse, err := readSocketInUse("busy\n"); err != nil || !inUse {
+		t.Errorf("busy = %v, %v", inUse, err)
+	}
+	if inUse, err := readSocketInUse("free\n"); err != nil || inUse {
+		t.Errorf("free = %v, %v", inUse, err)
 	}
 }

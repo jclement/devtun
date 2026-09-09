@@ -201,6 +201,22 @@ func OpenDefault() *Store {
 // "never this vault from this box" and instead says nothing has failed open,
 // and silence is exactly how nobody notices. Callers about to act on rules ask
 // here first and refuse rather than proceed on a partial policy.
+// LoadHost reads a host's file now rather than on first use.
+//
+// Host files load lazily, and Err() can only report what has been read — so a
+// caller that checks Err() before touching a host is checking the global file
+// and nothing else. A malformed hosts/bedev.yaml then reads as an empty one,
+// its deny rules and hide ranges silently gone, and devtun carries on with
+// wider access than the file asked for. That is precisely the failure Err()
+// exists to prevent, arriving through the door Err() was not watching.
+//
+// Call this for the host you are about to act on, then Err().
+func (s *Store) LoadHost(label string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = s.host(label)
+}
+
 func (s *Store) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -303,6 +319,12 @@ func (s *Store) SetEnabled(label, serviceID string, enabled bool) {
 	}
 	h.Services[serviceID] = ServiceState{Enabled: &enabled}
 	s.dirty[label] = true
+	s.mu.Unlock()
+
+	// Durable now, for the same reason Section.Set is: a decision the
+	// interface says is remembered has to be remembered across a kill.
+	_ = s.Save()
+	s.mu.Lock()
 }
 
 // Where the Config tab addresses a setting: a section and a key, read and
@@ -578,17 +600,28 @@ func (c *Section) Set(key string, v any) error {
 	}
 
 	c.store.mu.Lock()
-	defer c.store.mu.Unlock()
-
 	if c.label == "" {
 		store(&c.store.global.Data, c.service, key, node)
 		c.store.dirty[globalKey] = true
-		return nil
+	} else {
+		h := c.store.host(c.label)
+		store(&h.Data, c.service, key, node)
+		c.store.dirty[c.label] = true
 	}
-	h := c.store.host(c.label)
-	store(&h.Data, c.service, key, node)
-	c.store.dirty[c.label] = true
-	return nil
+	c.store.mu.Unlock()
+
+	// Written now, not on exit.
+	//
+	// This used to mark the file dirty and leave it, on the theory that a busy
+	// tunnel table would otherwise rewrite YAML every couple of seconds. That
+	// does not happen — every caller is a human action: hiding a port, naming
+	// one, answering a prompt, toggling a service. What did happen is that a
+	// `Never` written at 10am was still only in memory at 6pm, and a session
+	// killed rather than quit lost it. A deny rule the user believes is
+	// protecting them has to survive `kill -9`, a flat battery, and a laptop
+	// that never wakes up; "we would have written it on the way out" is not a
+	// promise worth making about a refusal.
+	return c.store.Save()
 }
 
 // globalKey is the dirty-map entry standing for the global file. A host may

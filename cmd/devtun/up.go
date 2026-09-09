@@ -77,6 +77,8 @@ type upFlags struct {
 
 	// gate overrides whether gated services ask before acting, for this run.
 	gate string
+	// takeOver displaces another devtun already attached to the host.
+	takeOver bool
 	// web, when set, serves the board over HTTP as well. "on" picks a port.
 	web string
 	// webOpen opens that page in a browser once it is listening.
@@ -150,6 +152,7 @@ func (f *upFlags) register(cmd *cobra.Command) {
 	// of both.
 	fl.BoolVar(&f.webOpen, "web-open", true, "open the web board in your browser when it starts")
 	fl.BoolVar(&f.noInstall, "no-install", false, "never upload the remote helper")
+	fl.BoolVar(&f.takeOver, "take-over", false, "displace another devtun already attached to this host")
 	fl.StringSliceVar(&f.only, "only", nil, "run only these services, e.g. tunnels,browser")
 }
 
@@ -189,6 +192,11 @@ func runUp(ctx context.Context, f upFlags) error {
 	// A configuration file that would not parse read as empty. For a sort
 	// order that is fine; for a file that may have carried deny rules it is
 	// failing open, so stop rather than run on a policy we cannot vouch for.
+	// Read the host's own file before the gate below. Host files load lazily,
+	// so a check that ran first would be looking only at the global one — and
+	// a malformed hosts/<host>.yaml would read as empty, taking its deny rules
+	// with it, which is the exact failure the gate exists to prevent.
+	store.LoadHost(dest.Label())
 	if err := store.Err(); err != nil {
 		return fmt.Errorf("refusing to start on a configuration devtun cannot read: %w", err)
 	}
@@ -235,6 +243,7 @@ func runUp(ctx context.Context, f upFlags) error {
 		Config:      store,
 		Reconnect:   !f.noReconnect,
 		AutoInstall: !f.noInstall,
+		TakeOver:    f.takeOver,
 		ShimBinary:  f.shimBinary,
 		// A helper for the remote's platform is downloaded from this build's
 		// own release when there is no other way to get one — which is the
@@ -302,6 +311,11 @@ func serveWeb(
 		addr = defaultWebAddr
 	}
 	server, err := web.New(web.Options{
+		// An address named on the command line is honoured or reported; only
+		// the default one gives way to a free port. This was written, promised
+		// in the README, and never actually passed — so a named port moved
+		// silently, which is the one thing it was supposed not to do.
+		FixedAddr: addr != defaultWebAddr,
 		Addr:      addr,
 		Host:      label,
 		Version:   buildinfo.Version(),
@@ -535,7 +549,15 @@ func buildServices(
 		desk.SetPrompter(prompter)
 		prompter = desk
 	}
-	rules, err := globalRules(store)
+	opRules, err := globalRules(store, "1password")
+	if err != nil {
+		return nil, nil, err
+	}
+	agentRules, err := globalRules(store, "ssh-agent")
+	if err != nil {
+		return nil, nil, err
+	}
+	browserRules, err := globalRules(store, "browser")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -544,7 +566,7 @@ func buildServices(
 		return nil, nil, err
 	}
 	opSvc := onepassword.New(onepassword.Options{
-		Rules:         rules,
+		Rules:         opRules,
 		Accounts:      accounts,
 		DefaultTTL:    f.ttl,
 		PromptTimeout: f.promptTimeout,
@@ -559,7 +581,7 @@ func buildServices(
 	// the odd service out and defaulting to off would not add safety, it would
 	// only add a flag to discover after `git push` has already failed.
 	agentSvc := sshagent.New(sshagent.Options{
-		Rules:         rules,
+		Rules:         agentRules,
 		DefaultTTL:    f.ttl,
 		PromptTimeout: f.promptTimeout,
 		AuthSock:      f.authSock,
@@ -581,7 +603,7 @@ func buildServices(
 		Tunnels:       tunnelSvc,
 		Open:          ui.OpenURL,
 		Bind:          f.bind,
-		Rules:         rules,
+		Rules:         browserRules,
 		DefaultTTL:    f.ttl,
 		PromptTimeout: f.promptTimeout,
 		Prompter:      prompter,
@@ -749,10 +771,19 @@ func cacheTTL(f upFlags) time.Duration {
 // A failure here is reported rather than swallowed: rules include denies, so
 // carrying on without them would silently widen access, which is the one
 // direction a config error must never fail in.
-func globalRules(store *hostcfg.Store) ([]authz.Rule, error) {
+// globalRules reads one service's global rules.
+//
+// One service's. This used to read the 1Password section once and hand the same
+// slice to all three brokers, which was wrong in both directions and quietly
+// so: a global `1password: rules: [{subject: "**", action: deny}]` — the very
+// shape the README recommends — also refused every SSH signature and every
+// browser open, while `ssh-agent:` and `browser:` rules written in the global
+// file were read by nobody. The Access tab then labelled all of it as though
+// each broker had its own.
+func globalRules(store *hostcfg.Store, serviceID string) ([]authz.Rule, error) {
 	var rules []authz.Rule
-	if _, err := store.GlobalFor("1password").Get("rules", &rules); err != nil {
-		return nil, fmt.Errorf("reading global 1Password rules: %w", err)
+	if _, err := store.GlobalFor(serviceID).Get("rules", &rules); err != nil {
+		return nil, fmt.Errorf("reading the global %s rules: %w", serviceID, err)
 	}
 	return rules, nil
 }

@@ -534,7 +534,7 @@ func (m *Model) handleConfigKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return m.armConfigLevel(), true
 	case "left", "h":
 		return m.stepConfig(-1), true
-	case "right", "l", " ", "enter":
+	case "right", "l", "space", "enter":
 		return m.stepConfig(1), true
 	}
 	return nil, false
@@ -770,10 +770,10 @@ func (m *Model) configLine(r cfgRow, selected bool) string {
 		ui.Muted.Render(pad(level.String(), cfgLevelWidth)) +
 		ui.Muted.Render(help)
 
-	line = clampWidth(line, m.inner())
+	line = clampWidth(line, m.listWidth())
 	if selected {
-		if w := ansi.StringWidth(line); w < m.inner() {
-			line += strings.Repeat(" ", m.inner()-w)
+		if w := ansi.StringWidth(line); w < m.listWidth() {
+			line += strings.Repeat(" ", m.listWidth()-w)
 		}
 		return ui.Selected.Reverse(true).Render(ansi.Strip(line))
 	}

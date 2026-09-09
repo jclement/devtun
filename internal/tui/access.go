@@ -128,10 +128,10 @@ func (m *Model) accessLine(r accessRow, selected bool) string {
 		line += ui.Muted.Render("  · from your config")
 	}
 
-	line = clampWidth(line, m.inner())
+	line = clampWidth(line, m.listWidth())
 	if selected {
-		if w := ansi.StringWidth(line); w < m.inner() {
-			line += strings.Repeat(" ", m.inner()-w)
+		if w := ansi.StringWidth(line); w < m.listWidth() {
+			line += strings.Repeat(" ", m.listWidth()-w)
 		}
 		return ui.Selected.Reverse(true).Render(ansi.Strip(line))
 	}
@@ -165,10 +165,10 @@ func (m *Model) grantLine(g authz.Grant, selected bool) string {
 	line := " " + style.Render(pad(label, 6)) + "  " + ui.Muted.Render(pad(g.Host, 14)) + "  " + subject
 	line += "  " + left
 
-	line = clampWidth(line, m.inner())
+	line = clampWidth(line, m.listWidth())
 	if selected {
-		if w := ansi.StringWidth(line); w < m.inner() {
-			line += strings.Repeat(" ", m.inner()-w)
+		if w := ansi.StringWidth(line); w < m.listWidth() {
+			line += strings.Repeat(" ", m.listWidth()-w)
 		}
 		return ui.Selected.Reverse(true).Render(ansi.Strip(line))
 	}

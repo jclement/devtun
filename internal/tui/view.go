@@ -726,6 +726,16 @@ func overlayCenter(base, box string, width, height int) string {
 	return strings.Join(baseLines, "\n")
 }
 
+// listWidth is how wide a row in a scrolling list may be: the frame's inside,
+// less the cell the scroll track occupies.
+//
+// Every tab has to use it. The four that padded a selected row to the full
+// inner width had that last cell clamped away again by the track, which added
+// an ellipsis — so every selected row on Activity, Access, Services and Config
+// ended in a "…" that meant nothing had been cut. On the Access tab that reads
+// as "there is more to this rule", which is the worst possible place for it.
+func (m *Model) listWidth() int { return max(m.inner()-1, 1) }
+
 // boxOf renders an overlay panel, clamped so it can never be wider than the
 // frame it sits on.
 func (m *Model) boxOf(body string) string {

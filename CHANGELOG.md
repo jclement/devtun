@@ -3,6 +3,54 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+Two independent reviews — one reading the code and running the interface, one
+reading only the code — found these. Each was reproduced before it was fixed.
+
+### Fixed
+
+- **A malformed host file read as an empty one.** Host files load lazily and
+  `Err()` reports only what has been read, so the refusal gate at startup was
+  looking at the global file alone. A broken `hosts/<host>.yaml` therefore lost
+  its deny rules and hide ranges in silence and devtun carried on with wider
+  access than the file asked for — the exact failure that gate exists to
+  prevent, arriving through the door it was not watching. `doctor` had the same
+  blind spot.
+- **Every broker was given 1Password's global rules.** One slice was read from
+  the `1password:` section and handed to all three, so a global 1Password deny —
+  the shape the README recommends — also refused every SSH signature and every
+  browser open, while `ssh-agent:` and `browser:` rules written in the global
+  file were read by nobody. Each broker now reads its own section.
+- **Nothing you decided was on disk until a clean exit.** `x` to hide, a service
+  toggle, and — worst — a `Never` deny rule only marked the file dirty and
+  waited for the process to quit tidily. A refusal you believe is protecting you
+  has to survive `kill -9`. Writes are durable now; the fear the old comment
+  recorded (a busy port table rewriting YAML every two seconds) does not happen,
+  because every writer is a human action.
+- **A second devtun on one box silently broke the first.** The newcomer took the
+  socket over and the first session kept running — still calling itself
+  connected, its services still listed as ready — while sshd routed nothing to
+  it ever again. It now refuses, with `--take-over` for a first session that has
+  gone away without releasing the socket. The probe reads `/proc/net/unix`,
+  which every Linux box has: the first version asked `nc` and then `socat`, the
+  test container has neither, and "cannot tell" was being read as "go ahead".
+- **`space` did nothing**, anywhere it was advertised — open in browser, step a
+  Config value, answer an approval. Bubble Tea reports a space press as the key
+  named `space`, and every handler matched the literal `" "`.
+- **`--web <address>` was silently moved** when the port was busy. The flag that
+  distinguishes a named address from the default one was written, promised in
+  the README, and never actually passed.
+- **The `?` help was garbled at 100 columns and wider**: the key column was
+  padded to exactly the width of its widest entry, so `tab, ← →, 1-5` ran into
+  `switch tab`, and long descriptions overran into the right-hand column.
+- **Every selected row on Activity, Access, Services and Config ended in a `…`**
+  that meant nothing had been cut. They padded to the full frame width and the
+  scroll track then clamped that last cell away. On the Access tab it read as
+  "there is more to this rule".
+- **The web board still said it could not approve**, on the same screen as the
+  approval dialog it can answer.
+
 ## v0.1.14
 
 ### Changed
