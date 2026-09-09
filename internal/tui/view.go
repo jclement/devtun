@@ -556,7 +556,8 @@ func (m *Model) keyBar() string {
 	case tabConfig:
 		keys = append(keys, [2]string{"←→", "change"}, [2]string{"g", "where"}, [2]string{"enter", "edit"})
 	default:
-		keys = append(keys, [2]string{"x", "hide"}, [2]string{"b", "browser"}, [2]string{"enter", "detail"})
+		keys = append(keys, [2]string{"x", "hide"}, [2]string{"n", "name"},
+			[2]string{"b", "browser"}, [2]string{"enter", "detail"})
 	}
 	// Not on the Config tab, where `c` is where you already are.
 	if m.tab != tabConfig {

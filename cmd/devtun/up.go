@@ -407,6 +407,14 @@ func (a webTunnelAdapter) SetScheme(port int, scheme tunnels.Scheme) tunnels.Sch
 	return scheme
 }
 
+func (a webTunnelAdapter) SetLabel(port int, label string) error {
+	mgr := a.svc.Manager()
+	if mgr == nil {
+		return errors.New("no connection yet")
+	}
+	return mgr.SetLabel(port, label)
+}
+
 func (a webTunnelAdapter) Hidden() int {
 	if mgr := a.svc.Manager(); mgr != nil {
 		return mgr.Hidden()

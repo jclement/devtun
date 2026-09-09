@@ -96,6 +96,7 @@ type Tunnels interface {
 	States() []tunnels.State
 	SetMode(remotePort int, mode tunnels.Mode) tunnels.Mode
 	SetScheme(remotePort int, scheme tunnels.Scheme) tunnels.Scheme
+	SetLabel(remotePort int, label string) error
 	Hidden() int
 	ViewPrefs() tunnels.ViewPrefs
 	SetViewPrefs(tunnels.ViewPrefs)
@@ -278,6 +279,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/events", s.guard(s.handleEvents))
 	s.mux.HandleFunc("POST /api/ports/{port}/mode", s.guard(s.handlePortMode))
 	s.mux.HandleFunc("POST /api/ports/{port}/scheme", s.guard(s.handlePortScheme))
+	s.mux.HandleFunc("POST /api/ports/{port}/label", s.guard(s.handlePortLabel))
 	s.mux.HandleFunc("POST /api/rules/revoke", s.guard(s.handleRevokeRule))
 	s.mux.HandleFunc("POST /api/grants/revoke", s.guard(s.handleRevokeGrant))
 	s.mux.HandleFunc("POST /api/reconnect", s.guard(s.handleReconnect))
@@ -673,6 +675,35 @@ func (s *Server) handlePortScheme(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"scheme": string(s.opts.Tunnels.SetScheme(port, scheme))})
+}
+
+// handlePortLabel names a port, or clears the name when the value is empty.
+//
+// The board is the place you interact from under `--web`, so a thing you can
+// do at the table and not here is a hole rather than a nicety — and a name is
+// the one piece of a port's identity that comes from you rather than from the
+// box.
+func (s *Server) handlePortLabel(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Tunnels == nil {
+		http.Error(w, "no tunnels service", http.StatusServiceUnavailable)
+		return
+	}
+	port, ok := portParam(w, r)
+	if !ok {
+		return
+	}
+	label := r.URL.Query().Get("label")
+	// Long enough for a sentence, short enough that it cannot push the rest of
+	// the row off a terminal. The manager collapses whitespace itself.
+	if len(label) > 64 {
+		http.Error(w, "a name has to fit in the table — 64 characters at most", http.StatusBadRequest)
+		return
+	}
+	if err := s.opts.Tunnels.SetLabel(port, label); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]string{"label": label})
 }
 
 func (s *Server) handleShowHidden(w http.ResponseWriter, r *http.Request) {

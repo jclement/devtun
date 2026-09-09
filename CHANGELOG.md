@@ -3,6 +3,25 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Added
+
+- **You can name a port from the web board.** Naming has always been in the
+  table (`n`) and remembered per host, but the board could only show a name,
+  never set one — which was a hole rather than a missing nicety once `--web`
+  made the board the surface you interact from.
+
+### Fixed
+
+- **The board showed a port's name *instead of* its process; the table shows
+  both.** So naming a port on the board hid what was actually running on it,
+  and the two surfaces disagreed about the same row. Both now read
+  `frontend · node vite`: what you called it and what is running are different
+  facts, and you usually want both.
+- **`n` was missing from the key bar**, so naming a port was reachable only
+  through `?` or the palette — which is to say, only if you already knew.
+
 ## v0.1.15
 
 Two independent reviews — one reading the code and running the interface, one

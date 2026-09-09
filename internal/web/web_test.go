@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,7 @@ const token = "test-token"
 type fakeTunnels struct {
 	states []tunnels.State
 	modes  map[int]tunnels.Mode
+	labels map[int]string
 	prefs  tunnels.ViewPrefs
 }
 
@@ -44,9 +46,20 @@ func (f *fakeTunnels) SetMode(port int, mode tunnels.Mode) tunnels.Mode {
 }
 
 func (f *fakeTunnels) SetScheme(_ int, scheme tunnels.Scheme) tunnels.Scheme { return scheme }
-func (f *fakeTunnels) Hidden() int                                           { return len(f.modes) }
-func (f *fakeTunnels) ViewPrefs() tunnels.ViewPrefs                          { return f.prefs }
-func (f *fakeTunnels) SetViewPrefs(p tunnels.ViewPrefs)                      { f.prefs = p }
+
+func (f *fakeTunnels) SetLabel(port int, label string) error {
+	if f.labels == nil {
+		f.labels = map[int]string{}
+	}
+	if port == 9999 {
+		return errors.New("remote port 9999 is not listed")
+	}
+	f.labels[port] = label
+	return nil
+}
+func (f *fakeTunnels) Hidden() int                      { return len(f.modes) }
+func (f *fakeTunnels) ViewPrefs() tunnels.ViewPrefs     { return f.prefs }
+func (f *fakeTunnels) SetViewPrefs(p tunnels.ViewPrefs) { f.prefs = p }
 
 // fakeBroker is a gated service with rules and grants to list.
 type fakeBroker struct {
@@ -540,6 +553,7 @@ func TestThePageCallsNothingItIsNotAllowedTo(t *testing.T) {
 		"/api/reconnect":     true,
 		"/api/hidden":        true,
 		"/api/approve":       true,
+		"/api/ports/*/label": true,
 	}
 
 	// A template hole stands in for whatever the page interpolates, so the
@@ -797,5 +811,38 @@ func TestTheDefaultPortGivesWayButANamedOneDoesNot(t *testing.T) {
 	named := newTestServer(t, Options{Addr: taken, FixedAddr: true})
 	if err := named.Run(context.Background()); err == nil {
 		t.Error("an address the user named was silently moved")
+	}
+}
+
+// Naming a port is a thing you can do at the table, and under `--web` — where
+// the board is the surface rather than a second view — being unable to do it
+// here was a hole rather than a missing nicety.
+func TestTheBoardCanNameAPort(t *testing.T) {
+	ports := newFakeTunnels(tunnels.State{RemotePort: 3000, LocalPort: 3000, Proc: "node"})
+	s := newTestServer(t, Options{Tunnels: ports})
+
+	if got := ask(t, s, http.MethodPost, "/api/ports/3000/label?label=frontend"); got.Code != http.StatusOK {
+		t.Fatalf("naming a port = %d: %s", got.Code, got.Body)
+	}
+	if ports.labels[3000] != "frontend" {
+		t.Errorf("the name did not reach the service: %+v", ports.labels)
+	}
+
+	// Blank clears it, which is how you take a name back.
+	if got := ask(t, s, http.MethodPost, "/api/ports/3000/label?label="); got.Code != http.StatusOK {
+		t.Fatalf("clearing a name = %d", got.Code)
+	}
+	if ports.labels[3000] != "" {
+		t.Errorf("the name was not cleared: %q", ports.labels[3000])
+	}
+
+	// A name that would push the rest of the row off the screen is refused,
+	// and so is a port that is not there.
+	long := "/api/ports/3000/label?label=" + strings.Repeat("x", 65)
+	if got := ask(t, s, http.MethodPost, long); got.Code != http.StatusBadRequest {
+		t.Errorf("an over-long name = %d, want 400", got.Code)
+	}
+	if got := ask(t, s, http.MethodPost, "/api/ports/9999/label?label=x"); got.Code != http.StatusConflict {
+		t.Errorf("naming a port that is not listed = %d, want 409", got.Code)
 	}
 }

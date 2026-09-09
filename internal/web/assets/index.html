@@ -149,6 +149,12 @@
   .ask .answers button.no:hover, .ask .answers button.no:focus-visible {
     border-color: var(--err); color: var(--err);
   }
+  .proc .label { color: var(--net); font-weight: 600; }
+  /* The rename control stays out of the way until the row is pointed at:
+     naming a port is a rare, deliberate thing and a button on every row would
+     compete with the numbers, which are what the table is for. */
+  .rename { margin-left: .5rem; font-size: .7rem; padding: 0 .3rem; opacity: 0; }
+  tr:hover .rename, .rename:focus-visible { opacity: 1; }
   .ask .how { margin-top: .8rem; font-size: .78rem; color: var(--muted); }
   @media (prefers-reduced-motion: no-preference) {
     .ask { animation: ask-in .16s ease-out; }
@@ -374,8 +380,18 @@ function renderPorts(state) {
 
     const proc = document.createElement("td");
     proc.className = "proc";
-    const name = port.label || port.proc;
+    // A name you gave sits *beside* what is actually running, not instead of
+    // it — which is what the table in the terminal does, and the two must not
+    // disagree about the same row. The board used to substitute one for the
+    // other, so naming a port hid the process it was for.
     const command = port.cmd && port.cmd !== "?" ? port.cmd : "";
+    const name = port.proc;
+    if (port.label) {
+      const label = document.createElement("b");
+      label.className = "label";
+      label.textContent = port.label;
+      proc.append(label, document.createTextNode(" · "));
+    }
     if (name) {
       proc.append(document.createTextNode(name));
       // ps reports the process as `node` and the command line as `node …`, so
@@ -394,6 +410,19 @@ function renderPorts(state) {
       proc.classList.add("muted");
     }
     proc.title = command || name || "";
+
+    // Naming is a thing you can do at the table and could not do here, which
+    // under `--web` — where the board is the surface — made it unreachable.
+    const rename = document.createElement("button");
+    rename.className = "rename";
+    rename.textContent = port.label ? "rename" : "name";
+    rename.title = "give this port a name, remembered for " + (document.getElementById("host").textContent || "this host");
+    rename.onclick = () => {
+      const given = prompt("A name for remote port " + port.remote + " — blank clears it", port.label ?? "");
+      if (given === null) return;
+      act(`/api/ports/${port.remote}/label?label=${encodeURIComponent(given.trim())}`);
+    };
+    proc.append(rename);
     if (hidden) proc.append(tag("hidden", "you hid this port; devtun does not forward it"));
     else if (port.status !== "active") proc.append(tag(port.skip || port.status));
     tr.append(proc);
