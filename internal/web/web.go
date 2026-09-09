@@ -575,7 +575,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 
 	brokers := s.brokers()
 	payload.Gated = len(brokers) > 0
-	for id, broker := range brokers {
+	for _, gated := range brokers {
+		id, broker := gated.id, gated.broker
 		for i, rule := range broker.Rules() {
 			payload.Rules = append(payload.Rules, ruleView{
 				Source: id, Index: i, Host: rule.Host, Subject: rule.Subject,
@@ -621,14 +622,38 @@ func (s *Server) portView(state tunnels.State) portView {
 // brokers finds the gated services by interface, in registry order — the same
 // rule the interface's Access tab follows, so the two cannot disagree about
 // what is deciding.
-func (s *Server) brokers() map[string]Broker {
-	out := map[string]Broker{}
+// brokers are the services that gate something, in registry order.
+//
+// A slice rather than a map, and that is the whole point: this used to return
+// a map and the caller ranged over it, so Go's randomised iteration reordered
+// the rules and grants on every two-second poll. A list that will not hold
+// still is one you cannot read, and worse, one where the row under your cursor
+// is not the row you are about to click. The interface walks a slice and never
+// had this.
+func (s *Server) brokers() []gatedService {
+	var out []gatedService
 	for _, svc := range s.opts.Services {
 		if broker, ok := svc.(Broker); ok {
-			out[svc.Meta().ID] = broker
+			out = append(out, gatedService{id: svc.Meta().ID, broker: broker})
 		}
 	}
 	return out
+}
+
+// gatedService pairs a broker with the id its rules are addressed by.
+type gatedService struct {
+	id     string
+	broker Broker
+}
+
+// brokerNamed finds one by id, for a request that names the source of a rule.
+func (s *Server) brokerNamed(id string) (Broker, bool) {
+	for _, g := range s.brokers() {
+		if g.id == id {
+			return g.broker, true
+		}
+	}
+	return nil, false
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -931,8 +956,8 @@ func (s *Server) handleForget(w http.ResponseWriter, _ *http.Request) {
 // forgetAll sweeps the brokers and reports what it took, in the same two
 // numbers the interface shows.
 func (s *Server) forgetAll() (grants, cached int) {
-	for _, broker := range s.brokers() {
-		switch b := broker.(type) {
+	for _, gated := range s.brokers() {
+		switch b := gated.broker.(type) {
 		case Forgetter:
 			g, c := b.Forget()
 			grants, cached = grants+g, cached+c
@@ -1044,7 +1069,7 @@ func (s *Server) handleReconnect(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) brokerParam(w http.ResponseWriter, r *http.Request) (Broker, bool) {
-	broker, ok := s.brokers()[r.URL.Query().Get("source")]
+	broker, ok := s.brokerNamed(r.URL.Query().Get("source"))
 	if !ok {
 		http.Error(w, "no such service", http.StatusNotFound)
 		return nil, false

@@ -56,6 +56,25 @@
   .dot.connecting, .dot.reconnecting { background: var(--warn); }
   .dot.disconnected, .dot.stopped, .dot.gone { background: var(--err); }
   .grow { flex: 1; }
+  /* The tab bar. Under the header rather than beside it, because the header is
+     about the connection — which host, whether it is up — and that stays true
+     whichever tab you are on. */
+  nav#tabs {
+    display: flex; gap: .25rem; padding: 0 1rem; flex-wrap: wrap;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  nav#tabs button {
+    border: none; border-bottom: 2px solid transparent; border-radius: 0;
+    padding: .5rem .7rem; color: var(--muted); font-size: .8rem;
+    text-transform: uppercase; letter-spacing: .08em;
+  }
+  nav#tabs button:hover { color: var(--text); border-bottom-color: var(--line); }
+  nav#tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--net); }
+  /* A count on the tab, so putting a panel behind a tab does not mean losing
+     sight of what is on it. The one that matters is a question waiting: that
+     one pulls attention rather than reporting a number. */
+  nav#tabs .count { margin-left: .4rem; font-variant-numeric: tabular-nums; opacity: .7; }
+  nav#tabs .count.urgent { color: var(--err); opacity: 1; font-weight: 600; }
   .muted { color: var(--muted); }
   main { padding: 1rem; display: grid; gap: 1rem; max-width: 1100px; }
   section { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; }
@@ -226,10 +245,15 @@
   <button id="reconnect" title="drop the connection and dial the box again">reconnect</button>
 </header>
 
+<!-- The same five the interface has, in the same order and under the same
+     names. Two surfaces onto one session should not need to be learned twice,
+     and the board had grown into six panels down a single scroll. -->
+<nav id="tabs" role="tablist"></nav>
+
 <div class="banner bad" id="offline" role="status" hidden></div>
 
 <main>
-  <section>
+  <section data-tab="Tunnels">
     <h2>
       Ports <span class="muted" id="ports-count"></span>
       <span class="grow"></span>
@@ -250,13 +274,13 @@
     <p class="empty" id="ports-empty">nothing forwarded yet</p>
   </section>
 
-  <section>
+  <section data-tab="Services">
     <h2>Services <span class="muted" id="services-count"></span></h2>
     <p class="what">what devtun layers onto this connection — switching one takes effect on the next connection</p>
     <div class="scroll"><table><tbody id="services-list"></tbody></table></div>
   </section>
 
-  <section>
+  <section data-tab="Access">
     <h2>
       Grants <span class="muted" id="grants-count"></span>
       <span class="grow"></span>
@@ -267,14 +291,14 @@
     <p class="empty" id="grants-empty">nothing is granted right now</p>
   </section>
 
-  <section>
+  <section data-tab="Access">
     <h2>Rules <span class="muted" id="rules-count"></span></h2>
     <p class="what">written down and remembered — each one keeps deciding, without asking, until it is revoked</p>
     <div class="scroll"><table><tbody id="rules"></tbody></table></div>
     <p class="empty" id="rules-empty">nothing is written down — every request is asked about</p>
   </section>
 
-  <section>
+  <section data-tab="Config">
     <h2>
       Settings
       <span class="grow"></span>
@@ -284,7 +308,7 @@
     <div class="scroll"><table><tbody id="config"></tbody></table></div>
   </section>
 
-  <section>
+  <section data-tab="Activity">
     <h2>
       Activity
       <span class="grow"></span>
@@ -739,7 +763,24 @@ let askShown = null;
 
 // The keyboard, matching the terminal's: a number answers, esc refuses.
 document.addEventListener("keydown", (event) => {
-  if ($("ask").hidden) return;
+  if ($("ask").hidden) {
+    // The same numbers answer an approval when one is up, so tabs only get
+    // them when nothing is waiting — a question on screen is the thing you are
+    // being asked to deal with, and it keeps the keys.
+    if (event.target?.tagName === "INPUT" || event.target?.tagName === "SELECT") return;
+    const n = Number(event.key);
+    if (Number.isInteger(n) && n >= 1 && n <= TABS.length) {
+      event.preventDefault();
+      selectTab(TABS[n - 1]);
+      return;
+    }
+    if (event.key === "[" || event.key === "]") {
+      event.preventDefault();
+      const at = TABS.indexOf(currentTab);
+      selectTab(TABS[(at + (event.key === "]" ? 1 : TABS.length - 1)) % TABS.length]);
+    }
+    return;
+  }
   const buttons = [...$("ask").querySelectorAll(".answers button")];
   if (!buttons.length) return;
 
@@ -831,6 +872,72 @@ function renderHeader(state) {
   document.title = state.host ? `devtun · ${state.host}` : "devtun";
 }
 
+
+// --- tabs -------------------------------------------------------------------
+
+// The same five the interface has, in the same order. Two views of one session
+// should not have to be learned twice — and the board had grown to six panels
+// down one scroll, which is a list, not an interface.
+const TABS = ["Tunnels", "Activity", "Access", "Services", "Config"];
+
+// The chosen tab survives a reload, because the board is a page you leave open
+// on a second monitor and come back to. Per-browser and unimportant, so
+// localStorage — and wrapped, because a private window throws on the way in.
+let currentTab = "Tunnels";
+try {
+  const saved = localStorage.getItem("devtun.tab");
+  if (TABS.includes(saved)) currentTab = saved;
+} catch {}
+
+function buildTabs() {
+  const nav = $("tabs");
+  nav.replaceChildren();
+  for (const name of TABS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "tab");
+    button.dataset.tab = name;
+    const label = document.createElement("span");
+    label.textContent = name;
+    const count = document.createElement("span");
+    count.className = "count";
+    button.append(label, count);
+    button.onclick = () => selectTab(name);
+    nav.append(button);
+  }
+  selectTab(currentTab);
+}
+
+function selectTab(name) {
+  currentTab = name;
+  try { localStorage.setItem("devtun.tab", name); } catch {}
+  for (const button of $("tabs").children) {
+    button.setAttribute("aria-selected", String(button.dataset.tab === name));
+  }
+  for (const section of document.querySelectorAll("main section")) {
+    section.hidden = section.dataset.tab !== name;
+  }
+}
+
+// What each tab has on it, so a panel behind a tab is not a panel out of mind.
+function renderTabCounts(state) {
+  const waiting = (state.waiting ?? []).length;
+  const counts = {
+    Tunnels: (state.ports ?? []).length,
+    Access: (state.grants ?? []).length + (state.rules ?? []).length,
+    Services: (state.services ?? []).length,
+    // A question waiting is not a quantity, it is an interruption — and it is
+    // answered in the modal, not on a tab. It rides on Activity because that
+    // is where the request is logged.
+    Activity: waiting,
+  };
+  for (const button of $("tabs").children) {
+    const el = button.children[1];
+    const n = counts[button.dataset.tab];
+    el.textContent = n ? String(n) : "";
+    el.classList.toggle("urgent", button.dataset.tab === "Activity" && waiting > 0);
+  }
+}
 
 // --- services ---------------------------------------------------------------
 
@@ -1020,6 +1127,7 @@ async function refresh() {
     renderGrants(state);
     renderRules(state);
     renderAsk(state.waiting ?? []);
+    renderTabCounts(state);
     if (Date.now() > noticeUntil) $("offline").hidden = true;
   } catch (err) {
     // The board on screen is now a photograph of the past, and saying so is
@@ -1083,6 +1191,7 @@ $("verbose").onchange = (event) => document.body.classList.toggle("verbose", eve
 // bar, or in a screenshot of it, either.
 if (location.search) history.replaceState(null, "", location.pathname + location.hash);
 
+buildTabs();
 refresh();
 refreshConfig();
 stream();

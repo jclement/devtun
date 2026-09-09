@@ -1223,7 +1223,7 @@ func TestThePageHasNoUndeclaredNames(t *testing.T) {
 		"document": true, "window": true, "navigator": true, "location": true,
 		"console": true, "JSON": true, "Date": true, "Math": true, "Object": true,
 		"Array": true, "Number": true, "String": true, "Map": true, "Set": true,
-		"URL": true, "EventSource": true, "history": true, "AbortController": true, "Intl": true,
+		"URL": true, "EventSource": true, "history": true, "localStorage": true, "sessionStorage": true, "AbortController": true, "Intl": true,
 	}
 
 	// Any `name.method(` where `name` is not itself a property. The leading
@@ -1239,5 +1239,108 @@ func TestThePageHasNoUndeclaredNames(t *testing.T) {
 		}
 		t.Errorf("the page calls a method on %q, which nothing declares — "+
 			"every statement after it in that handler is dead", name)
+	}
+}
+
+// namedBroker is a second gated service, so the order two of them come back in
+// is observable at all. With one broker a map and a slice look identical.
+type namedBroker struct {
+	*fakeBroker
+	id string
+}
+
+func (b *namedBroker) Meta() service.Meta {
+	return service.Meta{ID: b.id, Title: b.id, Short: "another gate"}
+}
+
+// The board polls twice a second. A list whose order changes each time is one
+// you cannot read — and worse, one where the row under your cursor is not the
+// row you are about to click revoke on.
+//
+// This was real, and it was a map: brokers() returned one and the caller ranged
+// over it, so Go's randomised iteration reshuffled every rule and grant on
+// every poll. The interface walks a slice and never had it — the same class of
+// divergence as the rest of this file.
+func TestRulesAndGrantsComeBackInTheSameOrderEveryTime(t *testing.T) {
+	rule := func(subject string) authz.Rule {
+		return authz.Rule{Host: "bedev", Subject: subject, Action: authz.ActionAllow}
+	}
+	grant := func(subject string) authz.Grant {
+		return authz.Grant{Host: "bedev", Subject: subject, Action: authz.ActionAllow}
+	}
+	first := &fakeBroker{
+		rules:  []authz.Rule{rule("op://A/one"), rule("op://A/two")},
+		grants: []authz.Grant{grant("op://A/one")},
+	}
+	second := &namedBroker{id: "ssh-agent", fakeBroker: &fakeBroker{
+		rules:  []authz.Rule{rule("SHA256:aaa"), rule("SHA256:bbb")},
+		grants: []authz.Grant{grant("SHA256:aaa")},
+	}}
+	s := newTestServer(t, Options{Services: []service.Service{first, second}})
+
+	key := func(payload statePayload) string {
+		var out []string
+		for _, r := range payload.Rules {
+			out = append(out, r.Source+":"+r.Subject)
+		}
+		out = append(out, "|")
+		for _, g := range payload.Grants {
+			out = append(out, g.Source+":"+g.Subject)
+		}
+		return strings.Join(out, ",")
+	}
+
+	// Enough polls that a shuffle of two brokers is overwhelmingly likely to
+	// show up: a map with two keys reorders about half the time.
+	want := key(stateOf(t, s))
+	for range 40 {
+		if got := key(stateOf(t, s)); got != want {
+			t.Fatalf("the board reordered itself between polls:\n  %s\n  %s", want, got)
+		}
+	}
+
+	// And the order is the registry's, not something incidental — the same
+	// order the interface lists them in.
+	if len(want) == 0 || !strings.HasPrefix(want, "1password:") {
+		t.Errorf("the list does not start with the first registered service: %s", want)
+	}
+}
+
+// Every panel belongs to a tab, and every tab is one the interface has.
+//
+// The board was six panels down one scroll, which is a list rather than an
+// interface. Behind tabs, a panel with no tab is a panel nothing can reach —
+// invisible rather than merely buried — so this is worth a test where the
+// scrolling version needed none.
+func TestEveryPanelIsOnATabTheInterfaceAlsoHas(t *testing.T) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same five, in the same order, as internal/tui's tabTitles.
+	tabs := map[string]bool{
+		"Tunnels": true, "Activity": true, "Access": true, "Services": true, "Config": true,
+	}
+
+	sections := regexp.MustCompile(`<section([^>]*)>`).FindAllStringSubmatch(string(page), -1)
+	if len(sections) == 0 {
+		t.Fatal("the page has no panels at all")
+	}
+	seen := map[string]bool{}
+	for _, section := range sections {
+		m := regexp.MustCompile(`data-tab="([^"]*)"`).FindStringSubmatch(section[1])
+		if m == nil {
+			t.Errorf("a panel has no data-tab, so no tab shows it: <section%s>", section[1])
+			continue
+		}
+		if !tabs[m[1]] {
+			t.Errorf("a panel is on tab %q, which is not one of the five", m[1])
+		}
+		seen[m[1]] = true
+	}
+	for name := range tabs {
+		if !seen[name] {
+			t.Errorf("the %s tab has no panel on it, so selecting it shows an empty page", name)
+		}
 	}
 }

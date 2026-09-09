@@ -3,6 +3,25 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Changed
+
+- **The board has tabs** — the same five the interface does, in the same order
+  and under the same names. It had grown to six panels down one scroll, which
+  is a list rather than an interface, and the Services and Settings screens I
+  had just added made it worse. `1`–`5` select, `[` and `]` step, and the tab
+  you were on survives a reload. Counts ride on each tab so a panel behind one
+  is not a panel out of mind; a waiting approval turns red.
+
+### Fixed
+
+- **Rules and grants reshuffled on every poll.** They were collected by ranging
+  over a map, and Go randomises that — so the list reordered itself twice a
+  second. A list that will not hold still is one you cannot read, and worse,
+  one where the row under your cursor is not the row you are about to click
+  revoke on. The interface walks a slice and never had it.
+
 ## v0.1.17
 
 ### Fixed
