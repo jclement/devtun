@@ -5,6 +5,22 @@ this is 0.x, a minor bump may break something.
 
 ## Unreleased
 
+### Fixed
+
+- **The SSH agent refused every signature unless the interface was running.**
+  `git push` to anything that authenticates with a forwarded key failed with
+  "no interactive terminal available to approve this request" — in log mode and
+  under `--web`, with a browser open in front of you that was perfectly able to
+  answer.
+
+  The prompter was handed to each service by name at construction, and the SSH
+  agent was not on that list. `tui.Run` installs one on everything it can, found
+  by interface, precisely because this had happened once before — so the bug was
+  invisible whenever the interface was running, which is the default. There is
+  now one place that installs prompters, it finds services by interface, and a
+  test asserts every gated service *was given* one rather than merely that it
+  *could be*. `devtun doctor` checks it too.
+
 ### Added
 
 - **The board has the two screens it was missing: Services and Settings.**

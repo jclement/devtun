@@ -159,6 +159,11 @@ func askDefault(configured *bool) bool {
 // SetPrompter replaces how approvals are asked for. See authz.Gate.
 func (s *Service) SetPrompter(p prompt.Prompter) { s.gate.SetPrompter(p) }
 
+// CanAsk reports whether an approval has anywhere to go. A service that cannot
+// ask refuses everything, which reads from the outside exactly like a refusal
+// somebody meant.
+func (s *Service) CanAsk() bool { return s.gate.CanAsk() }
+
 // The rules surface the interface's Access tab drives. The browser never sees
 // a secret, so it has nothing cached to purge and reports one number.
 func (s *Service) Rules() []authz.Rule       { return s.gate.Rules() }

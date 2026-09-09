@@ -29,6 +29,11 @@ const rulesKey = "rules"
 type Gate struct {
 	store    *Store
 	prompter prompt.Prompter
+	// canAsk records whether there is anywhere to put a question. The prompter
+	// is never nil — a nil one becomes DenyAll — so by the time anything reads
+	// it, "nobody can be asked" and "everybody says no" are the same object.
+	// They are not the same situation, and only one of them is a bug.
+	canAsk bool
 
 	mu      sync.Mutex
 	adopted bool
@@ -40,8 +45,9 @@ type Gate struct {
 func NewGate(config Config, prompter prompt.Prompter) *Gate {
 	if prompter == nil {
 		prompter = prompt.DenyAll{}
+		return &Gate{store: NewStore(config), prompter: prompt.Serialize(prompter)}
 	}
-	return &Gate{store: NewStore(config), prompter: prompt.Serialize(prompter)}
+	return &Gate{store: NewStore(config), prompter: prompt.Serialize(prompter), canAsk: true}
 }
 
 // SetPrompter replaces how approvals are asked for.
@@ -54,11 +60,21 @@ func NewGate(config Config, prompter prompt.Prompter) *Gate {
 //
 // Call it before the session starts; it is not safe afterwards.
 func (g *Gate) SetPrompter(p prompt.Prompter) {
+	g.canAsk = p != nil
 	if p == nil {
 		p = prompt.DenyAll{}
 	}
 	g.prompter = prompt.Serialize(p)
 }
+
+// CanAsk reports whether this gate has anywhere to put a question.
+//
+// A gate with nowhere to ask refuses everything the policy does not already
+// allow, and from the caller's side that is indistinguishable from a refusal
+// somebody meant. It is what `devtun doctor` checks, and what stops a service
+// being left off the list of things handed a prompter — which has now happened
+// twice.
+func (g *Gate) CanAsk() bool { return g.canAsk }
 
 // Adopt picks up the rules already recorded for this host, once.
 //

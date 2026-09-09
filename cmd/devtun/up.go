@@ -270,7 +270,7 @@ func runUp(ctx context.Context, f upFlags) error {
 	applier := &promptApplier{}
 	if !useTUI {
 		applier.set(func(b prompt.Backend) {
-			installPrompter(b, services, desk)
+			rebuildPrompter(b, services, desk)
 		})
 	}
 
@@ -653,7 +653,6 @@ func buildServices(
 		DefaultTTL:    f.ttl,
 		PromptTimeout: f.promptTimeout,
 		CacheTTL:      cacheTTL(f),
-		Prompter:      prompter,
 		OpPath:        f.opPath,
 	})
 
@@ -688,7 +687,6 @@ func buildServices(
 		Rules:         browserRules,
 		DefaultTTL:    f.ttl,
 		PromptTimeout: f.promptTimeout,
-		Prompter:      prompter,
 		Ask:           gateDefault(f),
 	})
 
@@ -702,7 +700,20 @@ func buildServices(
 	if f.noAgent {
 		all = []service.Service{tunnelSvc, opSvc, gpgSvc, browserSvc}
 	}
-	return filterServices(all, f.only), tunnelSvc, nil
+	services := filterServices(all, f.only)
+
+	// Every service that asks a human gets the prompter here, found by
+	// interface — not handed to each constructor by name.
+	//
+	// It was by name, and the SSH agent was not on the list. Under the
+	// interface that went unnoticed because tui.Run installs one on everything
+	// it can, by interface, for exactly this reason. In log mode and under
+	// --web there was no such loop, so every signature was refused the instant
+	// it was asked for — "no interactive terminal available to approve this
+	// request", with a browser open in front of you that was perfectly able to.
+	installPrompter(prompter, services)
+
+	return services, tunnelSvc, nil
 }
 
 // gateDefault turns --gate into the tri-state the services take: nil means
@@ -894,7 +905,23 @@ func globalAccounts(store *hostcfg.Store, account string) (onepassword.Accounts,
 // it, so every signature was refused in the same instant it was requested. A
 // service built with no prompter refuses by construction, which is the right
 // default and exactly why forgetting to install one is silent.
-func installPrompter(backend prompt.Backend, services []service.Service, desk *approval.Desk) {
+func installPrompter(prompter prompt.Prompter, services []service.Service) {
+	if prompter == nil {
+		// Under the interface the modal does not exist until its program does,
+		// so tui.Run installs one the moment it can. Until then every gated
+		// service refuses by construction, which is the right default.
+		return
+	}
+	for _, svc := range services {
+		if p, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
+			p.SetPrompter(prompter)
+		}
+	}
+}
+
+// rebuildPrompter puts a changed prompt setting into effect without a
+// reconnect, for a session with no interface to own the modal.
+func rebuildPrompter(backend prompt.Backend, services []service.Service, desk *approval.Desk) {
 	prompter, err := buildPrompter(backend, false)
 	if err != nil || prompter == nil {
 		return
@@ -906,11 +933,7 @@ func installPrompter(backend prompt.Backend, services []service.Service, desk *a
 		desk.SetPrompter(prompter)
 		prompter = desk
 	}
-	for _, svc := range services {
-		if p, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
-			p.SetPrompter(prompter)
-		}
-	}
+	installPrompter(prompter, services)
 }
 
 // storeOrNil hands the board a real store or nothing at all.

@@ -102,6 +102,7 @@ func localChecks(ctx context.Context, report *doctor.Report, flags upFlags) {
 
 	doctorApprovals(out, store, flags)
 	doctorAlert(out)
+	doctorEveryGateCanAsk(out, store, flags)
 	doctorOnePassword(ctx, out, flags)
 	doctorAgent(out, flags)
 	doctorBrowser(out)
@@ -153,6 +154,49 @@ func doctorAlert(out *doctor.Section) {
 		return
 	}
 	out.OK("alert", "an approval plays a sound with "+filepath.Base(player))
+}
+
+// doctorEveryGateCanAsk reports whether each gated service would have anywhere
+// to put a question at all.
+//
+// Distinct from doctorApprovals above, which reports WHERE an approval would
+// appear if one were asked for. This is the cruder question underneath it —
+// whether the service was wired to ask anybody — and it is the one that has
+// been wrong.
+//
+// This is the failure that has now shipped twice, and both times it was silent:
+// a service whose prompter was never installed refuses everything, and the
+// refusal is worded exactly like one somebody meant. The second time, `--web`
+// was open in front of the person the whole time — a surface perfectly able to
+// answer, never asked.
+func doctorEveryGateCanAsk(out *doctor.Section, store *hostcfg.Store, flags upFlags) {
+	services, _, err := buildServices(flags, store, promptBackendOf(flags), false, nil)
+	if err != nil {
+		out.Warn("gates", "could not assemble the services to check: "+err.Error(), "")
+		return
+	}
+	var mute []string
+	for _, svc := range services {
+		if asker, ok := svc.(interface{ CanAsk() bool }); ok && !asker.CanAsk() {
+			mute = append(mute, svc.Meta().ID)
+		}
+	}
+	if len(mute) > 0 {
+		out.Fail("gates", strings.Join(mute, ", ")+" would refuse everything without asking",
+			"this is a bug in devtun, not in your setup — please report it")
+		return
+	}
+	out.OK("gates", "every gated service has somewhere to put a question")
+}
+
+// promptBackendOf is what doctor assumes about a run it is not making. The
+// config files are not consulted: this check is about the wiring, and the
+// wiring is the same whichever backend the files name.
+func promptBackendOf(flags upFlags) prompt.Backend {
+	if v := strings.TrimSpace(flags.promptBackend); v != "" {
+		return prompt.Backend(v)
+	}
+	return prompt.BackendAuto
 }
 
 // doctorOnePassword checks the CLI devtun drives on *this* side. The remote box

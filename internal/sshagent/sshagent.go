@@ -119,6 +119,11 @@ func New(opts Options) *Service {
 // Call it before the session starts; it is not safe afterwards.
 func (s *Service) SetPrompter(p prompt.Prompter) { s.gate.SetPrompter(p) }
 
+// CanAsk reports whether an approval has anywhere to go. A service that cannot
+// ask refuses everything, which reads from the outside exactly like a refusal
+// somebody meant.
+func (s *Service) CanAsk() bool { return s.gate.CanAsk() }
+
 // Meta is the service's static identity.
 func (s *Service) Meta() service.Meta {
 	return service.Meta{

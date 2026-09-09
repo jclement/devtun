@@ -257,6 +257,29 @@ func TestTheAssembledRegistry(t *testing.T) {
 		}
 	})
 
+	// The bug that shipped after that one: they *can* be given a prompter, and
+	// only two of them were.
+	//
+	// The prompter was handed to each constructor by name and the SSH agent was
+	// not on the list. Under the interface it went unnoticed, because tui.Run
+	// installs one on everything it can by interface — so this only bit in log
+	// mode and under --web, where every signature was refused the instant it
+	// was asked for, with a browser open in front of you that could have
+	// answered. A count is not enough: the question is whether one arrived.
+	t.Run("every broker was actually given one", func(t *testing.T) {
+		for _, svc := range services {
+			asker, ok := svc.(interface{ CanAsk() bool })
+			if !ok {
+				continue
+			}
+			if !asker.CanAsk() {
+				t.Errorf("%s has nowhere to put a question, so it refuses everything "+
+					"policy does not already allow — and says so as though somebody meant it",
+					svc.Meta().ID)
+			}
+		}
+	})
+
 	t.Run("the tunnels service is returned for the interface to drive", func(t *testing.T) {
 		if tunnelSvc == nil {
 			t.Error("the interface renders its port table from this")
