@@ -242,6 +242,19 @@ func runUp(ctx context.Context, f upFlags) error {
 	desk := approval.New(approval.Options{})
 
 	bus := event.NewBus(historyLimit)
+
+	// A session that degraded to refusing has to say so, and be heard saying
+	// it. Held rather than emitted here: nothing is subscribed to the bus yet,
+	// so an event now goes into the history and is never drawn — which is the
+	// exact failure this warning exists to prevent, applied to itself.
+	var notices []event.Event
+	if !surfaces.Any() && isDefaultSurfaces(promptSetting(f, store, dest.Label())) {
+		notices = append(notices, event.Event{
+			Service: "session", Kind: "prompt", Class: event.Security, Level: event.Warn,
+			Text: "nothing here can ask for an approval — no terminal, no desktop dialog, " +
+				"no --web board. anything not already covered by a rule is refused",
+		})
+	}
 	services, tunnelSvc, err := buildServices(f, store, surfaces, useTUI, desk)
 	if err != nil {
 		return err
@@ -298,6 +311,11 @@ func runUp(ctx context.Context, f upFlags) error {
 	}
 
 	if useTUI {
+		// The interface replays the bus history when it opens, so a notice
+		// emitted before it starts is still on the Activity tab.
+		for _, notice := range notices {
+			bus.Emit(notice)
+		}
 		return tui.Run(ctx, tui.Options{
 			// The board is already running and needs to be able to move where
 			// approvals appear, which only the interface can actually do.
@@ -315,7 +333,7 @@ func runUp(ctx context.Context, f upFlags) error {
 			NoDissolve:       f.noDissolve,
 		})
 	}
-	return runHeadless(ctx, f, sess, bus, dest, webURL)
+	return runHeadless(ctx, f, sess, bus, dest, webURL, notices)
 }
 
 // serveWeb starts the browser interface and returns where it is.
@@ -535,7 +553,10 @@ func wantsTUI(f upFlags, isTTY bool) bool {
 
 // runHeadless is log mode: the events go to a writer and the session owns the
 // process until it is interrupted.
-func runHeadless(ctx context.Context, f upFlags, sess *session.Session, bus *event.Bus, dest *sshx.Destination, webURL string) error {
+func runHeadless(
+	ctx context.Context, f upFlags, sess *session.Session, bus *event.Bus,
+	dest *sshx.Destination, webURL string, notices []event.Event,
+) error {
 	var renderer render.Renderer
 	switch {
 	case f.jsonOut || (!ui.IsTTY() && !f.plain):
@@ -544,6 +565,9 @@ func runHeadless(ctx context.Context, f upFlags, sess *session.Session, bus *eve
 		renderer = render.NewLog(os.Stdout, f.verbose)
 	}
 	bus.Subscribe(renderer.Event)
+	for _, notice := range notices {
+		bus.Emit(notice)
+	}
 
 	if !f.jsonOut {
 		fmt.Fprintln(os.Stderr, ui.Banner.Render("devtun")+" "+ui.Muted.Render("connecting to "+dest.String()+"…"))
@@ -858,11 +882,11 @@ func resolveSurfacesWith(raw string, available func(prompt.Surface) bool) (promp
 		}
 		have = have.Without(surface)
 	}
-	if !have.Any() {
-		return prompt.Surfaces{}, errors.New(
-			"there is nowhere to ask for an approval: no terminal, no desktop dialog, and no --web board.\n" +
-				"run devtun from a terminal, add --web, or use --prompt deny to refuse without asking")
-	}
+	// `all` on a box with nowhere to ask is not an error, it is a headless
+	// session: no terminal, no desktop, no board. Refusing to start there would
+	// take the tunnels down with the approvals, and forwarding is very often
+	// the whole reason devtun was run — a scripted session, CI, systemd. It
+	// degrades to deny, which is what the old `auto` did, and says so once.
 	return have, nil
 }
 

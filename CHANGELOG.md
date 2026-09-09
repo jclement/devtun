@@ -18,8 +18,11 @@ this is 0.x, a minor bump may break something.
   `--prompt` (and `prompt:`) now take `all` (the default), `tui`, `native`,
   `web`, `deny`, or a list like `tui,web`. Naming a surface is an instruction
   rather than a wish: `--prompt web` without `--web` is an error at startup, not
-  a session that quietly answers nothing. The old spellings still work — `auto`
-  means `all`, `dialog` means `native`.
+  a session that quietly answers nothing. `all` on a machine with nowhere to
+  ask — no terminal, no desktop, no board — is a headless session rather than an
+  error: it degrades to refusing and says so once, because taking the tunnels
+  down along with the approvals would be the wrong trade in a script or in CI.
+  The old spellings still work — `auto` means `all`, `dialog` means `native`.
 
 ### Fixed
 

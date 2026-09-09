@@ -457,17 +457,24 @@ func TestAllQuietlyUsesWhateverThisSessionHas(t *testing.T) {
 		t.Error("`all` dropped the terminal, which this session has")
 	}
 
-	// But `all` with nothing at all behind it is still an error: it means
-	// every request would be refused without anybody being asked, and that is
-	// worth saying at startup rather than discovering from a failed push.
+	// And `all` with nowhere at all to ask is a headless session, not an
+	// error. Refusing to start there would take the tunnels down along with
+	// the approvals, and forwarding is very often the whole reason devtun was
+	// run — a script, CI, systemd. It degrades to refusing, which is what the
+	// old `auto` did on the same machine.
+	//
+	// This is the shape CI caught and my own test had agreed with: I asserted
+	// the error, so the test and the bug were the same opinion.
 	//
 	// Through the injected check, because every Mac has osascript and no test
 	// running on one can reach this branch otherwise.
 	nothing := func(prompt.Surface) bool { return false }
-	if _, err := resolveSurfacesWith("all", nothing); err == nil {
-		t.Error("a session with nowhere to ask started anyway")
-	} else if !strings.Contains(err.Error(), "--prompt deny") {
-		t.Errorf("the error does not offer the way out: %v", err)
+	headless, err := resolveSurfacesWith("all", nothing)
+	if err != nil {
+		t.Fatalf("a headless session refused to start: %v", err)
+	}
+	if headless.Any() {
+		t.Error("a session with nowhere to ask thinks it has somewhere")
 	}
 }
 
