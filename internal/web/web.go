@@ -67,6 +67,7 @@ import (
 	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
+	"github.com/jclement/devtun/internal/settings"
 	"github.com/jclement/devtun/internal/tunnels"
 )
 
@@ -97,6 +98,9 @@ type Tunnels interface {
 	SetMode(remotePort int, mode tunnels.Mode) tunnels.Mode
 	SetScheme(remotePort int, scheme tunnels.Scheme) tunnels.Scheme
 	SetLabel(remotePort int, label string) error
+	SetLocalPort(remotePort, local int) error
+	Policy() tunnels.Policy
+	SetPolicy(tunnels.Policy)
 	Hidden() int
 	ViewPrefs() tunnels.ViewPrefs
 	SetViewPrefs(tunnels.ViewPrefs)
@@ -110,6 +114,27 @@ type Broker interface {
 	Deny(index int) error
 	Grants() []authz.Grant
 	RevokeGrant(host, subject string) bool
+}
+
+// Forgetter is a broker that can drop everything it is holding open: the live
+// grants, and the secret values cached under them. The two go together because
+// a cached value whose authorisation has been withdrawn is exactly what must
+// not be served.
+//
+// It is kept off Broker on purpose. A broker that never sees a secret has
+// nothing to cache and reports one number rather than two, and folding both
+// shapes into Broker would mean the ones with the shorter Forget stopped
+// matching it — which would quietly drop their rules and grants off the board
+// rather than failing to compile.
+type Forgetter interface {
+	Forget() (grants, cached int)
+}
+
+// cachelessForgetter is the same action from a broker with no cache to purge:
+// the agent asks the real agent for a signature and the browser opens a URL,
+// so neither ever holds key material devtun could be keeping.
+type cachelessForgetter interface {
+	Forget() int
 }
 
 // Options is everything the server is given.
@@ -133,6 +158,20 @@ type Options struct {
 	Tunnels Tunnels
 	// Services is the registry, for the services list and for finding brokers.
 	Services []service.Service
+	// Store is devtun's configuration files, for the settings screen. Nil is a
+	// --no-config run: the settings still list and still say what devtun is
+	// doing, and only saving is missing.
+	Store settings.Store
+	// PromptNow is where approvals are appearing for this run, which the
+	// command line can override without touching either config file.
+	PromptNow func() prompt.Backend
+	// ApplyPrompt puts a changed prompt setting into effect now rather than at
+	// the next connection — the setting somebody changes *because* they are
+	// missing approvals.
+	ApplyPrompt func(prompt.Backend)
+	// DialogChooser names the program this machine would raise a desktop
+	// dialog with, empty when there is none.
+	DialogChooser func() string
 	// Bus is where events come from.
 	Bus *event.Bus
 	// Status reports the connection.
@@ -149,6 +188,11 @@ type Options struct {
 
 // Server is the HTTP interface to one session.
 type Server struct {
+	// svc is what each service is currently doing, kept from the event bus
+	// because that is the only place a Probe's answer is published.
+	svcMu sync.Mutex
+	svc   map[string]svcState
+
 	opts Options
 	// token is the one in the URL, good for a single trade.
 	token string
@@ -239,6 +283,9 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.setURL(fmt.Sprintf("http://%s/?t=%s", listener.Addr().String(), url.QueryEscape(s.token)))
 
+	stopWatching := s.watchServices()
+	defer stopWatching()
+
 	server := &http.Server{
 		Handler: s.mux,
 		// A read that never finishes should not hold a connection forever, and
@@ -280,11 +327,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/ports/{port}/mode", s.guard(s.handlePortMode))
 	s.mux.HandleFunc("POST /api/ports/{port}/scheme", s.guard(s.handlePortScheme))
 	s.mux.HandleFunc("POST /api/ports/{port}/label", s.guard(s.handlePortLabel))
+	s.mux.HandleFunc("POST /api/ports/{port}/local", s.guard(s.handlePortLocal))
+	s.mux.HandleFunc("POST /api/pause", s.guard(s.handlePause))
 	s.mux.HandleFunc("POST /api/rules/revoke", s.guard(s.handleRevokeRule))
+	s.mux.HandleFunc("POST /api/rules/deny", s.guard(s.handleDenyRule))
 	s.mux.HandleFunc("POST /api/grants/revoke", s.guard(s.handleRevokeGrant))
+	s.mux.HandleFunc("POST /api/grants/forget", s.guard(s.handleForget))
 	s.mux.HandleFunc("POST /api/reconnect", s.guard(s.handleReconnect))
 	s.mux.HandleFunc("POST /api/hidden", s.guard(s.handleShowHidden))
 	s.mux.HandleFunc("POST /api/approve", s.guard(s.handleApprove))
+	s.mux.HandleFunc("GET /api/config", s.guard(s.handleConfig))
+	s.mux.HandleFunc("POST /api/config/{key}", s.guard(s.handleSetting))
 }
 
 // guard is the whole of the access control, in one place so that no handler can
@@ -395,15 +448,23 @@ func sameOrigin(r *http.Request) bool {
 
 // statePayload is one snapshot of everything the page draws.
 type statePayload struct {
-	Host       string        `json:"host"`
-	Version    string        `json:"version"`
-	Connection connection    `json:"connection"`
-	Ports      []portView    `json:"ports"`
-	Hidden     int           `json:"hidden"`
-	ShowHidden bool          `json:"showHidden"`
-	Services   []serviceView `json:"services"`
-	Rules      []ruleView    `json:"rules"`
-	Grants     []grantView   `json:"grants"`
+	Host       string     `json:"host"`
+	Version    string     `json:"version"`
+	Connection connection `json:"connection"`
+	Ports      []portView `json:"ports"`
+	Hidden     int        `json:"hidden"`
+	ShowHidden bool       `json:"showHidden"`
+	// Paused is the policy's own flag: forwarding that is already up stays up,
+	// and nothing new is opened automatically until it comes off.
+	Paused   bool          `json:"paused"`
+	Services []serviceView `json:"services"`
+	Rules    []ruleView    `json:"rules"`
+	Grants   []grantView   `json:"grants"`
+	// Gated says something on this session decides access. It is what makes
+	// forget-everything a button rather than dead chrome, and it is not the
+	// same question as "are there grants": the vault's cache keeps its own
+	// clock, so a value can still be held after the grant behind it lapsed.
+	Gated bool `json:"gated"`
 	// Waiting is every question sitting on a human right now. It is first in
 	// the page's reading order for the same reason it is loud on screen: a
 	// secret being asked for outranks anything else the board has to say.
@@ -427,15 +488,20 @@ type portView struct {
 	Proc     string `json:"proc"`
 	Cmd      string `json:"cmd"`
 	Label    string `json:"label,omitempty"`
-	Status   string `json:"status"`
-	Skip     string `json:"skip,omitempty"`
-	Scheme   string `json:"scheme"`
-	Mode     string `json:"mode"`
-	URL      string `json:"url,omitempty"`
-	Age      string `json:"age"`
-	Conns    int    `json:"conns"`
-	In       uint64 `json:"in"`
-	Out      uint64 `json:"out"`
+	// Pinned is a local port the user chose, or zero when the tunnel is free to
+	// land wherever it can. It is not Local: a pin that is refused because
+	// something else holds the port leaves the two disagreeing, and that is the
+	// disagreement worth showing.
+	Pinned int    `json:"pinned,omitempty"`
+	Status string `json:"status"`
+	Skip   string `json:"skip,omitempty"`
+	Scheme string `json:"scheme"`
+	Mode   string `json:"mode"`
+	URL    string `json:"url,omitempty"`
+	Age    string `json:"age"`
+	Conns  int    `json:"conns"`
+	In     uint64 `json:"in"`
+	Out    uint64 `json:"out"`
 }
 
 type serviceView struct {
@@ -443,6 +509,13 @@ type serviceView struct {
 	Title string `json:"title"`
 	Glyph string `json:"glyph"`
 	Short string `json:"short"`
+	// Enabled is what the config files say for this host; Running is whether
+	// it is actually attached to the connection right now. They differ more
+	// often than you would think — a service switched on that this box cannot
+	// support is the case the Detail exists to explain.
+	Enabled bool   `json:"enabled"`
+	Running bool   `json:"running"`
+	Detail  string `json:"detail,omitempty"`
 }
 
 type ruleView struct {
@@ -488,16 +561,21 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 		payload.Hidden = s.opts.Tunnels.Hidden()
 		payload.ShowHidden = s.opts.Tunnels.ViewPrefs().ShowHidden
+		payload.Paused = s.opts.Tunnels.Policy().Paused
 	}
 
 	for _, svc := range s.opts.Services {
 		meta := svc.Meta()
+		state := s.serviceState(meta.ID)
 		payload.Services = append(payload.Services, serviceView{
 			ID: meta.ID, Title: meta.Title, Glyph: meta.Glyph, Short: meta.Short,
+			Enabled: s.enabledFor(meta), Running: state.Running, Detail: state.Detail,
 		})
 	}
 
-	for id, broker := range s.brokers() {
+	brokers := s.brokers()
+	payload.Gated = len(brokers) > 0
+	for id, broker := range brokers {
 		for i, rule := range broker.Rules() {
 			payload.Rules = append(payload.Rules, ruleView{
 				Source: id, Index: i, Host: rule.Host, Subject: rule.Subject,
@@ -530,7 +608,7 @@ func (s *Server) portView(state tunnels.State) portView {
 	view := portView{
 		Remote: state.RemotePort, Local: state.LocalPort, Addr: state.LocalAddr,
 		Remapped: state.Remapped, Proc: state.Proc, Cmd: state.Cmd, Label: state.Label,
-		Status: string(state.Status), Skip: string(state.Skip),
+		Pinned: state.PinnedLocal, Status: string(state.Status), Skip: string(state.Skip),
 		Scheme: string(state.Scheme), Mode: string(state.Mode), URL: state.URL(),
 		Conns: state.ActiveConns, In: state.BytesIn, Out: state.BytesOut,
 	}
@@ -706,6 +784,56 @@ func (s *Server) handlePortLabel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"label": label})
 }
 
+// handlePortLocal pins the local port a service is forwarded to, and takes the
+// pin off again when the value is zero.
+//
+// The manager reopens the tunnel to make the change now rather than at the next
+// reconnect, so a port something else on this machine already holds fails here
+// and has to be said out loud — filing the preference away and reporting
+// success would leave the board claiming a move that did not happen.
+func (s *Server) handlePortLocal(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Tunnels == nil {
+		http.Error(w, "no tunnels service", http.StatusServiceUnavailable)
+		return
+	}
+	port, ok := portParam(w, r)
+	if !ok {
+		return
+	}
+	// Zero is the one value below 1 that means something: back to mirroring the
+	// remote port, which is why this cannot reuse portParam.
+	local, err := strconv.Atoi(r.URL.Query().Get("local"))
+	if err != nil || local < 0 || local > 65535 {
+		http.Error(w, "local must be a port number, or 0 to go back to matching the remote one",
+			http.StatusBadRequest)
+		return
+	}
+	if err := s.opts.Tunnels.SetLocalPort(port, local); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]int{"local": local})
+}
+
+// handlePause suspends automatic forwarding, or lets it resume. What is already
+// up stays up; it is the next port the box opens that waits.
+//
+// The wanted state is named rather than flipped, which is the same shape
+// /api/hidden takes and for the same reason: the page polls, so a click landing
+// beside a snapshot in flight — or a retry of a request whose answer was lost —
+// must not be able to leave the board and the session disagreeing about which
+// way the switch went.
+func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Tunnels == nil {
+		http.Error(w, "no tunnels service", http.StatusServiceUnavailable)
+		return
+	}
+	policy := s.opts.Tunnels.Policy()
+	policy.Paused = r.URL.Query().Get("paused") == "true"
+	s.opts.Tunnels.SetPolicy(policy)
+	writeJSON(w, map[string]bool{"paused": policy.Paused})
+}
+
 func (s *Server) handleShowHidden(w http.ResponseWriter, r *http.Request) {
 	if s.opts.Tunnels == nil {
 		http.Error(w, "no tunnels service", http.StatusServiceUnavailable)
@@ -740,6 +868,39 @@ func (s *Server) handleRevokeRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
+// handleDenyRule rewrites a rule devtun wrote into a refusal.
+//
+// It only tightens, which is what makes it safe to offer from a page. "I
+// clicked always and I should not have, and I do not want to be asked again
+// either" is the change people make in a hurry; the opposite one — a deny
+// becoming an allow on whichever row a click lands on — is the accident that
+// deny-beats-allow exists to prevent, and it stays a deliberate edit of the
+// file.
+//
+// The interface refuses three things here and so does this. A rule from the
+// config file is not devtun's to rewrite, and arrives with the index (-1) the
+// page was given for it. A grant is not a rule at all: it has no index, so it
+// cannot be named here even by hand, and revoking is the whole of what can be
+// done to one. And a rule that already denies is left as it is and reported as
+// done, because it is — that is a no-op, not a refusal.
+func (s *Server) handleDenyRule(w http.ResponseWriter, r *http.Request) {
+	broker, ok := s.brokerParam(w, r)
+	if !ok {
+		return
+	}
+	index, err := strconv.Atoi(r.URL.Query().Get("index"))
+	if err != nil || index < 0 {
+		http.Error(w, "index must be a rule devtun wrote — a rule from your config file is edited there",
+			http.StatusBadRequest)
+		return
+	}
+	if err := broker.Deny(index); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
 func (s *Server) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
 	broker, ok := s.brokerParam(w, r)
 	if !ok {
@@ -752,6 +913,34 @@ func (s *Server) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// handleForget drops every live grant and every cached secret value, across
+// every broker.
+//
+// It is the panic button rather than the only way back — single grants have
+// their own revoke — so it sweeps all of them: one broker left holding an open
+// door after you pressed this would be worse than not offering it. The two
+// counts come back so the page can say what actually went, "nothing" included,
+// which is a real answer and not a button that looks broken.
+func (s *Server) handleForget(w http.ResponseWriter, _ *http.Request) {
+	grants, cached := s.forgetAll()
+	writeJSON(w, map[string]int{"grants": grants, "cached": cached})
+}
+
+// forgetAll sweeps the brokers and reports what it took, in the same two
+// numbers the interface shows.
+func (s *Server) forgetAll() (grants, cached int) {
+	for _, broker := range s.brokers() {
+		switch b := broker.(type) {
+		case Forgetter:
+			g, c := b.Forget()
+			grants, cached = grants+g, cached+c
+		case cachelessForgetter:
+			grants += b.Forget()
+		}
+	}
+	return grants, cached
 }
 
 // approvalView is one question waiting on a human, as the page sees it.

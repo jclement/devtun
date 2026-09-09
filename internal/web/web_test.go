@@ -31,6 +31,8 @@ type fakeTunnels struct {
 	states []tunnels.State
 	modes  map[int]tunnels.Mode
 	labels map[int]string
+	locals map[int]int
+	policy tunnels.Policy
 	prefs  tunnels.ViewPrefs
 }
 
@@ -57,6 +59,19 @@ func (f *fakeTunnels) SetLabel(port int, label string) error {
 	f.labels[port] = label
 	return nil
 }
+func (f *fakeTunnels) SetLocalPort(port, local int) error {
+	if f.locals == nil {
+		f.locals = map[int]int{}
+	}
+	if port == 9999 {
+		return errors.New("remote port 9999 is not listed")
+	}
+	f.locals[port] = local
+	return nil
+}
+
+func (f *fakeTunnels) Policy() tunnels.Policy           { return f.policy }
+func (f *fakeTunnels) SetPolicy(p tunnels.Policy)       { f.policy = p }
 func (f *fakeTunnels) Hidden() int                      { return len(f.modes) }
 func (f *fakeTunnels) ViewPrefs() tunnels.ViewPrefs     { return f.prefs }
 func (f *fakeTunnels) SetViewPrefs(p tunnels.ViewPrefs) { f.prefs = p }
@@ -68,7 +83,12 @@ type fakeBroker struct {
 	global  []authz.Rule
 	grants  []authz.Grant
 	revoked []int
+	denied  []int
 	dropped []string
+	// forgets is what Forget claims to have dropped, so a test can tell one
+	// broker's contribution from another's.
+	forgets [2]int
+	forgot  bool
 }
 
 func (b *fakeBroker) Meta() service.Meta {
@@ -78,7 +98,16 @@ func (b *fakeBroker) Meta() service.Meta {
 func (b *fakeBroker) Rules() []authz.Rule       { return b.rules }
 func (b *fakeBroker) GlobalRules() []authz.Rule { return b.global }
 func (b *fakeBroker) Grants() []authz.Grant     { return b.grants }
-func (b *fakeBroker) Deny(int) error            { return nil }
+
+func (b *fakeBroker) Deny(index int) error {
+	b.denied = append(b.denied, index)
+	return nil
+}
+
+func (b *fakeBroker) Forget() (grants, cached int) {
+	b.forgot = true
+	return b.forgets[0], b.forgets[1]
+}
 
 func (b *fakeBroker) Revoke(index int) error {
 	b.revoked = append(b.revoked, index)
@@ -88,6 +117,37 @@ func (b *fakeBroker) Revoke(index int) error {
 func (b *fakeBroker) RevokeGrant(host, subject string) bool {
 	b.dropped = append(b.dropped, host+" "+subject)
 	return true
+}
+
+// fakeCachelessBroker is the other shape of broker: one that never sees a
+// secret, so it has grants to drop and no cache to purge.
+type fakeCachelessBroker struct {
+	fakeBroker
+	grants int
+	forgot bool
+}
+
+func (b *fakeCachelessBroker) Meta() service.Meta {
+	return service.Meta{ID: "agent", Title: "SSH agent", Glyph: "⚿", Short: "the agent"}
+}
+
+func (b *fakeCachelessBroker) Forget() int {
+	b.forgot = true
+	return b.grants
+}
+
+// stateOf asks for the snapshot the page draws from.
+func stateOf(t *testing.T, s *Server) statePayload {
+	t.Helper()
+	recorder := ask(t, s, http.MethodGet, "/api/state")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /api/state = %d", recorder.Code)
+	}
+	var payload statePayload
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decoding the snapshot: %v", err)
+	}
+	return payload
 }
 
 func newTestServer(t *testing.T, opts Options) *Server {
@@ -554,6 +614,15 @@ func TestThePageCallsNothingItIsNotAllowedTo(t *testing.T) {
 		"/api/hidden":        true,
 		"/api/approve":       true,
 		"/api/ports/*/label": true,
+		"/api/ports/*/local": true,
+		"/api/pause":         true,
+		"/api/rules/deny":    true,
+		"/api/grants/forget": true,
+		"/api/config":        true,
+		"/api/config/*":      true,
+		// The trailing-slash form is what the scanner sees in the string that
+		// builds a key path; the key itself is interpolated.
+		"/api/config/": true,
 	}
 
 	// A template hole stands in for whatever the page interpolates, so the
@@ -844,5 +913,331 @@ func TestTheBoardCanNameAPort(t *testing.T) {
 	}
 	if got := ask(t, s, http.MethodPost, "/api/ports/9999/label?label=x"); got.Code != http.StatusConflict {
 		t.Errorf("naming a port that is not listed = %d, want 409", got.Code)
+	}
+}
+
+// --- the actions the interface had and the board did not ------------------
+
+// Pinning a local port is `l` at the table. Under `--web` the board is the
+// surface, so a callback URL the remote baked in — the case the pin exists for
+// — was simply unreachable there.
+func TestTheBoardCanPinALocalPort(t *testing.T) {
+	ports := newFakeTunnels(tunnels.State{RemotePort: 3000, LocalPort: 51234, Proc: "node"})
+	s := newTestServer(t, Options{Tunnels: ports})
+
+	if got := ask(t, s, http.MethodPost, "/api/ports/3000/local?local=3000"); got.Code != http.StatusOK {
+		t.Fatalf("pinning a local port = %d: %s", got.Code, got.Body)
+	}
+	if ports.locals[3000] != 3000 {
+		t.Errorf("the pin did not reach the service: %+v", ports.locals)
+	}
+
+	// Zero is the way back to the default, and is the one value below 1 this
+	// endpoint has to accept.
+	if got := ask(t, s, http.MethodPost, "/api/ports/3000/local?local=0"); got.Code != http.StatusOK {
+		t.Fatalf("clearing a pin = %d: %s", got.Code, got.Body)
+	}
+	if ports.locals[3000] != 0 {
+		t.Errorf("the pin was not cleared: %+v", ports.locals)
+	}
+
+	for _, path := range []string{
+		"/api/ports/3000/local?local=70000",
+		"/api/ports/3000/local?local=-1",
+		"/api/ports/3000/local?local=notaport",
+		"/api/ports/3000/local",
+	} {
+		if got := ask(t, s, http.MethodPost, path); got.Code != http.StatusBadRequest {
+			t.Errorf("POST %s = %d, want 400", path, got.Code)
+		}
+	}
+
+	// A port something else already holds is a failure the caller has to see:
+	// the tunnel is reopened now, so reporting success would be a lie.
+	if got := ask(t, s, http.MethodPost, "/api/ports/9999/local?local=3000"); got.Code != http.StatusConflict {
+		t.Errorf("pinning a port that is not listed = %d, want 409", got.Code)
+	}
+}
+
+// Pausing is `p` at the table. The state has to come back in the snapshot too,
+// or the board cannot say which way the switch is.
+func TestTheBoardCanPauseAndResumeForwarding(t *testing.T) {
+	ports := newFakeTunnels()
+	s := newTestServer(t, Options{Tunnels: ports})
+
+	if got := ask(t, s, http.MethodPost, "/api/pause?paused=true"); got.Code != http.StatusOK {
+		t.Fatalf("pausing = %d: %s", got.Code, got.Body)
+	}
+	if !ports.policy.Paused {
+		t.Error("the policy was not paused")
+	}
+	if !stateOf(t, s).Paused {
+		t.Error("the snapshot does not say the session is paused")
+	}
+
+	// Naming the state rather than flipping it is what makes a second click, or
+	// a retry, land where the user meant it to.
+	if got := ask(t, s, http.MethodPost, "/api/pause?paused=true"); got.Code != http.StatusOK {
+		t.Fatalf("pausing twice = %d", got.Code)
+	}
+	if !ports.policy.Paused {
+		t.Error("pausing twice unpaused it")
+	}
+
+	if got := ask(t, s, http.MethodPost, "/api/pause?paused=false"); got.Code != http.StatusOK {
+		t.Fatalf("resuming = %d: %s", got.Code, got.Body)
+	}
+	if ports.policy.Paused || stateOf(t, s).Paused {
+		t.Error("the session did not resume")
+	}
+}
+
+// Denying is `D` at the table: the rule you regret becomes a refusal rather
+// than being forgotten, so the next request is not asked about either.
+func TestTheBoardCanTurnARuleIntoARefusal(t *testing.T) {
+	broker := &fakeBroker{
+		rules:  []authz.Rule{{Subject: "op://V/I/F", Action: authz.ActionAllow}},
+		global: []authz.Rule{{Subject: "op://Private/**", Action: authz.ActionDeny}},
+	}
+	s := newTestServer(t, Options{Services: []service.Service{broker}})
+
+	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&index=0"); got.Code != http.StatusOK {
+		t.Fatalf("denying a rule = %d: %s", got.Code, got.Body)
+	}
+	if len(broker.denied) != 1 || broker.denied[0] != 0 {
+		t.Errorf("denied = %+v", broker.denied)
+	}
+
+	// A rule from the config file arrives with the index the page was given for
+	// it, which is the one index this must not accept: devtun did not write
+	// that file and a page quietly rewriting it would be the worse surprise.
+	fromTheFile := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&index=-1")
+	if fromTheFile.Code != http.StatusBadRequest {
+		t.Errorf("denying a global rule = %d, want 400", fromTheFile.Code)
+	}
+	if !strings.Contains(fromTheFile.Body.String(), "config file") {
+		t.Errorf("the refusal does not say where to change it: %s", fromTheFile.Body)
+	}
+	if len(broker.denied) != 1 {
+		t.Errorf("a global rule was denied anyway: %+v", broker.denied)
+	}
+
+	// A grant has no index, so it cannot be named here even by hand — which is
+	// the whole of the interface's "that is a live grant" refusal.
+	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&index=notanindex"); got.Code != http.StatusBadRequest {
+		t.Errorf("denying something that is not a rule = %d, want 400", got.Code)
+	}
+	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=nosuch&index=0"); got.Code != http.StatusNotFound {
+		t.Errorf("denying on a service that is not here = %d, want 404", got.Code)
+	}
+}
+
+// Forgetting everything is `F` at the table, and it is the panic button: one
+// broker left holding an open door after it would be worse than not offering
+// it. Both shapes of broker have to be swept — the vault reports grants and
+// cached values, the agent and the browser have no cache and report one number.
+func TestForgettingEverythingSweepsEveryBroker(t *testing.T) {
+	vault := &fakeBroker{forgets: [2]int{2, 3}}
+	agent := &fakeCachelessBroker{grants: 1}
+	s := newTestServer(t, Options{Services: []service.Service{vault, agent}})
+
+	recorder := ask(t, s, http.MethodPost, "/api/grants/forget")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("forgetting everything = %d: %s", recorder.Code, recorder.Body)
+	}
+	var counts struct{ Grants, Cached int }
+	if err := json.Unmarshal(recorder.Body.Bytes(), &counts); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if counts.Grants != 3 || counts.Cached != 3 {
+		t.Errorf("forgot %+v, want 3 grants and 3 cached values", counts)
+	}
+	if !vault.forgot || !agent.forgot {
+		t.Errorf("a broker was left holding the door: vault=%v agent=%v", vault.forgot, agent.forgot)
+	}
+
+	// The board only offers the button when something is deciding, and says so
+	// in the snapshot rather than the page guessing from an empty grants list —
+	// a value can still be cached when no grant is live.
+	if !stateOf(t, s).Gated {
+		t.Error("a session with brokers does not say it is gated")
+	}
+	if stateOf(t, newTestServer(t, Options{Tunnels: newFakeTunnels()})).Gated {
+		t.Error("a session with nothing gating it says it is gated")
+	}
+}
+
+// Nothing to forget is an answer, not a failure: the button reports two zeros
+// rather than looking broken.
+func TestForgettingWithNothingToForgetSaysZero(t *testing.T) {
+	s := newTestServer(t, Options{Tunnels: newFakeTunnels()})
+	recorder := ask(t, s, http.MethodPost, "/api/grants/forget")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("forgetting with no brokers = %d: %s", recorder.Code, recorder.Body)
+	}
+	if body := strings.TrimSpace(recorder.Body.String()); !strings.Contains(body, `"grants":0`) {
+		t.Errorf("body = %s, want two zeros", body)
+	}
+}
+
+// Every mutation is behind the same guard, and a new endpoint that missed it
+// would be one a page you happened to be reading could post to. This is the
+// check that adding a route without s.guard fails a test rather than shipping.
+func TestTheNewMutationsAreGuardedLikeTheOldOnes(t *testing.T) {
+	broker := &fakeBroker{rules: []authz.Rule{{Subject: "op://V/I/F"}}}
+	s := newTestServer(t, Options{Tunnels: newFakeTunnels(), Services: []service.Service{broker}})
+
+	for _, path := range []string{
+		"/api/ports/3000/local?local=3000",
+		"/api/pause?paused=true",
+		"/api/rules/deny?source=1password&index=0",
+		"/api/grants/forget",
+	} {
+		noCookie := httptest.NewRequest(http.MethodPost, path, nil)
+		noCookie.Host = "127.0.0.1:9999"
+		noCookie.Header.Set("Origin", "http://127.0.0.1:9999")
+		recorder := httptest.NewRecorder()
+		s.mux.ServeHTTP(recorder, noCookie)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Errorf("POST %s without the cookie = %d, want 401", path, recorder.Code)
+		}
+
+		crossOrigin := httptest.NewRequest(http.MethodPost, path, nil)
+		crossOrigin.Host = "127.0.0.1:9999"
+		crossOrigin.Header.Set("Origin", "https://evil.example")
+		crossOrigin.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+		recorder = httptest.NewRecorder()
+		s.mux.ServeHTTP(recorder, crossOrigin)
+		if recorder.Code != http.StatusForbidden {
+			t.Errorf("POST %s from another origin = %d, want 403", path, recorder.Code)
+		}
+
+		notLoopback := httptest.NewRequest(http.MethodPost, path, nil)
+		notLoopback.Host = "devtun.example"
+		notLoopback.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+		recorder = httptest.NewRecorder()
+		s.mux.ServeHTTP(recorder, notLoopback)
+		if recorder.Code != http.StatusForbidden {
+			t.Errorf("POST %s to a name that is not loopback = %d, want 403", path, recorder.Code)
+		}
+	}
+
+	if len(broker.denied) != 0 || broker.forgot {
+		t.Error("a guarded endpoint did something anyway")
+	}
+}
+
+// The board is the surface under `--web`, so an action it cannot reach is one
+// those users do not have. A Go test cannot press a button, but it can check
+// that the button is wired to the endpoint at all — the failure here is silent
+// on every other test.
+func TestThePageOffersEveryActionTheInterfaceDoes(t *testing.T) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatalf("reading the page: %v", err)
+	}
+	text := string(page)
+	for endpoint, action := range map[string]string{
+		"/api/ports/${port.remote}/local": "pin a local port",
+		"/api/pause":                      "pause and resume forwarding",
+		"/api/rules/deny":                 "turn a rule into a refusal",
+		"/api/grants/forget":              "forget every live grant",
+	} {
+		if !strings.Contains(text, endpoint) {
+			t.Errorf("the page cannot %s — nothing on it calls %s", action, endpoint)
+		}
+	}
+}
+
+// A control revealed on hover is invisible until the rule that reveals it
+// exists, and a page bug of that shape passes every other test here: the button
+// is in the markup, wired to the right endpoint, and permanently transparent.
+func TestHoverRevealedControlsAreActuallyRevealed(t *testing.T) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatalf("reading the page: %v", err)
+	}
+	text := string(page)
+
+	transparent := regexp.MustCompile(`\.([a-z-]+)[^{}]*\{[^{}]*opacity:\s*0[;\s}]`)
+	found := transparent.FindAllStringSubmatch(text, -1)
+	if len(found) == 0 {
+		t.Fatal("no hover-revealed control found, so this test is guarding nothing")
+	}
+	for _, match := range found {
+		if !strings.Contains(text, "tr:hover ."+match[1]) {
+			t.Errorf(".%s is transparent and nothing reveals it on hover", match[1])
+		}
+	}
+}
+
+// A reference to a name that does not exist throws where it stands, and the
+// rest of the handler never runs.
+//
+// This was real: the approval work left `waiting.set(...)` behind in the event
+// stream's handler after the thing that declared `waiting` was deleted. Every
+// SECURITY event — the requests, the approvals, the refusals, exactly the
+// events the board exists to show — threw before it could be logged and before
+// the refresh that follows it, so a decision made at the terminal never reached
+// the board at all. It cost nothing at build time and nothing in any Go test,
+// because neither one runs the page.
+func TestThePageHasNoUndeclaredNames(t *testing.T) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(page)
+
+	// Every name the script declares for itself, plus the browser's own.
+	declared := map[string]bool{}
+	for _, pattern := range []string{
+		`(?m)^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)`,
+		`(?m)^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)`,
+		// Parameters are declarations too: `(event) => …` is where most of
+		// this page's names come from.
+		`\(([A-Za-z_$][\w$]*)\)\s*=>`,
+		`\bfunction\s*[A-Za-z_$][\w$]*\s*\(([^)]*)\)`,
+		`\bfunction\s*\(([^)]*)\)`,
+		`\bcatch\s*\(([A-Za-z_$][\w$]*)\)`,
+		`\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)`,
+	} {
+		for _, m := range regexp.MustCompile(pattern).FindAllStringSubmatch(script, -1) {
+			for _, name := range strings.Split(m[1], ",") {
+				name = strings.TrimSpace(name)
+				// A default value or a rest element is still a binding.
+				name = strings.TrimPrefix(name, "...")
+				if i := strings.IndexAny(name, "="); i >= 0 {
+					name = strings.TrimSpace(name[:i])
+				}
+				if name != "" {
+					declared[name] = true
+				}
+			}
+		}
+	}
+
+	// The names a called-as-an-object identifier could be. Anything the script
+	// calls a method on is either something it declared, something the browser
+	// gave it, or a bug.
+	globals := map[string]bool{
+		"document": true, "window": true, "navigator": true, "location": true,
+		"console": true, "JSON": true, "Date": true, "Math": true, "Object": true,
+		"Array": true, "Number": true, "String": true, "Map": true, "Set": true,
+		"URL": true, "EventSource": true, "history": true, "AbortController": true, "Intl": true,
+	}
+
+	// Any `name.method(` where `name` is not itself a property. The leading
+	// class stands in for a lookbehind, which RE2 does not have: it is what
+	// keeps `a.b.c()` from reporting the property `b` as an undeclared name.
+	//
+	// This is looking for a name used as an object, not parsing JavaScript.
+	calls := regexp.MustCompile(`(?:^|[^.\w$])([A-Za-z_$][\w$]*)\.[A-Za-z_$][\w$]*\(`)
+	for _, m := range calls.FindAllStringSubmatch(script, -1) {
+		name := m[1]
+		if declared[name] || globals[name] {
+			continue
+		}
+		t.Errorf("the page calls a method on %q, which nothing declares — "+
+			"every statement after it in that handler is dead", name)
 	}
 }

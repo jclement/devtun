@@ -150,11 +150,42 @@
     border-color: var(--err); color: var(--err);
   }
   .proc .label { color: var(--net); font-weight: 600; }
-  /* The rename control stays out of the way until the row is pointed at:
-     naming a port is a rare, deliberate thing and a button on every row would
-     compete with the numbers, which are what the table is for. */
-  .rename { margin-left: .5rem; font-size: .7rem; padding: 0 .3rem; opacity: 0; }
-  tr:hover .rename, .rename:focus-visible { opacity: 1; }
+  /* A setting is a name, a value, and where that value came from. The sentence
+     explaining it is the gloss, and it is what gives way when the window is
+     narrow — so it is last, and it wraps rather than pushing anything off. */
+  .setting select, .setting input {
+    font: inherit; font-size: .8rem; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 5px; padding: .15rem .4rem; min-width: 9rem;
+  }
+  .setting select:hover, .setting input:focus { border-color: var(--net); outline: none; }
+  .setting .why { color: var(--muted); font-size: .8rem; white-space: normal; }
+  /* Where a value came from, in the same three words the terminal uses. A value
+     nothing on disk decided is devtun's own default, and showing that in the
+     same weight as one somebody chose would be a lie of emphasis. */
+  .from.default { color: var(--muted); }
+  .from.host { color: var(--ok); }
+  .from.global { color: var(--life); }
+  .warn { color: var(--warn); }
+  tr.heading td { color: var(--muted); font-size: .8rem; text-transform: uppercase;
+    letter-spacing: .1em; padding-top: .7rem; }
+  /* A service switched on but not running is the interesting row, so it keeps
+     full contrast; one switched off recedes. */
+  tr.off td { color: var(--muted); }
+  /* The controls that edit a row stay out of the way until it is pointed at:
+     naming a port and pinning its local port are both rare, deliberate things,
+     and a pair of buttons on every row would compete with the numbers, which
+     are what the table is for. */
+  .rowbtn { margin-left: .5rem; font-size: .7rem; padding: 0 .3rem; opacity: 0; }
+  tr:hover .rowbtn, .rowbtn:focus-visible { opacity: 1; }
+  td button + button { margin-left: .35rem; }
+  /* Paused is a state, not a press: the button carries the colour so the header
+     says which way the switch is without a second thing to read. */
+  button.on { border-color: var(--warn); color: var(--warn); }
+  /* The panic button says what it is before it is hovered. Every other control
+     here takes one thing back; this one takes all of them, in every service,
+     including the values the vault still has in memory. */
+  .scary { border-color: var(--err); color: var(--err); }
+  .scary:hover { background: var(--err); color: var(--panel); border-color: var(--err); }
   .ask .how { margin-top: .8rem; font-size: .78rem; color: var(--muted); }
   @media (prefers-reduced-motion: no-preference) {
     .ask { animation: ask-in .16s ease-out; }
@@ -191,6 +222,7 @@
   <span><span class="dot" id="dot"></span><span id="state">connecting…</span></span>
   <span class="muted" id="counts"></span>
   <span class="grow"></span>
+  <button id="pause">pause</button>
   <button id="reconnect" title="drop the connection and dial the box again">reconnect</button>
 </header>
 
@@ -219,7 +251,17 @@
   </section>
 
   <section>
-    <h2>Grants <span class="muted" id="grants-count"></span></h2>
+    <h2>Services <span class="muted" id="services-count"></span></h2>
+    <p class="what">what devtun layers onto this connection — switching one takes effect on the next connection</p>
+    <div class="scroll"><table><tbody id="services-list"></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>
+      Grants <span class="muted" id="grants-count"></span>
+      <span class="grow"></span>
+      <button id="forget" class="scary" hidden>forget everything</button>
+    </h2>
     <p class="what">answered at a prompt and live only for now — they lapse on their own, and go when devtun stops</p>
     <div class="scroll"><table><tbody id="grants"></tbody></table></div>
     <p class="empty" id="grants-empty">nothing is granted right now</p>
@@ -230,6 +272,16 @@
     <p class="what">written down and remembered — each one keeps deciding, without asking, until it is revoked</p>
     <div class="scroll"><table><tbody id="rules"></tbody></table></div>
     <p class="empty" id="rules-empty">nothing is written down — every request is asked about</p>
+  </section>
+
+  <section>
+    <h2>
+      Settings
+      <span class="grow"></span>
+      <button id="config-level" title="which file the next change is written to"></button>
+    </h2>
+    <p class="what" id="config-what"></p>
+    <div class="scroll"><table><tbody id="config"></tbody></table></div>
   </section>
 
   <section>
@@ -279,16 +331,45 @@ async function api(path, method = "GET") {
 // swallowing it leaves a button that looks like it did nothing.
 async function act(path) {
   try {
-    await api(path, "POST");
+    const result = await api(path, "POST");
+    // A settings write answers with the sentence describing what it did —
+    // which level it landed on, or what the value now inherits. That sentence
+    // is most of what the person reads, so it is not thrown away.
+    if (result?.text) notice(result.text, Boolean(result.warn));
+  } catch (err) {
+    notice(err.message);
+  }
+  refresh();
+  if (path.startsWith("/api/config/")) refreshConfig();
+}
+
+// forgetEverything is the panic button: every live grant and every cached
+// secret value, in every service, in one press.
+//
+// It says what went rather than going quiet — a button that empties a list
+// which was already empty looks broken, and "nothing to forget" is a real
+// answer to the question somebody just asked.
+async function forgetEverything() {
+  try {
+    const gone = await api("/api/grants/forget", "POST");
+    const parts = [];
+    if (gone.grants) parts.push(gone.grants + " grant" + (gone.grants === 1 ? "" : "s"));
+    if (gone.cached) parts.push(gone.cached + " cached value" + (gone.cached === 1 ? "" : "s"));
+    notice(parts.length ? "forgot " + parts.join(" and ") : "nothing to forget");
   } catch (err) {
     notice(err.message);
   }
   refresh();
 }
 
-function notice(text) {
+// A refusal and a confirmation use the same strip, because there is only one
+// place on this page that says what just happened — but they must not look
+// alike. "1Password: off for bedev" in the same red as "that grant lapsed"
+// reads as a failure, and the person undoes something that worked.
+function notice(text, bad = true) {
   const banner = $("offline");
   banner.textContent = text;
+  banner.classList.toggle("bad", bad);
   banner.hidden = false;
   noticeUntil = Date.now() + 5000;
 }
@@ -367,6 +448,30 @@ function renderPorts(state) {
       local.textContent = "—";
       local.className = "port muted";
     }
+    // A pin that is not where the tunnel actually landed is the disagreement
+    // worth showing: something else on this machine is holding the port you
+    // asked for, and the row would otherwise just look like the pin did nothing.
+    if (port.pinned && port.pinned !== port.local) {
+      local.append(tag("pinned " + port.pinned, "you pinned this to " + port.pinned +
+        ", which is not free — devtun is using " + (port.local || "nothing") + " instead"));
+    }
+    // Pinning is `l` at the table, and the case it exists for is one the board
+    // could not reach at all: a login flow's callback has to arrive on the exact
+    // port the remote baked into its redirect URI.
+    const pin = document.createElement("button");
+    pin.className = "rowbtn";
+    pin.textContent = port.pinned ? "pinned" : "pin";
+    pin.title = port.pinned
+      ? "this port is pinned to " + port.pinned + " — blank the number to go back to matching the box"
+      : "always forward this port to a local port you choose, remembered for this host";
+    pin.onclick = () => {
+      const given = prompt("Forward remote port " + port.remote +
+        " to which local port? Blank goes back to matching the box.", port.pinned || "");
+      if (given === null) return;
+      // Blank is how a pin comes off, and zero is what the endpoint calls that.
+      act(`/api/ports/${port.remote}/local?local=${encodeURIComponent(given.trim() || "0")}`);
+    };
+    local.append(pin);
     tr.append(local);
 
     const remote = cell(port.remote, "port");
@@ -414,7 +519,7 @@ function renderPorts(state) {
     // Naming is a thing you can do at the table and could not do here, which
     // under `--web` — where the board is the surface — made it unreachable.
     const rename = document.createElement("button");
-    rename.className = "rename";
+    rename.className = "rowbtn";
     rename.textContent = port.label ? "rename" : "name";
     rename.title = "give this port a name, remembered for " + (document.getElementById("host").textContent || "this host");
     rename.onclick = () => {
@@ -490,6 +595,10 @@ function renderGrants(state) {
 
   $("grants-count").textContent = grants.length ? grants.length + " live" : "";
   $("grants-empty").hidden = grants.length > 0;
+  // Not "are there grants": the vault's cache keeps its own clock, so a value
+  // can still be held here after the grant behind it lapsed, and that is
+  // exactly what this button is for.
+  $("forget").hidden = !state.gated;
 }
 
 function renderRules(state) {
@@ -517,6 +626,20 @@ function renderRules(state) {
       revoke.title = "forget this rule — the next request asks again";
       revoke.onclick = () => act(`/api/rules/revoke?source=${encodeURIComponent(rule.source)}&index=${rule.index}`);
       actions.append(revoke);
+
+      // Deny only appears on an allow, and only ever tightens. "I clicked
+      // always and I should not have, and I do not want to be asked again
+      // either" is the change people make in a hurry; the reverse one, on
+      // whichever row a click lands on, is the accident deny-beats-allow exists
+      // to prevent, and it stays an edit of the file.
+      if (rule.action !== "deny") {
+        const deny = document.createElement("button");
+        deny.className = "danger";
+        deny.textContent = "deny";
+        deny.title = "rewrite this into a refusal — the next request is refused, without asking";
+        deny.onclick = () => act(`/api/rules/deny?source=${encodeURIComponent(rule.source)}&index=${rule.index}`);
+        actions.append(deny);
+      }
     }
     tr.append(actions);
     body.append(tr);
@@ -688,7 +811,19 @@ function renderHeader(state) {
     ? connection.state + " — " + connection.detail
     : (connection.state ?? "");
   $("host").textContent = state.host ?? "";
+  // Pausing is `p` at the table: what is already forwarded stays up, and the
+  // next port the box opens waits instead of appearing. The button carries the
+  // state as well as the action, because there is nowhere else to read it.
+  const pause = $("pause");
+  pause.textContent = state.paused ? "resume" : "pause";
+  pause.className = state.paused ? "on" : "";
+  pause.title = state.paused
+    ? "forward newly-seen ports automatically again"
+    : "stop forwarding newly-seen ports — everything already up stays up";
+  pause.onclick = () => act(`/api/pause?paused=${state.paused ? "false" : "true"}`);
+
   const parts = [];
+  if (state.paused) parts.push("paused");
   if (state.hidden) parts.push(state.hidden + " hidden");
   if (connection.uptime) parts.push("up " + connection.uptime);
   $("counts").textContent = parts.join(" · ");
@@ -696,6 +831,180 @@ function renderHeader(state) {
   document.title = state.host ? `devtun · ${state.host}` : "devtun";
 }
 
+
+// --- services ---------------------------------------------------------------
+
+// Enabled and running are two different facts and the row shows both. A
+// service switched on that this box cannot support is the case people actually
+// hit — no `op` installed on the remote, no gpg-agent — and it is the one where
+// "off" on its own tells you nothing you can act on.
+function renderServices(state) {
+  const list = state.services ?? [];
+  $("services-count").textContent = list.length ? String(list.length) : "";
+  const body = $("services-list");
+  body.replaceChildren();
+
+  for (const svc of list) {
+    const tr = document.createElement("tr");
+    if (!svc.enabled) tr.className = "off";
+
+    const name = document.createElement("td");
+    name.textContent = (svc.glyph ? svc.glyph + " " : "") + svc.title;
+    tr.append(name);
+
+    const state_ = document.createElement("td");
+    if (!svc.enabled) state_.append(tag("off", "switched off for this host"));
+    else if (svc.running) {
+      const ok = document.createElement("span");
+      ok.className = "allow";
+      ok.textContent = "running";
+      state_.append(ok);
+    } else state_.append(tag("not running", svc.detail || "waiting for a connection"));
+    tr.append(state_);
+
+    const why = document.createElement("td");
+    why.className = "wide muted";
+    // The reason it cannot run displaces the description: one is a sentence
+    // about what the service is for, the other is the thing to go and fix.
+    why.textContent = svc.detail || svc.short || "";
+    if (svc.detail) why.classList.add("warn");
+    tr.append(why);
+
+    const act_ = document.createElement("td");
+    act_.style.textAlign = "right";
+    const toggle = document.createElement("button");
+    toggle.textContent = svc.enabled ? "switch off" : "switch on";
+    toggle.title = "for " + (state.host || "this host") + " · from the next connection";
+    // Through the settings endpoint rather than one of its own: a service
+    // toggle IS a setting, and two ways to write the same value is how the two
+    // surfaces started disagreeing in the first place.
+    toggle.onclick = () =>
+      act(`/api/config/${encodeURIComponent(svc.id)}?level=host&value=${svc.enabled ? "off" : "on"}`);
+    act_.append(toggle);
+    tr.append(act_);
+
+    body.append(tr);
+  }
+}
+
+// --- settings ---------------------------------------------------------------
+
+// Which file the next change is written to. The terminal arms this with `g`;
+// here it is a button, and for the same reason it exists there at all: changing
+// something for the box in front of you and changing it for every box you ever
+// connect to are different decisions, and a screen that picks for you will
+// eventually pick wrong.
+let configLevel = "host";
+
+function renderConfig(config) {
+  const host = config.host || "this host";
+  $("config-level").textContent = configLevel === "host" ? "for " + host : "for every host";
+  $("config-what").textContent = config.editable
+    ? "every value says which file decided it — this host, your global file, or devtun's own default"
+    : "started with --no-config: these are the values in force, and nothing here can be saved";
+
+  const body = $("config");
+  body.replaceChildren();
+
+  for (const section of config.sections ?? []) {
+    const head = document.createElement("tr");
+    head.className = "heading";
+    const cell = document.createElement("td");
+    cell.colSpan = 4;
+    cell.textContent = section.title;
+    head.append(cell);
+    body.append(head);
+
+    for (const setting of section.settings ?? []) body.append(settingRow(setting, config));
+  }
+}
+
+function settingRow(setting, config) {
+  const tr = document.createElement("tr");
+  tr.className = "setting";
+
+  const name = document.createElement("td");
+  name.textContent = setting.title;
+  tr.append(name);
+
+  // Where an edit to THIS setting would land: what is armed, or the only level
+  // it has. A setting written at a level it does not accept is a write that
+  // goes nowhere, so the control has to know before it is used.
+  const level = setting.levels.includes(configLevel) ? configLevel : setting.levels[0];
+  const editable = config.editable;
+
+  const control = document.createElement("td");
+  if (setting.options?.length) {
+    const select = document.createElement("select");
+    for (const option of setting.options) {
+      const el = document.createElement("option");
+      el.value = option;
+      el.textContent = option;
+      select.append(el);
+    }
+    // The control shows what the armed level says ON ITS OWN, not the value in
+    // force: an empty level means `inherit`, and one step off it is a decision
+    // for this level rather than a no-op that agrees with the level below.
+    select.value = setting.raw?.[level] || "inherit";
+    select.disabled = !editable;
+    select.onchange = () => {
+      const value = select.value === "inherit" ? "" : select.value;
+      act(`/api/config/${encodeURIComponent(setting.key)}?level=${level}&value=${encodeURIComponent(value)}`);
+    };
+    control.append(select);
+  } else {
+    const input = document.createElement("input");
+    input.value = setting.raw?.[level] ?? "";
+    input.placeholder = "not set for " + level;
+    input.disabled = !editable;
+    // On blur and on enter, not on every keystroke: this writes to a file.
+    const commit = () =>
+      act(`/api/config/${encodeURIComponent(setting.key)}?level=${level}&value=${encodeURIComponent(input.value.trim())}`);
+    input.onchange = commit;
+    input.onkeydown = (event) => { if (event.key === "Enter") input.blur(); };
+    control.append(input);
+  }
+  tr.append(control);
+
+  const from = document.createElement("td");
+  from.className = "from " + setting.level;
+  from.textContent = setting.level;
+  from.title = "the value in force is " + (setting.value || "unset") + ", decided by: " + setting.level;
+  tr.append(from);
+
+  const why = document.createElement("td");
+  why.className = "why";
+  let help = setting.help ?? "";
+  // A setting with one level ignores what is armed, so it says so rather than
+  // appearing to have taken an edit somewhere it did not.
+  if (setting.levels.length === 1 && setting.levels[0] !== configLevel) {
+    help = setting.levels[0] + " only · " + help;
+  }
+  if (setting.warn) {
+    why.classList.add("warn");
+    help = setting.warn;
+  }
+  why.textContent = help;
+  tr.append(why);
+
+  return tr;
+}
+
+$("config-level").onclick = () => {
+  configLevel = configLevel === "host" ? "global" : "host";
+  refreshConfig();
+};
+
+// The settings are polled on their own clock. They change when somebody
+// changes them — at either surface — and not once a second like the counters.
+async function refreshConfig() {
+  try {
+    renderConfig(await api("/api/config"));
+  } catch {
+    // The board says it is out of touch already; a second banner for the same
+    // outage would be noise.
+  }
+}
 
 async function refresh() {
   // A snapshot that is slow to come back must not stack the next poll behind
@@ -707,6 +1016,7 @@ async function refresh() {
     services = new Map((state.services ?? []).map((svc) => [svc.id, svc]));
     renderHeader(state);
     renderPorts(state);
+    renderServices(state);
     renderGrants(state);
     renderRules(state);
     renderAsk(state.waiting ?? []);
@@ -714,8 +1024,7 @@ async function refresh() {
   } catch (err) {
     // The board on screen is now a photograph of the past, and saying so is
     // the difference between a stale page and a lying one.
-    $("offline").textContent = "not talking to devtun — everything below is as it last was. retrying…";
-    $("offline").hidden = false;
+    notice("not talking to devtun — everything below is as it last was. retrying…");
     $("dot").className = "dot gone";
     $("state").textContent = "out of touch";
   } finally {
@@ -755,10 +1064,6 @@ function stream() {
 
   source.onmessage = (message) => {
     const e = JSON.parse(message.data);
-    if (e.class === "security") {
-      if (e.kind === "requested") waiting.set(e.service, e.text);
-      else waiting.delete(e.service);
-      }
     const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
     log.append(line(e));
     while (log.childElementCount > 500) log.firstElementChild.remove();
@@ -770,6 +1075,7 @@ function stream() {
 }
 
 $("reconnect").onclick = () => act("/api/reconnect");
+$("forget").onclick = forgetEverything;
 $("verbose").onchange = (event) => document.body.classList.toggle("verbose", event.target.checked);
 
 // The token was traded for a cookie by the request that fetched this page, so
@@ -778,9 +1084,14 @@ $("verbose").onchange = (event) => document.body.classList.toggle("verbose", eve
 if (location.search) history.replaceState(null, "", location.pathname + location.hash);
 
 refresh();
+refreshConfig();
 stream();
 // A hidden tab is nobody looking. It catches up the moment it is looked at.
 setInterval(() => { if (!document.hidden) refresh(); }, 2000);
+// Settings change when a person changes them, at either surface — so they are
+// re-read far less often than the counters, and immediately after any change
+// this page makes.
+setInterval(() => { if (!document.hidden) refreshConfig(); }, 15000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>
 </body>

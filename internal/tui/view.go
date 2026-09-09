@@ -12,6 +12,7 @@ import (
 
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/session"
+	"github.com/jclement/devtun/internal/settings"
 	"github.com/jclement/devtun/internal/tunnels"
 	"github.com/jclement/devtun/internal/ui"
 )
@@ -504,7 +505,7 @@ func (m *Model) viewChip() string {
 		// Which file the next edit lands in, always on screen while the tab is.
 		// The wider-reaching target is the louder one: an edit meant for one
 		// box that silently went everywhere is the mistake worth preventing.
-		if m.cfgLevel == levelGlobal {
+		if m.cfgLevel == settings.LevelGlobal {
 			parts = append(parts, ui.Warn.Render("edits → every host"))
 		} else {
 			parts = append(parts, ui.Muted.Render("edits → "+m.d.host))

@@ -3,6 +3,41 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Added
+
+- **The board has the two screens it was missing: Services and Settings.**
+  Everything the interface can configure, the board can now configure — where
+  approvals appear, the never-forward lists, the remote shell-rc line, each
+  service on or off per host, and the table's own sort. Every value says which
+  file decided it, and a button says which file the next change lands in.
+- **The board says why a service is not running.** `no gpg-agent on the remote
+  box` is a thing you can act on; `off` on its own is not. It reads the same
+  event stream the interface does, which is the only place a probe's answer is
+  published.
+- **Four actions the board had no equivalent for**: pin a local port, pause and
+  resume automatic forwarding, rewrite an allow rule as a refusal, and forget
+  every live grant and cached secret at once.
+
+### Fixed
+
+- **Security events never reached the board.** A reference left behind by the
+  approval work threw on every event of that class, so approvals, refusals and
+  requests were dropped before they could be logged — and the refresh that
+  follows them never ran, which is why a decision made in the terminal did not
+  show up in the browser. It cost nothing at build time and nothing in any Go
+  test, because neither one runs the page; there is now a test that reads the
+  page for names nothing declares.
+
+### Changed
+
+- **The settings catalogue moved out of the interface into `internal/settings`,
+  which both surfaces read.** It had been a private type inside `internal/tui`,
+  which is precisely why the board had no settings screen: there was nothing to
+  render. A second catalogue would not have stayed a copy — the first person to
+  add a setting adds it to one of them.
+
 ## v0.1.16
 
 ### Added

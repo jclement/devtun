@@ -612,7 +612,7 @@ func TestTheCursorSkipsSectionHeadings(t *testing.T) {
 func configRowText(t *testing.T, m *Model, key string) string {
 	t.Helper()
 	for _, row := range m.cfgRows {
-		if row.setting != nil && row.setting.key == key {
+		if row.setting != nil && row.setting.Key == key {
 			return ansi.Strip(m.configLine(row, false))
 		}
 	}
@@ -626,7 +626,7 @@ func configRowText(t *testing.T, m *Model, key string) string {
 func moveConfigTo(t *testing.T, m *Model, key string) {
 	t.Helper()
 	for range len(m.cfgRows) + 1 {
-		if s := m.selectedSetting(); s != nil && s.key == key {
+		if s := m.selectedSetting(); s != nil && s.Key == key {
 			return
 		}
 		send(m, "down")

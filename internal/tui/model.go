@@ -14,6 +14,7 @@ import (
 	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
+	"github.com/jclement/devtun/internal/settings"
 	"github.com/jclement/devtun/internal/tunnels"
 	"github.com/jclement/devtun/internal/ui"
 )
@@ -197,7 +198,7 @@ type Model struct {
 	// rather than a per-row question so that arming it once covers a run of
 	// edits — which is how somebody setting a box up actually works.
 	cfgRows  []cfgRow
-	cfgLevel cfgLevel
+	cfgLevel settings.Level
 	// dialogPick memoises which program could raise a desktop dialog here.
 	dialogPick *string
 	// promptNow is where approvals are appearing, which the command line can
@@ -281,7 +282,7 @@ func newModel(d deps) *Model {
 		// Edits start aimed at this host: the per-host file is the one people
 		// mean, and a first keystroke that quietly changed every box would be
 		// the wrong direction to be surprised in.
-		cfgLevel:  levelHost,
+		cfgLevel:  settings.LevelHost,
 		promptNow: d.promptBackend,
 		svcState:  map[string]svcState{},
 	}

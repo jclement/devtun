@@ -39,6 +39,10 @@ internal/
   onepassword/   the vault broker and its policy        (was opproxy)
   browser/       URL rewriting and handoff              (was autotun)
   hostcfg/       global and per-host configuration
+  settings/      what devtun's settings ARE, for both surfaces to render
+  authz/         rules, grants and the gate every gated service shares
+  approval/      one question, offered to every surface at once
+  web/           the board: the same session, in a browser
   tui/           the interactive interface
   render/        the log and NDJSON renderers
   ui/            every Lipgloss style, and the TTY checks
@@ -530,6 +534,21 @@ matching pairs for the remote side. They must change together. This is a
 deliberate duplication — the alternative is a shared types package that both the
 workstation and the shim import, which couples every service to every other
 one — but it needs the comment in both files that says so.
+
+**17. Two surfaces, one description of what they show.** The terminal and the
+web board are the same session seen twice, and the rule is that neither may
+know something the other does not. Where they have drifted, it has always been
+the same shape: the board rendered a port's name *instead of* its process while
+the table rendered both, and the settings screen existed only in the terminal
+because the catalogue was a private type inside `internal/tui`.
+
+So what a thing IS lives in a package below both — `internal/settings` for the
+settings, `internal/approval` for a question waiting on a human, `internal/authz`
+for a rule — and what is left in `tui/` and `web/` is only how it is drawn. That
+is a real constraint and it costs something: the settings catalogue had to grow
+a `Deps` struct of eight functions to stop depending on the Bubble Tea model.
+The alternative was a second catalogue, and a second catalogue is not a copy for
+long. The first person to add a setting adds it to one of them.
 
 ## Threat model
 

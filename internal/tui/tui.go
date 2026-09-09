@@ -37,6 +37,13 @@ import (
 // Bus and Session: a session running only tunnels has no 1Password service, and
 // the interface must be honest about that rather than fall over.
 type Options struct {
+	// ShareApplyPrompt, when set, is handed the function that puts a changed
+	// prompt setting into effect. The web board is started before this is, and
+	// needs to be able to move where approvals appear — but only the interface
+	// can do it, because the modal a live change installs does not exist until
+	// this program does.
+	ShareApplyPrompt func(func(prompt.Backend))
+
 	Session *session.Session
 	Bus     *event.Bus
 	Tunnels *tunnels.Service
@@ -131,6 +138,9 @@ func Run(ctx context.Context, o Options) error {
 	prompter.Attach(program)
 	defer prompter.Detach()
 
+	if o.ShareApplyPrompt != nil {
+		o.ShareApplyPrompt(applyPrompt)
+	}
 	applyPrompt(o.Prompt)
 	if o.Session != nil {
 		o.Session.SetAskSetup(prompter.AskSetup)

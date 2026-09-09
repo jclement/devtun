@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -25,6 +26,7 @@ import (
 	"github.com/jclement/devtun/internal/render"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
+	"github.com/jclement/devtun/internal/settings"
 	"github.com/jclement/devtun/internal/sshagent"
 	"github.com/jclement/devtun/internal/sshx"
 	"github.com/jclement/devtun/internal/tui"
@@ -262,14 +264,23 @@ func runUp(ctx context.Context, f upFlags) error {
 		return sess.Prepare(ctx)
 	}
 
+	// Where a changed prompt setting is put into effect. Under the interface
+	// that is the interface's job, because it owns the modal; without one it is
+	// this function, built here where the services and the desk both are.
+	applier := &promptApplier{}
+	if !useTUI {
+		applier.set(func(b prompt.Backend) {
+			installPrompter(b, services, desk)
+		})
+	}
+
 	// The web interface runs *alongside* whichever interface owns the terminal,
-	// rather than instead of it. Approvals stay where they already are — a page
-	// that could approve would have to be right about tokens, origins and
-	// rebinding all at once, and the cost of being subtly wrong there is
-	// somebody's secret.
+	// rather than instead of it — and either can answer an approval, because
+	// both are handed the same question off the same desk.
 	var webURL string
 	if f.web != "" {
-		url, stop, err := serveWeb(ctx, f, bus, sess, tunnelSvc, services, dest.Label(), desk)
+		url, stop, err := serveWeb(ctx, f, bus, sess, tunnelSvc, services, dest.Label(), desk,
+			store, backend, applier)
 		if err != nil {
 			return err
 		}
@@ -279,17 +290,20 @@ func runUp(ctx context.Context, f upFlags) error {
 
 	if useTUI {
 		return tui.Run(ctx, tui.Options{
-			Session:    sess,
-			Bus:        bus,
-			Tunnels:    tunnelSvc,
-			Services:   services,
-			Host:       dest.Label(),
-			Version:    buildinfo.Version(),
-			Store:      store,
-			Prompt:     backend,
-			Approvals:  desk,
-			WebURL:     webURL,
-			NoDissolve: f.noDissolve,
+			// The board is already running and needs to be able to move where
+			// approvals appear, which only the interface can actually do.
+			ShareApplyPrompt: applier.set,
+			Session:          sess,
+			Bus:              bus,
+			Tunnels:          tunnelSvc,
+			Services:         services,
+			Host:             dest.Label(),
+			Version:          buildinfo.Version(),
+			Store:            store,
+			Prompt:           backend,
+			Approvals:        desk,
+			WebURL:           webURL,
+			NoDissolve:       f.noDissolve,
 		})
 	}
 	return runHeadless(ctx, f, sess, bus, dest, webURL)
@@ -302,9 +316,41 @@ func runUp(ctx context.Context, f upFlags) error {
 // there scrolls the frame — the bug that ate the header once already — while in
 // log mode stderr is exactly right. The URL carries the token, so it goes where
 // a person is looking and not into a log they may be piping to a file.
+// promptApplier holds the function that puts a changed prompt setting into
+// effect now rather than at the next connection.
+//
+// It exists because of an ordering problem rather than a design one: the board
+// is started before the interface, and under `--tui --web` it is the interface
+// that owns the modal a live change installs — which does not exist until its
+// program does. So the board is handed this, and whoever can build the real
+// function fills it in.
+type promptApplier struct {
+	mu    sync.Mutex
+	apply func(prompt.Backend)
+}
+
+func (p *promptApplier) set(fn func(prompt.Backend)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.apply = fn
+}
+
+// Apply is a no-op before anything has been installed. A setting changed that
+// early is still written and still takes effect on the next connection; what is
+// missed is only the "now" part.
+func (p *promptApplier) Apply(backend prompt.Backend) {
+	p.mu.Lock()
+	fn := p.apply
+	p.mu.Unlock()
+	if fn != nil {
+		fn(backend)
+	}
+}
+
 func serveWeb(
 	ctx context.Context, f upFlags, bus *event.Bus, sess *session.Session,
 	tunnelSvc *tunnels.Service, services []service.Service, label string, desk *approval.Desk,
+	store *hostcfg.Store, backend prompt.Backend, applier *promptApplier,
 ) (string, func(), error) {
 	addr := strings.TrimSpace(f.web)
 	if addr == "on" || addr == "true" {
@@ -325,6 +371,13 @@ func serveWeb(
 		Status:    sess.Status,
 		Retry:     sess.RetryNow,
 		Approvals: desk,
+		// The settings screen. Without these the board can list a session and
+		// not configure it, which is the half of the interface that was
+		// missing from it.
+		Store:         storeOrNil(store),
+		PromptNow:     func() prompt.Backend { return backend },
+		ApplyPrompt:   applier.Apply,
+		DialogChooser: prompt.DialogBackend,
 	})
 	if err != nil {
 		return "", nil, err
@@ -413,6 +466,27 @@ func (a webTunnelAdapter) SetLabel(port int, label string) error {
 		return errors.New("no connection yet")
 	}
 	return mgr.SetLabel(port, label)
+}
+
+func (a webTunnelAdapter) SetLocalPort(port, local int) error {
+	mgr := a.svc.Manager()
+	if mgr == nil {
+		return errors.New("no connection yet")
+	}
+	return mgr.SetLocalPort(port, local)
+}
+
+func (a webTunnelAdapter) Policy() tunnels.Policy {
+	if mgr := a.svc.Manager(); mgr != nil {
+		return mgr.Policy()
+	}
+	return tunnels.Policy{}
+}
+
+func (a webTunnelAdapter) SetPolicy(p tunnels.Policy) {
+	if mgr := a.svc.Manager(); mgr != nil {
+		mgr.SetPolicy(p)
+	}
 }
 
 func (a webTunnelAdapter) Hidden() int {
@@ -811,4 +885,42 @@ func globalAccounts(store *hostcfg.Store, account string) (onepassword.Accounts,
 		accounts.Default = account
 	}
 	return accounts, nil
+}
+
+// installPrompter puts a prompter on every service that asks a human, found by
+// interface rather than by name.
+//
+// That list was once written down by hand and the SSH agent broker was not on
+// it, so every signature was refused in the same instant it was requested. A
+// service built with no prompter refuses by construction, which is the right
+// default and exactly why forgetting to install one is silent.
+func installPrompter(backend prompt.Backend, services []service.Service, desk *approval.Desk) {
+	prompter, err := buildPrompter(backend, false)
+	if err != nil || prompter == nil {
+		return
+	}
+	// The desk wraps whatever the setting chose rather than replacing it, so
+	// `prompt: deny` still denies: a session told to answer nothing must not
+	// become answerable by opening a browser tab.
+	if desk != nil && backend != prompt.BackendDeny {
+		desk.SetPrompter(prompter)
+		prompter = desk
+	}
+	for _, svc := range services {
+		if p, ok := svc.(interface{ SetPrompter(prompt.Prompter) }); ok {
+			p.SetPrompter(prompter)
+		}
+	}
+}
+
+// storeOrNil hands the board a real store or nothing at all.
+//
+// A typed nil in an interface is not nil, and the settings screen tests the
+// store to decide whether anything can be saved — so a --no-config run has to
+// arrive as an untyped nil or every write would be attempted and panic.
+func storeOrNil(store *hostcfg.Store) settings.Store {
+	if store == nil {
+		return nil
+	}
+	return store
 }
