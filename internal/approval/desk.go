@@ -94,6 +94,16 @@ type Desk struct {
 	// timeout reads as a refusal nobody made — so the default is every surface
 	// this session has, and the first answer wins.
 	asking []prompt.Prompter
+	// publish says whether a question is offered to whatever watches this desk
+	// — which in practice is the web board.
+	//
+	// The board is not a Prompter: it reads the waiting list rather than being
+	// asked. So without this, choosing `native` or `tui` narrowed where the
+	// question was *drawn* and left the board able to see and answer it anyway
+	// — which makes naming a surface a suggestion rather than an instruction,
+	// and quietly defeats somebody who set `prompt: tui` precisely so that a
+	// browser could not approve their key.
+	publish bool
 	// notify is called whenever the waiting set changes, so a surface can
 	// redraw without polling. Optional.
 	notify func()
@@ -116,6 +126,9 @@ type Options struct {
 	Changed func()
 	// Now is injectable for tests.
 	Now func() time.Time
+	// Publish offers questions to whatever is watching this desk before Fill
+	// has said which surfaces were chosen. Fill overrides it either way.
+	Publish bool
 }
 
 // New returns a desk.
@@ -127,6 +140,11 @@ func New(opts Options) *Desk {
 		notify:  opts.Changed,
 		now:     opts.Now,
 		waiting: map[string]*pending{},
+		// Publishing is off until Fill says which surfaces were chosen. A desk
+		// nobody has configured must not be answerable from a board: the
+		// direction to fail in is "the question was not offered", never "the
+		// question was offered somewhere it should not have been".
+		publish: opts.Publish,
 	}
 	desk.AddPrompter(opts.Prompter)
 	return desk
@@ -162,16 +180,20 @@ func (d *Desk) Ask(ctx context.Context, request prompt.Request) (prompt.Choice, 
 	}
 
 	d.mu.Lock()
-	d.waiting[id] = p
+	published := d.publish
+	if published {
+		d.waiting[id] = p
+	}
 	d.mu.Unlock()
-	d.changed()
-
-	defer func() {
-		d.mu.Lock()
-		delete(d.waiting, id)
-		d.mu.Unlock()
+	if published {
 		d.changed()
-	}()
+		defer func() {
+			d.mu.Lock()
+			delete(d.waiting, id)
+			d.mu.Unlock()
+			d.changed()
+		}()
+	}
 
 	// The inner prompter runs under a context this cancels, so an answer from
 	// the board withdraws the modal rather than leaving it on screen waiting
@@ -256,6 +278,11 @@ func (d *Desk) Fill(surfaces prompt.Surfaces, tuiPrompter prompt.Prompter) {
 		if !surfaces.Has(surface) {
 			continue
 		}
+		if surface == prompt.SurfaceWeb {
+			// Nothing to ask: the board watches instead. Publishing IS its
+			// installation.
+			continue
+		}
 		if surface == prompt.SurfaceTUI && tuiPrompter != nil {
 			asking = append(asking, tuiPrompter)
 			continue
@@ -273,6 +300,7 @@ func (d *Desk) Fill(surfaces prompt.Surfaces, tuiPrompter prompt.Prompter) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.asking = asking
+	d.publish = surfaces.Has(prompt.SurfaceWeb)
 }
 
 // AddPrompter adds a surface to ask alongside the others.
@@ -287,6 +315,15 @@ func (d *Desk) AddPrompter(p prompt.Prompter) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.asking = append(d.asking, p)
+}
+
+// Publishing reports whether questions are offered to whatever watches this
+// desk — the web board. False means the board will show nothing and can answer
+// nothing, which is what choosing surfaces without `web` has to mean.
+func (d *Desk) Publishing() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.publish
 }
 
 // Asking reports how many surfaces a question is put TO, which does not count

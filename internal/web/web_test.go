@@ -658,7 +658,9 @@ func TestLoopbackHost(t *testing.T) {
 // function that stops the asker.
 func deskWith(t *testing.T, opts Options) (*Server, *approval.Desk, approval.Item, func()) {
 	t.Helper()
-	desk := approval.New(approval.Options{})
+	// Publishing on, because the board only sees a question when `web` is one
+	// of the chosen surfaces — which is what these tests are about.
+	desk := approval.New(approval.Options{Publish: true})
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		_, _ = desk.Ask(ctx, prompt.Request{

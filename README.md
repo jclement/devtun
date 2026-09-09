@@ -304,7 +304,9 @@ already decided.
 | `web` | the board, and only the board |
 | `deny` | nobody. Everything not already covered by a rule is refused |
 
-Naming one narrows it deliberately, and you can name several — `tui,web`. The
+Naming one narrows it deliberately, and it narrows *everything*: leave `web` out
+and the board will not show the question at all, let alone answer it. You can
+name several — `tui,web`. The
 difference between `all` and naming is what happens when a surface isn't there:
 `all` is a wish, so a machine with no dialog program simply has one fewer place
 to ask; naming is an instruction, so `--prompt web` without `--web` is an error

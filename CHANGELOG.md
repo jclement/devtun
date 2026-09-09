@@ -21,6 +21,18 @@ this is 0.x, a minor bump may break something.
   a session that quietly answers nothing. The old spellings still work — `auto`
   means `all`, `dialog` means `native`.
 
+### Fixed
+
+- **Choosing surfaces did not actually keep a question off the board.** The
+  board is not a prompter — it reads the desk's waiting list rather than being
+  asked — so `--prompt tui` or `native` narrowed only where the question was
+  *drawn*, and left the board able to see it and approve it. That makes naming
+  a surface a suggestion rather than an instruction, and quietly defeats
+  somebody who set `prompt: tui` for the one reason people usually set it: so a
+  browser cannot approve the use of their key. A desk now publishes only when
+  `web` is among the chosen surfaces, and an unconfigured desk publishes
+  nothing at all.
+
 ### Added
 
 - **prettyprompt is used for the desktop dialog when it is installed.**

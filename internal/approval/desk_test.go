@@ -47,7 +47,7 @@ func waitFor(t *testing.T, d *Desk, want int) []Item {
 // is what the asker gets back.
 func TestAnsweringFromTheDeskIsWhatTheAskerGets(t *testing.T) {
 	inner := &blockingPrompter{asked: make(chan struct{}, 1)}
-	desk := New(Options{Prompter: inner})
+	desk := New(Options{Prompter: inner, Publish: true})
 
 	got := make(chan prompt.Choice, 1)
 	go func() {
@@ -84,7 +84,7 @@ func TestAnsweringFromTheDeskIsWhatTheAskerGets(t *testing.T) {
 // whatever question happened to be waiting next.
 func TestAnIDIsGoodForOneAnswer(t *testing.T) {
 	inner := &blockingPrompter{asked: make(chan struct{}, 1)}
-	desk := New(Options{Prompter: inner})
+	desk := New(Options{Prompter: inner, Publish: true})
 
 	go func() { _, _ = desk.Ask(context.Background(), testRequest()) }()
 	id := waitFor(t, desk, 1)[0].ID
@@ -112,7 +112,7 @@ func TestAnUnknownIDIsRefused(t *testing.T) {
 // ever offered for a vault read.
 func TestAChoiceMustHaveBeenOnThatRequestsMenu(t *testing.T) {
 	inner := &blockingPrompter{asked: make(chan struct{}, 1)}
-	desk := New(Options{Prompter: inner})
+	desk := New(Options{Prompter: inner, Publish: true})
 
 	go func() { _, _ = desk.Ask(context.Background(), testRequest()) }()
 	item := waitFor(t, desk, 1)[0]
@@ -138,7 +138,7 @@ func TestTheFirstAnswerWinsAndTheOtherIsWithdrawn(t *testing.T) {
 		close(withdrawn)
 		return prompt.ChoiceDeny, nil
 	})
-	desk := New(Options{Prompter: inner})
+	desk := New(Options{Prompter: inner, Publish: true})
 
 	go func() { _, _ = desk.Ask(context.Background(), testRequest()) }()
 	id := waitFor(t, desk, 1)[0].ID
@@ -156,7 +156,7 @@ func TestTheFirstAnswerWinsAndTheOtherIsWithdrawn(t *testing.T) {
 // The other direction: the modal answers, and the question leaves the desk so
 // the board stops offering something that has already been decided.
 func TestAnAnswerAtTheModalClearsTheDesk(t *testing.T) {
-	desk := New(Options{Prompter: prompt.PrompterFunc(
+	desk := New(Options{Publish: true, Prompter: prompt.PrompterFunc(
 		func(context.Context, prompt.Request) (prompt.Choice, error) {
 			return prompt.ChoiceAllowSecretTTL, nil
 		})})
@@ -173,7 +173,7 @@ func TestAnAnswerAtTheModalClearsTheDesk(t *testing.T) {
 // A question that times out leaves nothing behind to answer, and refuses.
 func TestATimedOutQuestionRefusesAndLeavesNothing(t *testing.T) {
 	inner := &blockingPrompter{asked: make(chan struct{}, 1)}
-	desk := New(Options{Prompter: inner})
+	desk := New(Options{Prompter: inner, Publish: true})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -194,7 +194,7 @@ func TestATimedOutQuestionRefusesAndLeavesNothing(t *testing.T) {
 // answered twice and one of the callers is wrong about what happened.
 func TestConcurrentAnswersProduceExactlyOneWinner(t *testing.T) {
 	inner := &blockingPrompter{asked: make(chan struct{}, 1)}
-	desk := New(Options{Prompter: inner})
+	desk := New(Options{Prompter: inner, Publish: true})
 
 	go func() { _, _ = desk.Ask(context.Background(), testRequest()) }()
 	id := waitFor(t, desk, 1)[0].ID
@@ -282,7 +282,7 @@ func (r *recorder) wasAsked(t *testing.T) {
 // nobody made.
 func TestAQuestionGoesToEverySurfaceAtOnce(t *testing.T) {
 	terminal, dialog := newRecorder(), newRecorder()
-	desk := New(Options{Prompter: terminal})
+	desk := New(Options{Prompter: terminal, Publish: true})
 	desk.AddPrompter(dialog)
 
 	if got := desk.Asking(); got != 2 {
@@ -304,7 +304,7 @@ func TestAQuestionGoesToEverySurfaceAtOnce(t *testing.T) {
 // next thing you do is answer a question that has already been decided.
 func TestTheFirstSurfaceToAnswerTakesTheOthersDown(t *testing.T) {
 	terminal, dialog := newRecorder(), newRecorder()
-	desk := New(Options{Prompter: terminal})
+	desk := New(Options{Prompter: terminal, Publish: true})
 	desk.AddPrompter(dialog)
 
 	got := make(chan prompt.Choice, 1)
@@ -341,7 +341,7 @@ func TestASurfaceThatFailsDoesNotAnswerForTheOthers(t *testing.T) {
 		return prompt.ChoiceDeny, errors.New("no window server")
 	})
 	good := newRecorder()
-	desk := New(Options{Prompter: broken})
+	desk := New(Options{Prompter: broken, Publish: true})
 	desk.AddPrompter(good)
 
 	got := make(chan prompt.Choice, 1)
@@ -372,7 +372,7 @@ func TestASurfaceThatFailsDoesNotAnswerForTheOthers(t *testing.T) {
 // when its program starts, and again when the setting changes; neither should
 // quietly drop the desktop dialog beside it.
 func TestReplacingASurfaceDoesNotDropTheRest(t *testing.T) {
-	desk := New(Options{Prompter: newRecorder()})
+	desk := New(Options{Prompter: newRecorder(), Publish: true})
 	desk.AddPrompter(newRecorder())
 	if got := desk.Asking(); got != 2 {
 		t.Fatalf("Asking = %d, want 2", got)
@@ -391,4 +391,67 @@ func TestReplacingASurfaceDoesNotDropTheRest(t *testing.T) {
 	if got := desk.Asking(); got != 2 {
 		t.Errorf("a nil surface was counted: %d", got)
 	}
+}
+
+// Naming a surface has to be an instruction, and the board is the one that
+// could ignore it.
+//
+// The board is not a Prompter — it reads the waiting list rather than being
+// asked — so restricting the surfaces narrowed only where the question was
+// *drawn*, and left the board able to see it and answer it anyway. Somebody who
+// sets `prompt: tui` has usually done it for exactly one reason: so that a
+// browser cannot approve the use of their key.
+func TestChoosingSurfacesWithoutTheBoardKeepsItOffTheBoard(t *testing.T) {
+	// Fill is what decides, so that is what is asked. Driving a real question
+	// through a set containing `native` would put an actual dialog on the
+	// screen of whoever is running the tests.
+	for _, chosen := range []string{"tui", "native", "tui,native"} {
+		desk := New(Options{Publish: true})
+		desk.Fill(prompt.MustParseSurfaces(chosen), newRecorder())
+		if desk.Publishing() {
+			t.Errorf("%q leaves the board able to see and answer the question", chosen)
+		}
+	}
+
+	// And end to end for the one that can be driven without drawing anything:
+	// a question really in flight, and nothing on the board.
+	asked := newRecorder()
+	desk := New(Options{Publish: true})
+	desk.Fill(prompt.MustParseSurfaces("tui"), asked)
+
+	go func() { _, _ = desk.Ask(context.Background(), testRequest()) }()
+	asked.wasAsked(t)
+	if items := desk.Waiting(); len(items) != 0 {
+		t.Fatalf("the question was published to the board anyway: %+v", items)
+	}
+}
+
+// ...and with the board among them, it is published.
+func TestChoosingTheBoardPublishes(t *testing.T) {
+	desk := New(Options{})
+	// `all` minus native, so the test does not draw a dialog; what matters
+	// here is that `web` among the surfaces means published.
+	desk.Fill(prompt.MustParseSurfaces("tui,web"), newRecorder())
+
+	go func() { _, _ = desk.Ask(context.Background(), testRequest()) }()
+	if items := waitFor(t, desk, 1); items[0].Request.Subject == "" {
+		t.Error("the question was published without its subject")
+	}
+}
+
+// Fill is what decides, not how the desk happened to be constructed. A desk
+// nobody has configured must not be answerable from a board.
+func TestAnUnconfiguredDeskOffersNothingToWatchers(t *testing.T) {
+	desk := New(Options{Prompter: newRecorder()})
+	go func() { _, _ = desk.Ask(context.Background(), testRequest()) }()
+
+	time.Sleep(50 * time.Millisecond)
+	if items := desk.Waiting(); len(items) != 0 {
+		t.Errorf("a desk that was never told its surfaces published anyway: %+v", items)
+	}
+
+	// And Fill turns it on, so this is a default rather than a dead end.
+	desk.Fill(prompt.MustParseSurfaces("web"), nil)
+	go func() { _, _ = desk.Ask(context.Background(), testRequest()) }()
+	waitFor(t, desk, 1)
 }
