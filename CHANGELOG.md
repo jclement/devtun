@@ -50,6 +50,11 @@ reading only the code — found these. Each was reproduced before it was fixed.
   "there is more to this rule".
 - **The web board still said it could not approve**, on the same screen as the
   approval dialog it can answer.
+- A flaky SSH test that read the server's record of a client banner without
+  waiting for the server to have written it. It went red once in a full
+  `-race ./...` and passed five runs of its own package, which is the signature
+  of a timing race and not of a defect — but a suite you cannot trust when it is
+  red is worth less than one test.
 
 ## v0.1.14
 

@@ -74,7 +74,7 @@ func TestDialAnnouncesThisBuild(t *testing.T) {
 	server := startServer(t, serverOptions{noAuth: true})
 	connectTo(t, server)
 
-	if got := server.bannerSeen(); got != buildinfo.UserAgent() {
+	if got := server.awaitBanner(t); got != buildinfo.UserAgent() {
 		t.Errorf("client version = %q, want %q", got, buildinfo.UserAgent())
 	}
 
@@ -86,7 +86,7 @@ func TestDialAnnouncesThisBuild(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	if got := custom.bannerSeen(); got != "SSH-2.0-something_else" {
+	if got := custom.awaitBanner(t); got != "SSH-2.0-something_else" {
 		t.Errorf("client version = %q, want the override", got)
 	}
 }

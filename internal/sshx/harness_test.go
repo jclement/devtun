@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -276,6 +277,27 @@ func (s *testServer) bannerSeen() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.clientVersion
+}
+
+// awaitBanner waits for the server to have recorded a client version.
+//
+// Dial returns when the *client* has finished its handshake, which is not the
+// same instant as the server goroutine writing down what it saw. Reading once
+// therefore passes on a quiet machine and fails on a loaded one — it went red
+// exactly once in a full `-race ./...` and passed five runs of the package
+// alone, which is the signature of this and not of a real defect.
+func (s *testServer) awaitBanner(t *testing.T) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if seen := s.bannerSeen(); seen != "" {
+			return seen
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server never recorded a client version")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // liveConnections reports how many SSH connections are still established.
