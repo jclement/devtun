@@ -3,6 +3,18 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Changed
+
+- **The Activity tab no longer also shows the activity pane.** It was the same
+  log twice — a three-line summary directly beneath the full list it was
+  summarising — which is not a reminder, it is asking which of the two is the
+  real one. The pane still sits under every other tab, which is the point of it:
+  an approval is never off-screen while you are looking at the port table. The
+  rows it gives up go to the list, so the tab you open to read the log now shows
+  five more lines of it.
+
 ## v0.1.19
 
 ### Changed

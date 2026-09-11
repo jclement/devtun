@@ -161,7 +161,7 @@ A summary strip across the top counts what is live, new, hidden and broken, with
 
 **Name a port and it stays named.** `n` in the table, or the `name` button on a row of the web board; it's remembered per host in `hosts/<host>.yaml`, and it appears beside the process rather than instead of it — `frontend · node vite` — because what you called it and what is actually running are two different facts and you usually want both.
 
-`/` searches, and it is a **fuzzy** match ranked by relevance: `vite` finds `node vite` and puts it above a port that merely sorts earlier. The activity pane sits under every tab, so a 1Password approval is never off-screen; it takes about a quarter of the window, up to eight lines, and gives way entirely on a window too short to spare them.
+`/` searches, and it is a **fuzzy** match ranked by relevance: `vite` finds `node vite` and puts it above a port that merely sorts earlier. The activity pane sits under every tab *except* Activity itself — there it would be the same log twice, the lower copy a three-line summary of the list directly above it, which only makes you ask which one is real. Everywhere else it means a 1Password approval is never off-screen. It takes about a quarter of the window, up to eight lines, and gives way entirely on a window too short to spare them, or on the tab that is already showing it.
 
 ### Keys
 

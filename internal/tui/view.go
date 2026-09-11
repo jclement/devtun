@@ -204,6 +204,15 @@ func (m *Model) listTop() int {
 // eight rows you have is not helping — and otherwise grows toward tickerWant
 // without ever taking more than a quarter of the screen.
 func (m *Model) tickerHeight() int {
+	// Not on the Activity tab, which is the same events in a taller window.
+	// Two panes of one log, one of them a three-line summary of the other, is
+	// not a reminder — it is asking which of the two is the real one. The rows
+	// go to the list instead, so the tab you opened to read the log is the tab
+	// that shows the most of it.
+	if m.tab == tabActivity {
+		return 0
+	}
+
 	// Nothing to show means no pane at all — not a labelled separator over
 	// blank rows, which is the rule the frame states. It has to be decided
 	// here rather than in ticker(): chrome() sizes the body from this, so a

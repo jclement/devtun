@@ -481,3 +481,46 @@ func TestTheBottomChipSurvivesEveryWidth(t *testing.T) {
 		}
 	}
 }
+
+// The Activity tab does not also carry the ticker.
+//
+// The ticker is the last few events under every *other* tab, so an approval is
+// never off-screen while you are looking at the port table. On the Activity tab
+// it was the same log twice, the lower one a three-line summary of the list
+// directly above it — which is not a reminder, it is asking which of the two is
+// the real one. The rows go to the list instead, so the tab you open to read
+// the log is the one that shows the most of it.
+func TestTheActivityTabDoesNotAlsoCarryTheTicker(t *testing.T) {
+	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node"))})
+	m.Update(tea.WindowSizeMsg{Width: 92, Height: 24})
+	for range 6 {
+		m.Update(eventMsg(event.Event{
+			Service: "session", Kind: "x", Class: event.Security, Text: "bedev asked for a secret",
+		}))
+	}
+
+	// On another tab it is there, or this test proves nothing.
+	m.tab = tabTunnels
+	m.reload()
+	if !strings.Contains(plainView(m), "─ activity ─") {
+		t.Fatal("the ticker is missing from the Tunnels tab, so this test is not measuring anything")
+	}
+	tallWithTicker := m.listHeight()
+
+	m.tab = tabActivity
+	m.reload()
+	frame := plainView(m)
+	if strings.Contains(frame, "─ activity ─") {
+		t.Errorf("the Activity tab shows the ticker as well as the list:\n%s", frame)
+	}
+	if got := m.listHeight(); got <= tallWithTicker {
+		t.Errorf("the Activity list is %d rows and the Tunnels list is %d — "+
+			"the rows the ticker gave up did not reach it", got, tallWithTicker)
+	}
+
+	// The frame still fills the terminal exactly: dropping a pane must not
+	// leave the bottom border short of the last row.
+	if got := len(strings.Split(frame, "\n")); got != 24 {
+		t.Errorf("the frame is %d lines on a 24-row terminal", got)
+	}
+}
