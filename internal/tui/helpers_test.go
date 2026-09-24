@@ -271,6 +271,10 @@ func newTestModel(t *testing.T, d deps) *Model {
 		d.openURL = func(context.Context, string) error { return nil }
 	}
 	m := newModel(d)
+	// Tests start on the port table, which is what most of them drive. The
+	// interface itself opens on Activity; TestItOpensOnTheActivityLog holds
+	// that.
+	m.tab = tabTunnels
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.status = session.Status{State: session.Connected, Since: testNow.Add(-14 * time.Minute)}
 	m.everConnected = true

@@ -279,6 +279,10 @@ func newModel(d deps) *Model {
 		sortKey: sortKeyNamed(prefs.Sort),
 		reverse: prefs.Reverse,
 		status:  session.Status{State: session.Connecting},
+		// The log is what you open the interface to read: whether it
+		// connected, what got forwarded, what just asked for a secret. The
+		// port table is one keystroke away and is not where the news is.
+		tab: tabActivity,
 		// Edits start aimed at this host: the per-host file is the one people
 		// mean, and a first keystroke that quietly changed every box would be
 		// the wrong direction to be surprised in.

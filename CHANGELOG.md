@@ -3,6 +3,14 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Changed
+
+- **`--tui` opens on the Activity tab.** The log is what you look at the
+  interface to read — whether it connected, what got forwarded, what just asked
+  for a secret. The port table is still one keystroke away (`1`, or `←`).
+
 ## v0.1.20
 
 ### Changed

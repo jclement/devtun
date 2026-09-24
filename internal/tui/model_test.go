@@ -20,6 +20,16 @@ import (
 	"github.com/jclement/devtun/internal/tunnels"
 )
 
+// The log is where the news is — connected, forwarded, asked for a secret — so
+// that is what the interface shows first. Built with newModel rather than the
+// helper, which moves to Tunnels for the tests that drive the table.
+func TestItOpensOnTheActivityLog(t *testing.T) {
+	m := newModel(deps{tunnels: newStub(row(3000, 3000, "node")), host: "bedev", now: func() time.Time { return testNow }})
+	if m.tab != tabActivity {
+		t.Errorf("the interface opened on %v, want Activity", m.tab)
+	}
+}
+
 func TestTabsCycleAndJump(t *testing.T) {
 	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node"))})
 
