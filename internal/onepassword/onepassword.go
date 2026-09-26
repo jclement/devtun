@@ -39,6 +39,14 @@ import (
 // writes it; this is here so the tests can name the same key.
 const rulesKey = "rules"
 
+// allowCommandsKey and allowAllCommandsKey widen the command guard. They are
+// read through the host's config, which falls back to the global file, so the
+// same `1password: allow_commands:` works in either place.
+const (
+	allowCommandsKey    = "allow_commands"
+	allowAllCommandsKey = "allow_all_commands"
+)
+
 // SecretRunner is the slice of the 1Password CLI this service needs. It is an
 // interface so the authorisation logic can be tested without a vault — the
 // decisions are the part worth testing, and they must not depend on somebody
@@ -63,7 +71,8 @@ type Options struct {
 	// PromptTimeout bounds how long a request waits for a human. Zero means two
 	// minutes.
 	PromptTimeout time.Duration
-	// AllowCommands extends the read-only command allowlist.
+	// AllowCommands extends the read-only command allowlist. The config file's
+	// `allow_commands` is added to it on Attach.
 	AllowCommands []string
 	// AllowAllCommands disables the allowlist. It is equivalent to handing the
 	// remote box the vault; it exists as an escape hatch, not as a setting.
@@ -192,18 +201,57 @@ func firstLine(s string) string {
 	return s
 }
 
-// Attach binds the service to a connection. The only work is remembering where
-// events go and, the first time, picking up the rules already recorded for this
-// host.
+// Attach binds the service to a connection: it remembers where events go,
+// picks up the rules already recorded for this host, and builds the command
+// guard from the host's config.
+//
+// The guard is built here rather than in New because `allow_commands` is a
+// config setting, and config is only reachable through a host. It was once
+// accepted by Options and read from nowhere, so every `allow_commands` a user
+// wrote was silently ignored and `op item create` stayed refused however it
+// was configured.
 func (s *Service) Attach(_ context.Context, h service.Host) (service.Instance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.host = h
 	if err := s.gate.Adopt(h.Label(), h.Config(), "1Password"); err != nil {
 		return nil, err
 	}
+	guard, err := s.guardFor(h.Config())
+	if err != nil {
+		return nil, err
+	}
+	s.host = h
+	s.guard = guard
 	return instance{}, nil
+}
+
+// guardFor builds the command guard from Options plus whatever the config
+// adds. Config can only widen what Options allowed, never narrow it.
+func (s *Service) guardFor(config service.Config) (*opguard.Guard, error) {
+	commands := append([]string(nil), s.opts.AllowCommands...)
+	var extra []string
+	if _, err := config.Get(allowCommandsKey, &extra); err != nil {
+		return nil, fmt.Errorf("1password: reading %s: %w", allowCommandsKey, err)
+	}
+	commands = append(commands, extra...)
+
+	allowAll := s.opts.AllowAllCommands
+	var configAll bool
+	if _, err := config.Get(allowAllCommandsKey, &configAll); err != nil {
+		return nil, fmt.Errorf("1password: reading %s: %w", allowAllCommandsKey, err)
+	}
+	return opguard.NewGuard(opguard.GuardConfig{
+		AllowCommands:    commands,
+		AllowAllCommands: allowAll || configAll,
+	}), nil
+}
+
+// currentGuard returns the guard for the attached host.
+func (s *Service) currentGuard() *opguard.Guard {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.guard
 }
 
 // Forget drops every live grant and everything cached under one. It is the

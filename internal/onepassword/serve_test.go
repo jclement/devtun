@@ -256,6 +256,58 @@ func TestGuardBlocksBeforePolicyIsConsulted(t *testing.T) {
 	}
 }
 
+// `allow_commands` in the config file has to reach the guard. It once went
+// nowhere: Options had the field and nothing filled it from config, so every
+// entry a user wrote was ignored and `op item create` stayed refused.
+func TestAllowCommandsFromConfigWidensTheGuard(t *testing.T) {
+	host := newFakeHost("devbox")
+	host.config.seed(t, allowCommandsKey, []string{"item create"})
+
+	runner := &fakeRunner{version: "2.30.0"}
+	opts := allowAll()
+	opts.Runner = runner
+	opts.Prompter = &scriptedPrompter{}
+	svc := New(opts)
+	if _, err := svc.Attach(context.Background(), host); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	h := &harness{service: svc, runner: runner, host: host}
+
+	if response := h.exec(t, "item", "create", "--category", "Secure Note", "--title", "x"); response.Exit == ExitDenied {
+		t.Fatalf("item create was refused although allow_commands lists it: %q", response.Error)
+	}
+	if execs, _ := runner.callCounts(); execs != 1 {
+		t.Errorf("op was called %d times, want 1", execs)
+	}
+	// Widening one command widens only that command.
+	if response := h.exec(t, "item", "delete", "x"); response.Exit != ExitDenied {
+		t.Errorf("item delete exit = %d, want %d", response.Exit, ExitDenied)
+	}
+}
+
+func TestAllowAllCommandsFromConfigDisablesTheAllowlist(t *testing.T) {
+	host := newFakeHost("devbox")
+	host.config.seed(t, allowAllCommandsKey, true)
+
+	runner := &fakeRunner{version: "2.30.0"}
+	opts := allowAll()
+	opts.Runner = runner
+	opts.Prompter = &scriptedPrompter{}
+	svc := New(opts)
+	if _, err := svc.Attach(context.Background(), host); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	h := &harness{service: svc, runner: runner, host: host}
+
+	if response := h.exec(t, "item", "delete", "x"); response.Exit == ExitDenied {
+		t.Fatalf("item delete was refused under allow_all_commands: %q", response.Error)
+	}
+	// The flags that redirect op at local state stay refused regardless.
+	if response := h.exec(t, "read", "op://V/I/F", "--out-file", "/tmp/x"); response.Exit != ExitDenied {
+		t.Errorf("--out-file exit = %d, want %d", response.Exit, ExitDenied)
+	}
+}
+
 func TestOutFileFlagIsRefused(t *testing.T) {
 	h := start(t, allowAll(), map[string]string{"op://Personal/Docker/PAT": "ghp_secret"})
 

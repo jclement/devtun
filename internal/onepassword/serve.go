@@ -90,7 +90,7 @@ func (s *Service) handleExec(ctx context.Context, l *link, request opRequest) *o
 	if len(request.Argv) == 0 {
 		return refuse("no command given")
 	}
-	if err := s.guard.Check(request.Argv); err != nil {
+	if err := s.currentGuard().Check(request.Argv); err != nil {
 		l.denied("op "+strings.Join(request.Argv, " "), err.Error())
 		return &opResponse{Exit: ExitDenied, Error: err.Error()}
 	}

@@ -376,6 +376,18 @@ The **Access** tab in `--tui` lists everything currently deciding — live grant
 
 Only read-only `op` commands are proxied at all — `read`, `item get`, `item list`, and friends. Anything else needs an explicit `allow_commands` entry, because "pass the arguments through" would otherwise hand anyone with a shell on that box `op item delete` against an unlocked vault.
 
+`allow_commands` sits directly under `1password:` — not inside a rule — in a host's file to widen that host alone, or in the global file to widen every host. It *adds* to the read-only defaults, so list only the extra commands. Each entry is a command path; `item create` allows `op item create …` with any arguments.
+
+```yaml
+# ~/.config/devtun/hosts/bedev.yaml
+1password:
+  allow_commands:
+    - item create
+    - item edit
+```
+
+A command on the list still goes through policy — its subject is the whole command line, so each `op item create` is asked about unless a rule already covers it. `allow_all_commands: true` drops the allowlist altogether — deletions included — and exists as an escape hatch, not a setting. `--out-file`, `--session` and `--config` stay refused either way, because they point `op` at the laptop rather than the box that asked. The change takes effect on the next connection.
+
 ## It survives your laptop
 
 Close the lid, change wifi, drop off the VPN. devtun probes the link every 15 seconds *with a timeout*, because the case that matters isn't a dropped connection — it's a black-holed one, where TCP thinks everything is fine and the packets simply stop. Without the timeout it would sit there looking healthy and dead.

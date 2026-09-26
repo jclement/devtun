@@ -3,6 +3,17 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Fixed
+
+- **`allow_commands` now does something.** The setting was documented and never
+  read: the 1Password service had a place for it and nothing filled that place
+  from config, so `op item create` and every other non-read command stayed
+  refused however it was configured. It is read from `1password:` in a host's
+  file or the global file, along with `allow_all_commands`, and the README now
+  shows where it goes — directly under `1password:`, not inside a rule.
+
 ## v0.1.21
 
 ### Changed
