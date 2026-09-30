@@ -3,6 +3,17 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Fixed
+
+- **`op` no longer draws over the interface.** With more than one 1Password
+  account signed in and none configured for a vault, `op` opened the terminal
+  itself to ask which account to use — straight over `--tui`, reading the
+  keystrokes meant for it. `op` now runs with no terminal of its own, so it
+  fails with its "multiple accounts found" error instead, and the Activity log
+  says to set `1password: accounts:` (`default`, or `by_vault`).
+
 ## v0.1.22
 
 ### Fixed

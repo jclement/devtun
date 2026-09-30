@@ -1,6 +1,7 @@
 package onepassword
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -136,9 +137,19 @@ func (s *Service) run(ctx context.Context, l *link, account, subject string, arg
 	result, err := runner.Run(ctx, account, argv, stdin)
 	if err != nil {
 		l.failed(subject, err.Error())
+	} else if account == "" && bytes.Contains(result.Stderr, []byte(multipleAccounts)) {
+		l.failed(subject, noAccountHint)
 	}
 	return result, err
 }
+
+// multipleAccounts is how op says it would have asked which account to use,
+// had it a terminal to ask on. The remote box gets op's own words; the local
+// record gets what fixes it here.
+const (
+	multipleAccounts = "multiple accounts found"
+	noAccountHint    = "more than one 1Password account is signed in and none is configured for this vault; set 1password: accounts: default (or by_vault) in ~/.config/devtun/config.yaml"
+)
 
 func (s *Service) respond(l *link, result opcli.Result, err error, subject, reason string, started time.Time) *opResponse {
 	if err != nil {

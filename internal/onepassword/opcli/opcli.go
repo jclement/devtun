@@ -73,6 +73,7 @@ func (r *Runner) Run(ctx context.Context, account string, argv []string, stdin [
 	// op needs the user's own environment to find its session, its account
 	// configuration and the desktop app it talks to for biometric unlock.
 	command.Env = os.Environ()
+	detach(command)
 	if len(stdin) > 0 {
 		command.Stdin = bytes.NewReader(stdin)
 	}
