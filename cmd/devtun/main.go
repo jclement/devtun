@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jclement/devtun/internal/buildinfo"
+	"github.com/jclement/devtun/internal/onepassword/opcli"
 	"github.com/jclement/devtun/internal/ui"
 )
 
@@ -29,6 +30,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The 1Password session helper is devtun re-executed under another name,
+	// and must be told apart before anything else reads argv or the terminal.
+	if code, handled := opcli.RunHelper(os.Args); handled {
+		os.Exit(code)
+	}
 	if code, handled := runShim(ctx, os.Args); handled {
 		os.Exit(code)
 	}

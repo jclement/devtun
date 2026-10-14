@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -304,6 +305,19 @@ func (s *Service) opRunner() (SecretRunner, error) {
 	}
 	s.runner = runner
 	return runner, nil
+}
+
+// Close stops the 1Password CLI's session helper, and any op still running
+// in it. The Service outlives every connection, so this is for when devtun
+// itself is finishing.
+func (s *Service) Close() error {
+	s.mu.Lock()
+	runner := s.runner
+	s.mu.Unlock()
+	if closer, ok := runner.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // current returns the host of the most recent attachment, or nil before there

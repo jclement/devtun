@@ -1049,3 +1049,35 @@ func (lateAllowPrompter) Ask(ctx context.Context, _ prompt.Request) (prompt.Choi
 	<-ctx.Done()
 	return prompt.ChoiceAllowSecretSession, nil
 }
+
+// closingRunner is a runner that owns something to shut down, as the real one
+// owns its session helper.
+type closingRunner struct {
+	fakeRunner
+	closed int
+}
+
+func (c *closingRunner) Close() error {
+	c.closed++
+	return nil
+}
+
+// Close reaches the runner, which is how devtun's exit stops the 1Password
+// session helper and any op still running in it.
+func TestCloseShutsDownTheRunner(t *testing.T) {
+	runner := &closingRunner{fakeRunner: fakeRunner{version: "2.30.0"}}
+	if err := New(Options{Runner: runner}).Close(); err != nil {
+		t.Fatal(err)
+	}
+	if runner.closed != 1 {
+		t.Fatalf("runner closed %d times; want 1", runner.closed)
+	}
+	// A runner with nothing to close, and a service that never resolved one,
+	// are both fine.
+	if err := New(Options{Runner: &fakeRunner{}}).Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(Options{}).Close(); err != nil {
+		t.Fatal(err)
+	}
+}

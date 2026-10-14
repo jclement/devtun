@@ -3,6 +3,23 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Fixed
+
+- **1Password asks once, not for every secret.** Since v0.1.23 every `op` call
+  ran in a session of its own so that it could not reach the terminal, and
+  1Password approves a *session*: each call was a stranger to it, so each one
+  raised a fresh "Allow Unknown Application to get CLI access?" and approving
+  it never stuck. devtun now starts one helper — itself, as
+  `devtun-op-session` — in a session with no terminal, and runs every `op`
+  from inside it. The first call asks, and later ones go through for as long
+  as 1Password's own approval lasts (ten minutes idle). `op` still cannot open
+  the terminal, so the account picker stays off `--tui`. The helper lives as
+  long as devtun does, across reconnects; it exits with devtun, taking any
+  running `op` with it, and is restarted if it dies, at the cost of one more
+  approval.
+
 ## v0.1.23
 
 ### Fixed
