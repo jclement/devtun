@@ -180,20 +180,26 @@ func TestQuerySurvivesAndDistinguishesReferences(t *testing.T) {
 	}
 }
 
-func TestSubjectCarriesAnExplicitAccount(t *testing.T) {
+func TestSubjectIsBareAndScopedSeparately(t *testing.T) {
 	cases := map[string][]string{
-		"op://Shared/App/password":            {"read", "op://Shared/App/password"},
-		"[personal] op://Shared/App/password": {"--account", "personal", "read", "op://Shared/App/password"},
-		"[work] op://Shared/App/password":     {"read", "op://Shared/App/password", "--account=work"},
-		"[work] op://V/Item/f":                {"item", "get", "Item", "--vault", "V", "--fields", "f", "--account", "work"},
-		"op item list --account work":         {"item", "list", "--account", "work"},
+		"op://Shared/App/password": {"--account", "personal", "read", "op://Shared/App/password"},
+		"op://V/Item/f":            {"item", "get", "Item", "--vault", "V", "--fields", "f", "--account=work"},
+		"op item list":             {"item", "list", "--account", "work"},
 	}
 	for want, argv := range cases {
 		if got := Subject(argv); got != want {
 			t.Errorf("Subject(%q) = %q, want %q", argv, got, want)
 		}
 	}
-	if got := Unscoped([]string{"--account", "personal", "read", "op://Shared/App/password"}); got != "op://Shared/App/password" {
-		t.Errorf("Unscoped kept the account: %q", got)
+	if got := Scoped("work", "op://V/I/F"); got != "[work] op://V/I/F" {
+		t.Errorf("Scoped = %q", got)
+	}
+	if got := Scoped("", "op://V/I/F"); got != "op://V/I/F" {
+		t.Errorf("Scoped with no account = %q", got)
+	}
+	got := StripAccount([]string{"--account", "a", "read", "--account=b", "op://V/I/F", "--", "--account", "c"})
+	want := []string{"read", "op://V/I/F", "--", "--account", "c"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("StripAccount = %q, want %q", got, want)
 	}
 }

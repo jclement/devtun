@@ -119,31 +119,24 @@ func Find(text string) []string {
 // command line, which is deliberately coarse: a rule for an unrecognised
 // command should not silently cover a different one.
 //
-// A reference names a vault but not an account, so a request that picks its
-// own account with --account carries it in front: `[work] op://Shared/App/pw`.
-// Two accounts can each hold a Shared/App/pw, and approving one must not
-// approve the other. A subject with no account in front means the account
-// devtun picks by itself — the configured routing for that vault, or op's
-// default — which is what every rule written before accounts were part of the
-// subject meant.
+// It is the *bare* subject: any --account is left out, because which account a
+// request reaches is not the caller's word but devtun's resolution of it (see
+// onepassword.Accounts.Effective), and Scoped puts the resolved account in.
 func Subject(argv []string) string {
-	subject, isRef := unscoped(argv)
-	if !isRef {
-		return subject
-	}
-	if account := Account(argv); account != "" {
-		return "[" + account + "] " + subject
-	}
+	subject, _ := unscoped(StripAccount(argv))
 	return subject
 }
 
-// Unscoped is the subject the same request would have without its --account:
-// the reference alone. Deny rules are checked against it as well as against
-// Subject, because a rule refusing op://Private/Root Keys/** was written about
-// that item wherever it lives, and naming an account must not step around it.
-func Unscoped(argv []string) string {
-	subject, _ := unscoped(argv)
-	return subject
+// Scoped puts an account in front of a bare subject: `[work] op://Shared/App/pw`.
+// A reference names a vault but not an account, and two accounts can each hold
+// a Shared/App/pw; approving one must not approve the other. The caller decides
+// when a subject needs scoping — the default account's subjects stay bare, so
+// rules written before accounts were part of the subject keep their meaning.
+func Scoped(account, subject string) string {
+	if account == "" {
+		return subject
+	}
+	return "[" + account + "] " + subject
 }
 
 // Account is the account the request selects for itself with --account, or ""
@@ -152,6 +145,29 @@ func Unscoped(argv []string) string {
 func Account(argv []string) string {
 	_, flags := splitArgs(argv)
 	return flags["account"]
+}
+
+// StripAccount returns argv without any --account selector (either spelling),
+// up to a `--`. The resolved account is passed to op by the runner instead, so
+// the account op uses is the one that was authorised and never the caller's
+// own spelling of it.
+func StripAccount(argv []string) []string {
+	out := make([]string, 0, len(argv))
+	for i := 0; i < len(argv); i++ {
+		arg := argv[i]
+		if arg == "--" {
+			return append(out, argv[i:]...)
+		}
+		if arg == "--account" {
+			i++ // and its value
+			continue
+		}
+		if strings.HasPrefix(arg, "--account=") {
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 // unscoped computes the account-free subject and reports whether it is

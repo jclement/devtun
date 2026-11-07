@@ -96,22 +96,21 @@ func (s *Service) handleExec(ctx context.Context, l *link, request opRequest) *o
 		return &opResponse{Exit: ExitDenied, Error: err.Error()}
 	}
 
-	subject := opref.Subject(request.Argv)
+	// Which account this reaches is settled before policy sees it, and op is
+	// then told that account by devtun rather than by the caller: the argv
+	// that runs has no --account of its own.
+	argv := opref.StripAccount(request.Argv)
+	bare := opref.Subject(argv)
+	account, err := s.opts.Accounts.Effective(opref.Account(request.Argv), bare)
+	if err != nil {
+		l.denied("op "+strings.Join(request.Argv, " "), decision{reason: err.Error()})
+		return &opResponse{Exit: ExitDenied, Error: err.Error()}
+	}
+	subject := s.opts.Accounts.Scope(account, bare)
 	l.requested(subject)
 
-	// A request that names its own account is authorised for that account
-	// (the subject carries it), but a refusal of the bare reference still
-	// stands: a deny rule is about the item, wherever it lives. Only a deny
-	// something actually said counts — a rule or a "stop asking" — not the
-	// unmatched policy, which would otherwise refuse every account-scoped
-	// request whose bare reference simply has no rule.
-	if explicit := opref.Account(request.Argv); explicit != "" {
-		v := s.gate.Decide(l.host, opref.Unscoped(request.Argv))
-		if v.Action == authz.ActionDeny && (v.By.Kind == authz.ByRule || v.By.Kind == authz.ByGrant) {
-			why := decision{reason: v.Reason, by: v.By}
-			l.denied(subject, why)
-			return &opResponse{Exit: ExitDenied, Error: "denied by devtun: " + why.reason}
-		}
+	if refused := s.bareRefusal(l, subject, bare); refused != nil {
+		return refused
 	}
 
 	allowed, why, until := s.authorize(ctx, l, subject, request.Argv)
@@ -120,23 +119,16 @@ func (s *Service) handleExec(ctx context.Context, l *link, request opRequest) *o
 		return &opResponse{Exit: ExitDenied, Error: "denied by devtun: " + why.reason}
 	}
 
-	// Routing picks an account only when the request did not. When it did, its
-	// own --account is the one the subject was authorised for, and adding a
-	// second would leave op to choose between them.
-	account := ""
-	if opref.Account(request.Argv) == "" {
-		account = s.accountFor(subject)
-	}
 	started := time.Now()
 
 	// The cache is consulted only after the request has been authorised, never
 	// instead of it, so a lapsed grant can never be satisfied from memory.
-	if key, ok := cacheKey(account, request.Argv); ok {
+	if key, ok := cacheKey(account, argv); ok {
 		if cached, hit := s.cache.Get(key); hit {
 			l.cached(subject, why)
 			return &opResponse{Stdout: cached}
 		}
-		result, err := s.run(ctx, l, account, subject, request.Argv, request.Stdin)
+		result, err := s.run(ctx, l, account, subject, argv, request.Stdin)
 		if err != nil || result.Exit != 0 {
 			return s.respond(l, result, err, subject, why, started)
 		}
@@ -144,7 +136,7 @@ func (s *Service) handleExec(ctx context.Context, l *link, request opRequest) *o
 		return s.respond(l, result, nil, subject, why, started)
 	}
 
-	result, err := s.run(ctx, l, account, subject, request.Argv, request.Stdin)
+	result, err := s.run(ctx, l, account, subject, argv, request.Stdin)
 	return s.respond(l, result, err, subject, why, started)
 }
 
@@ -198,11 +190,23 @@ func cacheKey(account string, argv []string) (string, bool) {
 	return account + "\x00" + ref.String(), true
 }
 
-// accountFor picks the 1Password account a subject belongs to, which matters
-// once more than one account is signed in: a reference names a vault, and the
-// vault decides the account.
-func (s *Service) accountFor(subject string) string {
-	return s.opts.Accounts.For(subject)
+// bareRefusal checks a scoped request against the bare reference's denies.
+// A deny rule written as a bare reference is about the item wherever it lives,
+// so naming — or being routed to — another account must not step around it.
+// Only a deny something actually said counts, a rule or a "stop asking": the
+// unmatched policy would otherwise refuse every scoped request whose bare
+// reference simply has no rule.
+func (s *Service) bareRefusal(l *link, subject, bare string) *opResponse {
+	if subject == bare {
+		return nil
+	}
+	v := s.gate.Decide(l.host, bare)
+	if v.Action != authz.ActionDeny || (v.By.Kind != authz.ByRule && v.By.Kind != authz.ByGrant) {
+		return nil
+	}
+	why := decision{reason: v.Reason, by: v.By}
+	l.denied(subject, why)
+	return &opResponse{Exit: ExitDenied, Error: "denied by devtun: " + why.reason}
 }
 
 // handleResolve authorises and reads a batch of secret references. It is
@@ -219,17 +223,24 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 		if err != nil {
 			return refuse(err.Error())
 		}
-		subject := ref.String()
+		// The account is resolved before policy here too: `op run` and `op
+		// inject` reach routed vaults exactly as `op read` does, and a scoped
+		// deny has to hold for them as well.
+		bare := ref.String()
+		account := s.opts.Accounts.For(bare)
+		subject := s.opts.Accounts.Scope(account, bare)
 		l.requested(subject)
+		if refused := s.bareRefusal(l, subject, bare); refused != nil {
+			return refused
+		}
 
-		argv := []string{"read", subject}
+		argv := []string{"read", bare}
 		allowed, why, until := s.authorize(ctx, l, subject, argv)
 		if !allowed {
 			l.denied(subject, why)
 			return &opResponse{Exit: ExitDenied, Error: fmt.Sprintf("denied by devtun: %s (%s)", subject, why.reason)}
 		}
 
-		account := s.accountFor(subject)
 		started := time.Now()
 
 		key, cacheable := cacheKey(account, argv)

@@ -408,18 +408,26 @@ The **Access** tab in `--tui` lists everything currently deciding — live grant
     by_vault: {Barreleye: barreleyesoftware.1password.com}
 ```
 
-**A request that picks its own account is approved for that account.** A
-secret reference names a vault but not an account, and two accounts can each
-hold `Shared/App/password`. So `op --account personal read op://Shared/App/password`
-is asked about as `[personal] op://Shared/App/password`, and approving the plain
-`op://Shared/App/password` — which means *the account devtun picks*: your
-`accounts:` routing for that vault, or `op`'s default — does not cover it. Rules
-follow the same shape: `op://Shared/**` keeps meaning the default account, and
-`[personal] op://Shared/**` allows that one account. Deny rules are the
-exception, on purpose: a deny written as a bare reference applies whichever
-account is named, because it was written about the item. `--account` may be
-given once, and devtun's own routing never adds a second one on top. (`op run`
-and `op inject` resolve their references in the default account.)
+**What is approved includes the account.** A secret reference names a vault
+but not an account, and two accounts can each hold `Shared/App/password`. So
+devtun works out which account a request will reach *before* asking anything —
+the request's own `--account`, else your `accounts: by_vault` routing, else
+`accounts: default` — and a request reaching any account but the default is
+asked about as `[work] op://Shared/App/password`. A bare rule or grant means the
+default account and nothing else; `[work] op://Shared/**` allows the work
+account, however it was reached. **If you route vaults to a second account,
+rules for those vaults need the `[account]` prefix** (or `[*] op://…` for any
+account). Deny rules written as a bare reference are the exception, on purpose:
+they apply whichever account is reached, because they were written about the
+item.
+
+`--account` must name one of the accounts in your `accounts:` config, spelled
+exactly as there, and may be given once. `op` also accepts a sign-in address or
+an account ID for the same account, and devtun cannot tell those from a
+different account, so it refuses them rather than let one account be named two
+ways. With no accounts configured, `--account` is refused. devtun strips the
+caller's selector and passes the resolved account to `op` itself. (`op run` and
+`op inject` resolve their references through the same routing.)
 
 Only read-only `op` commands are proxied at all — `read`, `item get`, `item list`, and friends. Anything else needs an explicit `allow_commands` entry, because "pass the arguments through" would otherwise hand anyone with a shell on that box `op item delete` against an unlocked vault.
 

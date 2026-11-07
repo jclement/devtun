@@ -17,13 +17,17 @@ this is 0.x, a minor bump may break something.
   A wildcard destination (`→ *`, `→ **`, `**`) still covers SSHSIG
   signatures, but allows `(arbitrary data)` only if a rule names it; a
   wildcard deny still refuses it.
-- **1Password `--account` is part of what is approved.** `op --account personal
+- **1Password accounts are part of what is approved.** `op --account personal
   read op://Shared/App/password` was authorised as the bare reference, so a
   grant for the default account's `Shared/App/password` also read the
-  personal account's. A request that names an account is now asked about as
-  `[personal] op://…`; existing rules keep meaning the default account, deny
-  rules still apply whichever account is named, `--account` may appear only
-  once, and routing no longer adds a second `--account` to such a request.
+  personal account's; and routing was applied only after authorisation, so a
+  deny on one account was stepped around by leaving `--account` off. devtun now
+  resolves the account first (explicit, else `by_vault`, else default), asks
+  about any non-default account as `[account] op://…`, and passes that account
+  to `op` itself. **Behaviour change:** bare rules mean the default account
+  only, so rules for vaults routed to another account need `[account]` (or
+  `[*]`). `--account` must be a configured account name, given once; bare deny
+  rules still apply to every account.
 - **The web board's credential no longer reaches forwarded ports.** It was a
   cookie on `127.0.0.1`, and cookies ignore ports, so every forwarded dev
   server opened in the same browser was sent it. The page now trades the URL
