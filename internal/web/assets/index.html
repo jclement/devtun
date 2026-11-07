@@ -857,6 +857,9 @@ function subjectNode(parts, schema, full) {
 function hostWideText(row) {
   const p = policyOf(row.source);
   const multi = (p?.schema?.fields ?? []).length > 1;
+  // The terminal's words (internal/tui hostWideGloss): a site is one the box
+  // opens, not one it asks for.
+  if (p?.noun === "site") return "any site " + row.host + " opens";
   return "any " + (p?.noun || "request") + " from " + row.host + (multi ? ", to anywhere" : "");
 }
 
