@@ -89,8 +89,8 @@ this is 0.x, a minor bump may break something.
 - **The web board's Access tab is the whole console.** Grouped by where each
   rule lives, with a service column, ⚠ *outranked*, the *nothing matches* row,
   a detail view with what beats a rule, a test box, a new-rule/grant form,
-  edit, allow↔deny, separate *forget grants* and *forget refusals*, and
-  *why?* on every decision in Activity. Keyboard throughout (`?`), light and
+  edit, allow↔deny, separate *Forget* and *Clear refusals*, and
+  *explain* on every decision in Activity. Keyboard throughout (`?`), light and
   dark with a toggle, and it fits a phone.
 - **`unmatched: ask|deny` per broker** — what happens when no rule or grant
   matches. `deny` makes an allowlist expressible without weakening
