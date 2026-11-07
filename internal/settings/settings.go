@@ -24,6 +24,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
@@ -188,6 +189,7 @@ func (d Deps) Catalogue() []Section {
 		// Approvals first, and the prompt at the top of it: it is the setting
 		// people go looking for, and the one they were not finding.
 		{Title: "Approvals", Settings: d.approvalSettings()},
+		{Title: "Policy", Settings: d.policySettings()},
 		{Title: "Services", Settings: d.serviceSettings()},
 		{Title: "Ports", Settings: d.portSettings()},
 		{Title: "Remote setup", Settings: d.remoteSettings()},
@@ -256,6 +258,59 @@ func (d Deps) approvalSettings() []*Setting {
 		settings = append(settings, gate)
 	}
 	return settings
+}
+
+// policySettings are each gated broker's answer to "what happens when no rule
+// and no grant matches": ask a person, or refuse.
+//
+// One row per broker that has a policy, found by asking the registry rather
+// than by naming them — the same lesson as the prompter and the Access tab. It
+// is per broker on purpose: "only GitHub, from this box" is a thing to say about
+// SSH signatures without also refusing every 1Password read nobody wrote a rule
+// for.
+//
+// Deny here is what makes an allowlist expressible. Deny beats allow, so an
+// allow plus a deny-everything refuses the allow too; an allow plus `unmatched:
+// deny` is the allowlist people meant. It never loosens anything: it only
+// applies when nothing matched at all, and a value that is neither ask nor deny
+// is read as deny.
+func (d Deps) policySettings() []*Setting {
+	var settings []*Setting
+	for _, svc := range d.Services {
+		if _, ok := svc.(authz.Policy); !ok {
+			continue
+		}
+		meta := svc.Meta()
+		row := d.storeSetting("unmatched."+meta.ID, meta.Glyph+" "+meta.Title+" unmatched",
+			meta.ID, "unmatched", BothLevels, string(authz.ActionAsk))
+		row.Options = []string{OptInherit, string(authz.ActionAsk), string(authz.ActionDeny)}
+		row.Validate = ValidUnmatched
+		row.Help = func() string {
+			return "when no rule or grant matches · deny = only what a rule allows · takes effect now"
+		}
+		row.Unusable = func() string {
+			if err := ValidUnmatched(rowValue(row)); err != nil {
+				return "not ask or deny — read as deny"
+			}
+			return ""
+		}
+		settings = append(settings, row)
+	}
+	return settings
+}
+
+// ValidUnmatched refuses an unmatched value that is neither ask nor deny.
+func ValidUnmatched(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", OptInherit, string(authz.ActionAsk), string(authz.ActionDeny):
+		return nil
+	}
+	return errors.New("unmatched is ask or deny")
+}
+
+func rowValue(s *Setting) string {
+	v, _ := s.Value()
+	return v
 }
 
 // promptHelp says what this machine can actually do, which is the difference

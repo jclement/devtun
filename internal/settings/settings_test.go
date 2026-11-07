@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/hostcfg"
+	"github.com/jclement/devtun/internal/service"
 )
 
 // fakeStore is the two configuration files as a map, keyed by the label the
@@ -229,3 +231,68 @@ func TestADialogWithNothingToDrawItWarnsButIsStillWritten(t *testing.T) {
 		t.Errorf("the warned-about value was not written: %q", got)
 	}
 }
+
+// gatedService is a service with a policy, which is all the catalogue looks for.
+type gatedService struct {
+	service.Service
+	authz.Surface
+	id string
+}
+
+func (g gatedService) Meta() service.Meta {
+	return service.Meta{ID: g.id, Title: g.id, Glyph: "·"}
+}
+
+func newGated(id string) gatedService {
+	return gatedService{id: id, Surface: authz.NewGate(authz.Config{}, nil).Surface()}
+}
+
+// Every broker with a policy gets its own unmatched row, so "only GitHub" for
+// SSH does not also refuse every 1Password read nobody wrote a rule for.
+func TestEachGatedBrokerHasAnUnmatchedSetting(t *testing.T) {
+	store := newStore()
+	d := deps(store)
+	d.Services = []service.Service{newGated("1password"), newGated("ssh-agent"), stubPlain{}}
+
+	ssh := find(t, d, "unmatched.ssh-agent")
+	if v, level := ssh.Value(); v != "ask" || level != LevelNone {
+		t.Errorf("default = %q (%s), want ask from devtun's default", v, level)
+	}
+	if _, err := Apply(ssh, LevelHost, "deny", "bedev"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got := store.Setting("bedev", "ssh-agent", "unmatched"); got != "deny" {
+		t.Errorf("stored %q under ssh-agent.unmatched, want deny", got)
+	}
+	if v, _ := find(t, d, "unmatched.1password").Value(); v != "ask" {
+		t.Errorf("setting SSH changed 1Password: %q", v)
+	}
+	if _, err := Apply(ssh, LevelHost, "dney", "bedev"); err == nil {
+		t.Error("a value that is neither ask nor deny was accepted")
+	}
+	if d.Find("unmatched.plain") != nil {
+		t.Error("a service with no policy got an unmatched row")
+	}
+}
+
+// The real store, end to end: the setting writes where the broker reads.
+func TestTheUnmatchedSettingIsWhatTheBrokerReads(t *testing.T) {
+	store := hostcfg.Open(t.TempDir())
+	gate := authz.NewGate(authz.Config{}, nil)
+	if err := gate.Adopt("bedev", store.Section("bedev", "ssh-agent"), "SSH"); err != nil {
+		t.Fatal(err)
+	}
+	d := deps(store)
+	d.Services = []service.Service{gatedService{id: "ssh-agent", Surface: gate.Surface()}}
+
+	if _, err := Apply(find(t, d, "unmatched.ssh-agent"), LevelGlobal, "deny", "bedev"); err != nil {
+		t.Fatal(err)
+	}
+	if u := gate.Unmatched(); u.Action != authz.ActionDeny || u.Level != "global" {
+		t.Errorf("the broker reads %+v after the setting was written", u)
+	}
+}
+
+type stubPlain struct{ service.Service }
+
+func (stubPlain) Meta() service.Meta { return service.Meta{ID: "plain", Title: "plain"} }
