@@ -34,3 +34,26 @@ func TestAccountsForWithNothingConfigured(t *testing.T) {
 // A live "allow anything from bedev for 5 minutes" is the most consequential
 // state in the process. Until it could be listed, the only thing anyone could
 // do about it was drop every grant at once.
+
+// TestAccountsValidateRefusesTwoNamesForOneAccount: each configured name is a
+// separate policy identity, so names that may denote one account are refused.
+func TestAccountsValidateRefusesTwoNamesForOneAccount(t *testing.T) {
+	for name, accounts := range map[string]Accounts{
+		"address and shorthand": {Default: "work", ByVault: map[string]string{"Shared": "work.1password.com"}},
+		"case":                  {Default: "Work", ByVault: map[string]string{"Shared": "work"}},
+		"two addresses":         {ByVault: map[string]string{"A": "work.1password.com", "B": "WORK.1password.ca"}},
+	} {
+		if err := accounts.Validate(); err == nil {
+			t.Errorf("%s: %+v was accepted", name, accounts)
+		}
+	}
+	for name, accounts := range map[string]Accounts{
+		"distinct":  {Default: "personal", ByVault: map[string]string{"Shared": "work", "Other": "work"}},
+		"addresses": {Default: "personal.1password.com", ByVault: map[string]string{"Shared": "work.1password.com"}},
+		"nothing":   {},
+	} {
+		if err := accounts.Validate(); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

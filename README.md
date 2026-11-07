@@ -432,7 +432,12 @@ switches off the denies written for it.
 exactly as there, and may be given once. `op` also accepts a sign-in address or
 an account ID for the same account, and devtun cannot tell those from a
 different account, so it refuses them rather than let one account be named two
-ways. With no accounts configured, `--account` is refused. devtun strips the
+ways. **Configure each account under one name.** devtun refuses to start if two
+configured names look like the same account (`work` and `work.1password.com`,
+or names differing only in case), but it cannot tell that an account ID and a
+shorthand are the same account. And set `default:` if you write rules for the
+default account: without it, a request routed nowhere goes to whichever account
+`op` itself considers default, which devtun does not know. With no accounts configured, `--account` is refused. devtun strips the
 caller's selector and passes the resolved account to `op` itself. (`op run` and
 `op inject` resolve their references through the same routing.)
 

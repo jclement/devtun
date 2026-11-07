@@ -965,6 +965,12 @@ func globalAccounts(store *hostcfg.Store, account string) (onepassword.Accounts,
 	if account != "" {
 		accounts.Default = account
 	}
+	// Each configured name is a separate policy identity, so two names for one
+	// account would let a rule written under one miss requests made under the
+	// other. Refusing to start is the safe answer to that.
+	if err := accounts.Validate(); err != nil {
+		return accounts, err
+	}
 	return accounts, nil
 }
 

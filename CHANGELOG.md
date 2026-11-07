@@ -27,7 +27,9 @@ this is 0.x, a minor bump may break something.
   to `op` itself. **Behaviour change:** bare rules mean the default account
   only, so rules for vaults routed to another account need `[account]` (or
   `[*]`). `--account` must be a configured account name, given once; bare deny
-  rules still apply to every account.
+  rules still apply to every account, and `[account]` denies apply even when
+  that account is the default. devtun refuses to start if two configured
+  account names look like the same account.
 - **The web board's credential no longer reaches forwarded ports.** It was a
   cookie on `127.0.0.1`, and cookies ignore ports, so every forwarded dev
   server opened in the same browser was sent it. The page now trades the URL

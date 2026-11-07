@@ -102,3 +102,40 @@ func (a Accounts) Scope(account, bare string) string {
 	}
 	return opref.Scoped(account, bare)
 }
+
+// Validate refuses a configuration that may name one account twice.
+//
+// Each configured string is its own policy identity: `[work] op://…` and
+// `[work.1password.com] op://…` are different subjects. If both strings were
+// configured for the same 1Password account, a deny written under one name
+// would not cover a request made under the other. So two configured names that
+// differ only in case, or where one is a sign-in address whose first label is
+// the other (`work` and `work.1password.com`), are refused here rather than
+// left to disagree later.
+//
+// What this cannot see: an account ID or user ID and a shorthand for the same
+// account look unrelated, and only op could say they match. The README asks for
+// each account to be configured under one name.
+func (a Accounts) Validate() error {
+	seen := map[string]string{}
+	for _, name := range a.names() {
+		key := accountKey(name)
+		if other, ok := seen[key]; ok && other != name {
+			return fmt.Errorf("1Password accounts %q and %q may be the same account; configure each account under one name", other, name)
+		}
+		seen[key] = name
+	}
+	return nil
+}
+
+// accountKey reduces an account name to what two spellings of one account
+// would share: lower case, and a sign-in address reduced to its first label.
+func accountKey(name string) string {
+	key := strings.ToLower(name)
+	if !strings.Contains(key, "@") {
+		if first, _, ok := strings.Cut(key, "."); ok {
+			key = first
+		}
+	}
+	return key
+}
