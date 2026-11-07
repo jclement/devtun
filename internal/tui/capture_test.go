@@ -10,6 +10,7 @@ import (
 
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/onepassword"
 	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/sshagent"
@@ -179,7 +180,7 @@ func TestCaptureScreens(t *testing.T) {
 		send(m, "esc")
 		sreq := prompt.Request{Host: "bedev", Subject: captureKey + " → gitlab.com", Noun: "key", Scope: "gitlab.com", TTL: 5 * time.Minute}
 		m.answer(prompt.ChoiceDeny)
-		m.Update(approvalMsg{request: sreq, options: prompt.MenuFor(sreq), reply: reply})
+		m.Update(approvalMsg{request: sreq, options: prompt.MenuFor(sreq), reply: make(chan prompt.Choice, 1)})
 		save("approval-ssh", m, "an ssh approval: \"any signature from bedev\"")
 		m.answer(prompt.ChoiceDeny)
 
@@ -218,7 +219,9 @@ const captureKey = "ssh-ed25519 SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZ/DTMczCvj3tD
 // grants and refusals, rules devtun wrote, a hand-written ssh rule and two
 // global rules.
 func captureModel(t *testing.T) *Model {
+	opSchema := onepassword.Schema
 	op := &stubSecrets{
+		schema: &opSchema,
 		live: []authz.Grant{
 			{ID: "GDOCKER", Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: authz.ActionAllow, Expires: testNow.Add(3*time.Minute + 12*time.Second)},
 			{Host: "bedev", Subject: "op://Barreleye/Azure DevOps/token", Action: authz.ActionAllow},
@@ -239,7 +242,7 @@ func captureModel(t *testing.T) *Model {
 	sshSchema := sshagent.Schema
 	ssh := &stubSecrets{
 		schema: &sshSchema,
-		live: []authz.Grant{{Host: "bedev", Subject: authz.HostWildcard, Action: authz.ActionAllow, HostWide: true}},
+		live:   []authz.Grant{{Host: "bedev", Subject: authz.HostWildcard, Action: authz.ActionAllow, HostWide: true}},
 		rules: []authz.Rule{
 			{Host: "bedev", Subject: captureKey + " → github.com", Action: authz.ActionAllow, Note: "approved interactively on 2026-08-20", Added: testNow.Add(-17 * 24 * time.Hour), Source: authz.SourceRemembered},
 			{ID: "SSHDENY", Host: "bedev", Subject: "** → **", Action: authz.ActionDeny, Note: "nowhere else, from this box", Source: authz.SourceHost},

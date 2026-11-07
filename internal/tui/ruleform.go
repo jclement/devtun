@@ -181,7 +181,7 @@ func (m *Model) openTest() tea.Cmd {
 	src, subject := 0, ""
 	if r, ok := m.selectedAccess(); ok {
 		src = m.sourceIndex(r.source.id)
-		if !(r.isGrant && r.grant.HostWide) {
+		if !r.isGrant || !r.grant.HostWide {
 			subject = r.subject()
 		}
 	} else if seen := m.seenSubjects(m.d.secrets[0]); len(seen) > 0 {
@@ -334,7 +334,7 @@ func (m *Model) openForm(seed formSeed) tea.Cmd {
 // openNewRule is `n`: a blank form, or one seeded from the selected row.
 func (m *Model) openNewRule() tea.Cmd {
 	seed := formSeed{effect: authz.ActionAllow}
-	if r, ok := m.selectedAccess(); ok && !(r.isGrant && r.grant.HostWide) {
+	if r, ok := m.selectedAccess(); ok && (!r.isGrant || !r.grant.HostWide) {
 		seed.src, seed.subject = m.sourceIndex(r.source.id), r.subject()
 	}
 	if m.tab == tabActivity {
@@ -485,9 +485,13 @@ func (m *Model) formPreview(src accessSource, pattern string) string {
 		return ""
 	}
 	schema := src.ctrl.Schema()
+	effect := authz.ActionAllow
+	if m.form != nil {
+		effect = m.form.effect
+	}
 	var hits []string
 	for _, s := range m.seenSubjects(src) {
-		if schema.Match(pattern, s) {
+		if covers(schema, effect, pattern, s) {
 			hits = append(hits, s)
 		}
 	}
@@ -616,7 +620,7 @@ func (m *Model) allowConfirm(f *formState, src accessSource, subject string, run
 	schema := src.ctrl.Schema()
 	n := 0
 	for _, s := range m.seenSubjects(src) {
-		if schema.Match(subject, s) {
+		if covers(schema, authz.ActionAllow, subject, s) {
 			n++
 		}
 	}
@@ -686,7 +690,7 @@ func (m *Model) commitForm(f *formState, src accessSource, subject string) tea.C
 	// it, that request gets the matching answer; otherwise it is back on
 	// screen, still waiting.
 	if a := f.answering; a != nil {
-		if src.ctrl.Schema().Match(subject, a.request.Subject) {
+		if covers(src.ctrl.Schema(), f.effect, subject, a.request.Subject) {
 			m.approval = a
 			choice := prompt.ChoiceAllowOnce
 			if f.effect == authz.ActionDeny {
@@ -726,4 +730,15 @@ func (m *Model) sourceForRequest(r prompt.Request) int {
 		}
 	}
 	return 0
+}
+
+// covers is whether a rule with this effect and pattern applies to a subject,
+// the way the store decides it: an allow through Allows, which will not let a
+// wildcard cover a literal-only value such as an SSH key's "(arbitrary
+// data)", and a deny through plain Match, which will.
+func covers(schema authz.Schema, effect authz.Action, pattern, subject string) bool {
+	if effect == authz.ActionAllow {
+		return schema.Allows(pattern, subject)
+	}
+	return schema.Match(pattern, subject)
 }

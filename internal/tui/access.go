@@ -263,8 +263,10 @@ func (m *Model) accessHeader() string {
 	for _, r := range m.accessRows {
 		if r.outranked {
 			// The marker is one cell in the list; the header spells it out.
-			line = clampWidth(line, m.listWidth()-16)
-			line += strings.Repeat(" ", max(m.listWidth()-16-ansi.StringWidth(line), 1)) + "⚠ a deny beats it"
+			const legend = "⚠ a deny wins"
+			room := m.listWidth() - ansi.StringWidth(legend) - 1
+			line = clampWidth(line, room)
+			line += strings.Repeat(" ", max(room-ansi.StringWidth(line), 0)+1) + legend
 			break
 		}
 	}
@@ -632,6 +634,9 @@ func (m *Model) meaning(r accessRow) string {
 		}
 		if base, ok := strings.CutSuffix(s, "/**"); ok && !strings.Contains(base, "*") {
 			return "everything under " + base + "/"
+		}
+		if len(parts) == 3 && parts[2] == "*" && !strings.Contains(parts[0]+parts[1], "*") {
+			return "any field of " + parts[1] + ", in the " + parts[0] + " vault"
 		}
 		return "any reference matching this pattern — * is one path segment, ** any depth"
 	}

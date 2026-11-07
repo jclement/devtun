@@ -366,13 +366,13 @@ func (s *stubSecrets) Explain(host, subject string) authz.Explanation {
 	all := s.Rules()
 	for _, action := range []authz.Action{authz.ActionDeny, authz.ActionAllow} {
 		for i := range all {
-			if all[i].Action == action && schema.Match(all[i].Subject, subject) {
+			if all[i].Action == action && covers(schema, action, all[i].Subject, subject) {
 				r := all[i]
 				ex.Matches = append(ex.Matches, authz.Matched{Rule: &r})
 			}
 		}
 		for i := range s.live {
-			if s.live[i].Action == action && schema.Match(s.live[i].Subject, subject) {
+			if s.live[i].Action == action && covers(schema, action, s.live[i].Subject, subject) {
 				g := s.live[i]
 				ex.Matches = append(ex.Matches, authz.Matched{Grant: &g})
 			}
