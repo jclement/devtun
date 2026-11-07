@@ -412,7 +412,7 @@ func (s *Store) Explain(host, subject string) Explanation {
 			}
 		}
 		for _, g := range s.grants {
-			if !g.live(now) || g.host != host || !s.config.Schema.Match(g.subject, subject) {
+			if !g.live(now) || g.host != host || !s.subjectMatches(g.action, g.subject, subject) {
 				continue
 			}
 			if (pass == ActionDeny) != (g.action == ActionDeny) {
@@ -505,7 +505,17 @@ func hostWords(pattern string) string {
 }
 
 func (s *Store) ruleMatches(rule Rule, host, subject string) bool {
-	return Match(rule.HostPattern(), host) && s.config.Schema.Match(rule.Subject, subject)
+	return Match(rule.HostPattern(), host) && s.subjectMatches(rule.Action, rule.Subject, subject)
+}
+
+// subjectMatches is the schema's match for a rule or grant of the given action:
+// an allow goes through Schema.Allows, so a value the schema marks Literal is
+// approved only by a pattern that names it; a deny matches as written.
+func (s *Store) subjectMatches(action Action, pattern, subject string) bool {
+	if action == ActionAllow {
+		return s.config.Schema.Allows(pattern, subject)
+	}
+	return s.config.Schema.Match(pattern, subject)
 }
 
 // Rules is every rule — global, the host's own, then remembered — IDs and

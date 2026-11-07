@@ -6,6 +6,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/prompt"
 )
 
@@ -245,4 +246,65 @@ func TestAForwardedHopsLoginIsUnknownDestinationVia(t *testing.T) {
 	if !strings.Contains(via, "jump.example") {
 		t.Errorf("the prompt does not say the login came through jump.example: %q", via)
 	}
+}
+
+// TestAWildcardDestinationDoesNotAllowArbitraryData: `key → *`, `key → **`,
+// `**` and a host-wide grant were written about where a key may log in. None
+// of them approves bytes devtun cannot identify — that takes a rule naming
+// `(arbitrary data)`. A wildcard deny still refuses them.
+func TestAWildcardDestinationDoesNotAllowArbitraryData(t *testing.T) {
+	keyPattern := func(h *harness) string { return h.key().Type() + " " + ssh.FingerprintSHA256(h.key()) }
+
+	for _, pattern := range []string{"* → *", "* → **", "**", "KEY → *", "KEY → **"} {
+		t.Run(pattern, func(t *testing.T) {
+			prompter := &scriptedPrompter{choice: prompt.ChoiceDeny}
+			h := start(t, Options{Prompter: prompter})
+			subject := strings.Replace(pattern, "KEY", keyPattern(h), 1)
+			if _, err := h.svc.AddRule(authz.Rule{Subject: subject, Action: authz.ActionAllow}); err != nil {
+				t.Fatalf("AddRule: %v", err)
+			}
+			if _, err := h.client().Sign(h.key(), sshsig("git")); err != nil {
+				t.Fatalf("the wildcard no longer allows git signing: %v", err)
+			}
+			if _, err := h.client().Sign(h.key(), payload); err == nil {
+				t.Fatalf("%q allowed arbitrary data", subject)
+			}
+			if n := prompter.count(); n != 1 {
+				t.Errorf("asked %d times, want once — for the arbitrary data only", n)
+			}
+		})
+	}
+
+	t.Run("host-wide grant", func(t *testing.T) {
+		prompter := &scriptedPrompter{choice: prompt.ChoiceDeny}
+		h := start(t, Options{Prompter: prompter})
+		h.svc.gate.Store().GrantSession(h.host.Label(), authz.HostWildcard)
+		if _, err := h.client().Sign(h.key(), payload); err == nil {
+			t.Fatal("a host-wide grant allowed arbitrary data")
+		}
+	})
+
+	t.Run("named literally", func(t *testing.T) {
+		h := start(t, Options{Prompter: &scriptedPrompter{choice: prompt.ChoiceDeny}})
+		if _, err := h.svc.AddRule(authz.Rule{Subject: "* → (arbitrary data)", Action: authz.ActionAllow}); err != nil {
+			t.Fatalf("AddRule: %v", err)
+		}
+		if _, err := h.client().Sign(h.key(), payload); err != nil {
+			t.Fatalf("a rule naming (arbitrary data) did not allow it: %v", err)
+		}
+	})
+
+	t.Run("wildcard deny still refuses", func(t *testing.T) {
+		prompter := &scriptedPrompter{choice: prompt.ChoiceAllowOnce}
+		h := start(t, Options{Prompter: prompter})
+		if _, err := h.svc.AddRule(authz.Rule{Subject: "* → *", Action: authz.ActionDeny}); err != nil {
+			t.Fatalf("AddRule: %v", err)
+		}
+		if _, err := h.client().Sign(h.key(), payload); err == nil {
+			t.Fatal("a * → * deny no longer refuses arbitrary data")
+		}
+		if n := prompter.count(); n != 0 {
+			t.Errorf("asked %d times about a denied subject", n)
+		}
+	})
 }

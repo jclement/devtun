@@ -1010,7 +1010,7 @@ func (s *Server) forgetAll() (grants, cached int) {
 // approvalView is one question waiting on a human, as the page sees it.
 //
 // The id is included because it is how the page answers, and it is safe to send
-// to a caller that already holds the session cookie: it is unguessable, it is
+// to a caller that already holds the session credential: it is unguessable, it is
 // good for one use, and it names one specific question.
 type approvalView struct {
 	ID      string        `json:"id"`

@@ -227,7 +227,10 @@ var Schema = authz.Schema{
 		},
 		{
 			Name: "destination", Label: "destination",
-			Help: "the host being signed in to, as known_hosts names it · * for anywhere",
+			Help: "the host being signed in to, as known_hosts names it · sshsig:git for git signing · * for anywhere ((arbitrary data) only if named)",
+			// A wildcard destination was written about places to log in; it
+			// must not also approve signing bytes devtun cannot identify.
+			Literal: []string{arbitraryData},
 		},
 	},
 	Separator: subjectSeparator,

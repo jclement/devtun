@@ -14,7 +14,9 @@ this is 0.x, a minor bump may break something.
   server signed under the github.com grant. devtun now reads the data: a login
   must be for the bound session, or it is refused; git/SSHSIG signatures are
   asked about as `→ sshsig:<namespace>`; anything else as `→ (arbitrary data)`.
-  A rule that matched every destination (`→ **`) still matches these.
+  A wildcard destination (`→ *`, `→ **`, `**`) still covers SSHSIG
+  signatures, but allows `(arbitrary data)` only if a rule names it; a
+  wildcard deny still refuses it.
 - **1Password `--account` is part of what is approved.** `op --account personal
   read op://Shared/App/password` was authorised as the bare reference, so a
   grant for the default account's `Shared/App/password` also read the

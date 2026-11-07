@@ -228,8 +228,11 @@ refused outright. Everything else is its own subject, asked about separately:
 | anything else | `ssh-ed25519 SHA256:… → (arbitrary data)` |
 
 So `* → sshsig:git` in your rules allows commit signing with any key, without
-also letting the box log in anywhere. A wildcard destination (`… → **`) still
-matches every row of that table — it means "this key, for everything".
+also letting the box log in anywhere. A wildcard destination (`… → *`, `… → **`,
+a bare `**`, or a host-wide grant) covers logins and SSHSIG namespaces, but it
+never *allows* `(arbitrary data)`: approving bytes devtun cannot identify takes a
+rule that names them, `… → (arbitrary data)`. A wildcard *deny* still refuses
+them.
 
 It needs a second line in your shell rc, because `ssh` finds its agent through
 an environment variable and there is no binary to shadow:

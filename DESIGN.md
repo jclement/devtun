@@ -255,7 +255,12 @@ Four decisions inside it are not negotiable:
   commit signing, `ssh-keygen -Y sign`) is named by its namespace,
   `→ sshsig:git`; anything else is `→ (arbitrary data)`, whose prompt starts on
   *deny* because nothing about it is routine. Both stay in the `key → target`
-  shape so the same two-field rules match them.
+  shape so the same two-field rules match them — with one exception: the
+  schema marks `(arbitrary data)` as `Literal` for the destination field, so no
+  wildcard (`→ *`, `→ **`, `**`, a host-wide grant) *allows* it; only a rule
+  naming it does. Deny matching is unchanged, so wildcards still refuse it. A
+  pattern written about destinations was not written about unidentifiable
+  bytes.
 - **The subject says when it does not know.** An older `ssh` sends no bind at
   all, and then the destination reads `(destination unknown)`. Inventing one
   would be worse than vagueness, because it would be a specific claim that

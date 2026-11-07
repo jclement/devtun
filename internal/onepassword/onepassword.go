@@ -276,7 +276,7 @@ var Schema = authz.Schema{
 	Fields: []authz.Field{{
 		Name:  "reference",
 		Label: "reference",
-		Help:  "op://vault/item/field, or an op command line · * is one segment, ** is everything below",
+		Help:  "op://vault/item/field, [account] op://… for one --account, or an op command line · * is one segment, ** is everything below",
 	}},
 	PathLike: true,
 }

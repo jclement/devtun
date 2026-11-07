@@ -113,3 +113,20 @@ func TestAmbiguousAccountsAreRefused(t *testing.T) {
 		t.Errorf("op ran %d times", n)
 	}
 }
+
+// TestUnmatchedDenyDoesNotRefuseAnAccountAllow: the bare-reference deny check
+// must honour only denies a rule or refusal made. Under `unmatched: deny` the
+// bare reference has no rule and so "denies" — which must not refuse an
+// explicit `[personal] op://…` allow.
+func TestUnmatchedDenyDoesNotRefuseAnAccountAllow(t *testing.T) {
+	opts := Options{Rules: []authz.Rule{{Host: "**", Subject: "[personal] op://Shared/**", Action: authz.ActionAllow}}}
+	h := start(t, opts, map[string]string{"op://Shared/App/password": "mine"})
+	h.host.config.seed(t, "unmatched", "deny")
+
+	if response := h.exec(t, "--account", "personal", "read", "op://Shared/App/password"); response.Exit != 0 {
+		t.Fatalf("unmatched: deny refused an explicitly allowed account: %q", response.Error)
+	}
+	if response := h.exec(t, "read", "op://Shared/App/password"); response.Exit != ExitDenied {
+		t.Fatalf("unmatched: deny should still refuse the bare reference: exit = %d", response.Exit)
+	}
+}

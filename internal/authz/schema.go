@@ -25,6 +25,14 @@ type Field struct {
 	Label string
 	// Help is one line on what to write there.
 	Help string
+	// Literal lists values of this field that no wildcard may *allow*: an
+	// allow rule or grant covers a subject with one of these values only if
+	// its pattern names the value exactly in this field. Deny matching is
+	// unaffected, so a wildcard deny still refuses them. It is for a value
+	// that means "devtun cannot tell what this is" — a pattern written to
+	// cover every destination was written about destinations, and approving
+	// something unidentifiable should take a rule that says so.
+	Literal []string
 }
 
 // Schema describes one broker's subjects.
@@ -100,6 +108,36 @@ func (s Schema) Match(pattern, subject string) bool {
 	for i := range patterns {
 		if !matchGlob(patterns[i], values[i], s.PathLike) {
 			return false
+		}
+	}
+	return true
+}
+
+// Allows reports whether an allow pattern covers a subject: Match, plus the
+// rule that a field value listed in Field.Literal is only covered by a pattern
+// naming it exactly in that field. A pattern without the separator (`**`, the
+// host-wide grant) fills its missing fields with `**`, so it names nothing and
+// covers none of them.
+func (s Schema) Allows(pattern, subject string) bool {
+	if !s.Match(pattern, subject) {
+		return false
+	}
+	if len(s.Fields) <= 1 || s.Separator == "" {
+		return true
+	}
+	values := s.Split(subject)
+	patterns := s.Split(pattern)
+	if !strings.Contains(pattern, s.Separator) {
+		patterns = make([]string, len(s.Fields))
+		for i := range patterns {
+			patterns[i] = HostWildcard
+		}
+	}
+	for i, field := range s.Fields {
+		for _, literal := range field.Literal {
+			if values[i] == literal && patterns[i] != literal {
+				return false
+			}
 		}
 	}
 	return true
