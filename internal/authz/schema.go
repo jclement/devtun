@@ -105,9 +105,6 @@ func (s Schema) Match(pattern, subject string) bool {
 	return true
 }
 
-// fields reports whether the schema has more than one field.
-func (s Schema) multi() bool { return len(s.Fields) > 1 && s.Separator != "" }
-
 // withDefaults fills in a schema a caller left empty.
 func (s Schema) withDefaults() Schema {
 	if len(s.Fields) == 0 {

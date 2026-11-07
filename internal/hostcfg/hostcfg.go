@@ -219,7 +219,7 @@ func Open(dir string) *Store {
 	s.global = &file{doc: emptyDoc()}
 	if dir != "" {
 		s.global.path = filepath.Join(dir, "config.yaml")
-		s.refresh(s.global)
+		_ = s.refresh(s.global)
 	}
 	return s
 }
