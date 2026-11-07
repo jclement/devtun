@@ -586,6 +586,8 @@ By default no secret material outlives one `op` call. `--cache` keeps values in 
 - **A cached value never outlives the authorisation that produced it** — entries expire at the *earlier* of the cache TTL and the grant. "Allow once" caches nothing.
 - **A cached value is never served without re-authorising** — the cache is read *after* the policy decision, never instead of it.
 
+Only a bare `op read <reference>` is cached, and never one whose reference has a query: `?attribute=otp` is a one-time code that is dead thirty seconds later, and a cache that handed it back would be handing back a wrong answer.
+
 ## What this is not
 
 devtun does not make the remote box trustworthy. Anyone who can run processes as you on it can reach the socket, and the approval prompt is the only thing between them and your vault. This is the same trust model as SSH agent forwarding and deserves the same caution: approve narrowly, prefer per-secret grants, keep TTLs short.

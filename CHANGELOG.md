@@ -55,6 +55,24 @@ this is 0.x, a minor bump may break something.
   by subject.
 - **Forget no longer drops refusals.** "No, and stop asking" survives the
   lock-it-back-up button.
+- **Opening a URL from the box no longer risks the wrong local service.** When
+  a remapped tunnel was asked back onto its own port for an OAuth callback and
+  something on the workstation held that port, devtun quietly moved the tunnel
+  to a fresh port, reported success, and opened `localhost:<port>` — the
+  unrelated service. Taking the port back is now exact or nothing, and a
+  failure leaves the working tunnel where it was.
+- **A ProxyJump handshake gives up at its timeout.** Behind a jump host the
+  target connection cannot take a deadline, so a target that accepted the
+  channel and never sent a banner held the connection attempt forever, past the
+  timeout and cancellation alike. The handshake is now torn down when its
+  context ends.
+- **Reconnect reconnects.** The button only shortened the next backoff: pressed
+  while connected it did nothing until the link dropped by itself. It now drops
+  the live connection and makes a fresh one at once.
+- **One-time codes are never cached.** With `--cache` on, `op read
+  "op://…?attribute=otp"` was cached like any other value, so a retry after the
+  code's thirty seconds got the dead code back. References with a query are now
+  always read fresh.
 
 ### Added
 
@@ -65,7 +83,6 @@ this is 0.x, a minor bump may break something.
   host file's hand-written `rules:`, which keep working as before.
 - Activity events for decisions carry what decided: `by=rule|grant|unmatched|…`
   with the rule's ID and source or the grant's ID.
-||||||| parent of 015aa41 (Bind SSH agent signatures to the session they were bound for)
 
 ## v0.1.22
 

@@ -179,12 +179,20 @@ func (s *Service) respond(l *link, result opcli.Result, err error, subject strin
 // Keys carry the account because two accounts can hold a vault of the same
 // name, and serving one account's secret for the other's reference would be a
 // leak dressed up as a cache hit.
+//
+// A reference with a query is never cached. The query picks *which value* of
+// a field comes back, and the commonest one, `?attribute=otp`, is a one-time
+// code that changes every thirty seconds: cached for the configured TTL, a
+// retry after the code's window would be handed a dead code that a direct
+// `op read` would not give. The other queries are rare enough that telling the
+// static ones from the time-varying ones is not worth getting wrong, so the
+// classification is the conservative one — no query, or no cache.
 func cacheKey(account string, argv []string) (string, bool) {
 	if len(argv) != 2 || argv[0] != "read" {
 		return "", false
 	}
 	ref, err := opref.Parse(argv[1])
-	if err != nil {
+	if err != nil || ref.Query != "" {
 		return "", false
 	}
 	return account + "\x00" + ref.String(), true
@@ -224,8 +232,8 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 		account := s.accountFor(subject)
 		started := time.Now()
 
-		key, _ := cacheKey(account, argv)
-		if cached, hit := s.cache.Get(key); hit {
+		key, cacheable := cacheKey(account, argv)
+		if cached, hit := s.cache.Get(key); cacheable && hit {
 			l.cached(subject, why)
 			secrets[raw] = trimSecret(cached)
 			continue
@@ -243,7 +251,9 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 			l.failed(subject, message)
 			return &opResponse{Exit: ExitProxyError, Error: fmt.Sprintf("reading %s: %s", subject, message)}
 		}
-		s.cache.Put(key, result.Stdout, until)
+		if cacheable {
+			s.cache.Put(key, result.Stdout, until)
+		}
 		l.allowed(subject, why, time.Since(started))
 		secrets[raw] = trimSecret(result.Stdout)
 	}

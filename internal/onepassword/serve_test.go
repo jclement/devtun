@@ -1049,3 +1049,37 @@ func (lateAllowPrompter) Ask(ctx context.Context, _ prompt.Request) (prompt.Choi
 	<-ctx.Done()
 	return prompt.ChoiceAllowSecretSession, nil
 }
+
+// TestOneTimeCodesAreNeverCached: `?attribute=otp` asks for a code that
+// changes every thirty seconds. With caching on, a retry after the code's
+// window used to be served the dead code from the cache. Every OTP read must
+// reach op — exec and batched resolve alike — while the plain field beside it
+// is still cached.
+func TestOneTimeCodesAreNeverCached(t *testing.T) {
+	opts := allowAll()
+	opts.CacheTTL = time.Hour
+	const otp = "op://Personal/GitHub/one-time password?attribute=otp"
+	h := start(t, opts, map[string]string{
+		otp:                             "123456",
+		"op://Personal/GitHub/password": "hunter2",
+	})
+
+	for range 2 {
+		if response := h.exec(t, "read", otp); response.Exit != 0 {
+			t.Fatalf("exit = %d, error = %q", response.Exit, response.Error)
+		}
+		if response := h.resolve(t, otp); response.Exit != 0 {
+			t.Fatalf("resolve: exit = %d, error = %q", response.Exit, response.Error)
+		}
+	}
+	if n := h.runner.reads(); n != 4 {
+		t.Errorf("op was asked for the one-time code %d times out of 4; a cached code is a dead code", n)
+	}
+
+	for range 2 {
+		h.exec(t, "read", "op://Personal/GitHub/password")
+	}
+	if n := h.runner.reads(); n != 5 {
+		t.Errorf("the plain field was read %d times, want once more: caching must still work for it", n-4)
+	}
+}
