@@ -47,6 +47,8 @@ func TestDemoBoard(t *testing.T) {
 				Note: "refused interactively", Added: now.Add(-26 * time.Hour)},
 			{Host: "bedev", Subject: "op://Private/Root Keys/gpg", Action: authz.ActionAllow,
 				Added: now.Add(-3 * 24 * time.Hour)},
+			{Host: "bedev", Subject: "[work] op://Barreleye/Deploy/*", Action: authz.ActionAllow,
+				Note: "deploy keys, work account", Added: now.Add(-2 * time.Hour)},
 		},
 	}}, authz.Schema{
 		Noun:     "secret",
@@ -59,7 +61,10 @@ func TestDemoBoard(t *testing.T) {
 		UnmatchedLevel: "host",
 		Remembered: []authz.Rule{{Host: "bedev",
 			Subject: "ssh-ed25519 SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZ/DTMczCvj3tD2s → github.com",
-			Action:  authz.ActionAllow, Added: now.Add(-17 * 24 * time.Hour)}},
+			Action:  authz.ActionAllow, Added: now.Add(-17 * 24 * time.Hour)},
+			{Host: "bedev", Subject: "* → sshsig:git", Action: authz.ActionAllow,
+				Note: "commit signing", Added: now.Add(-9 * 24 * time.Hour)},
+		},
 	}}, sshSchema)
 	mustGrant := func(v *gatedVault, spec authz.GrantSpec) {
 		if _, err := v.AddGrant(spec); err != nil {

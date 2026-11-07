@@ -457,10 +457,10 @@
     <h2>
       Access <span class="muted" id="access-count"></span>
       <span class="grow"></span>
-      <button id="forget" title="drop every live allow grant and every cached secret — refusals stay">forget grants<span class="btn-key">F</span></button>
-      <button id="forget-refusals" title="drop every “No, and stop asking” refusal — those requests are asked about again">forget refusals</button>
+      <button id="forget" title="drop every live allow grant and every cached secret — refusals stay">forget<span class="btn-key">F</span></button>
+      <button id="forget-refusals" title="drop every “No, and stop asking” answer — those requests are asked about again">clear refusals<span class="btn-key">X</span></button>
     </h2>
-    <p class="what">what decides each request: live grants, then the rules on disk — a deny always beats an allow</p>
+    <p class="what" id="access-what">what the box may use in your name, and what decides it — a deny always beats an allow</p>
     <div class="toolbar">
       <button id="test-open" title="would this be allowed? (t)">test<kbd>t</kbd></button>
       <button id="new-rule" class="primary" title="write a new rule or grant (n)">new rule<kbd>n</kbd></button>
@@ -500,7 +500,7 @@
       <span class="grow"></span>
       <label class="toggle"><input type="checkbox" id="verbose"> verbose</label>
     </h2>
-    <p class="what">everything that happened, newest at the bottom — “why?” on a decision shows the rule that made it</p>
+    <p class="what">everything this session did, newest at the bottom — “explain” on a decision shows what decided it</p>
     <div id="log"></div>
     <p class="empty" id="log-empty">waiting for something to happen</p>
   </section>
@@ -850,21 +850,73 @@ function subjectNode(parts, schema, full) {
 // hostWideText words a host-wide grant in the broker's own noun, so it reads
 // "any signature from bedev" rather than "anything".
 function hostWideText(row) {
-  const noun = policyOf(row.source)?.noun || "request";
-  return "any " + noun + " from " + row.host;
+  const p = policyOf(row.source);
+  const multi = (p?.schema?.fields ?? []).length > 1;
+  return "any " + (p?.noun || "request") + " from " + row.host + (multi ? ", to anywhere" : "");
+}
+
+// means reads a pattern out in plain words — display only; what a pattern
+// actually matches is devtun's answer, which the test box and the previews
+// ask for. It knows the three subject shapes worth explaining: a 1Password
+// reference with an account in front, an SSH signature that is not a login,
+// and wildcards.
+function means(source, subject) {
+  const p = policyOf(source);
+  const fields = p?.schema?.fields ?? [];
+  if (!subject) return "";
+  if (subject === "**") return "anything this service is asked for";
+  if (fields.length > 1) {
+    const parts = splitSubject(p, subject);
+    const key = parts[0];
+    const dest = parts[1] ?? "";
+    const keyText = !key || key === "*" || key === "**" ? "any key" : "this one key";
+    if (!dest || dest === "*" || dest === "**") return keyText + ", for any login or signature (not arbitrary data)";
+    if (dest === "(arbitrary data)") return keyText + ", signing arbitrary data — not a login, and nothing but a rule naming it allows it";
+    if (dest.startsWith("sshsig:")) return keyText + ", signing with namespace “" + dest.slice(7) + "” (ssh-keygen -Y sign — git uses “git”)";
+    if (dest === "(destination unknown)") return keyText + ", signing in somewhere devtun could not identify";
+    return keyText + ", signing in to " + dest;
+  }
+  let text = subject;
+  let account = "";
+  const scoped = /^\[([^\]]*)\]\s*(.*)$/.exec(subject);
+  if (scoped) {
+    account = scoped[1];
+    text = scoped[2];
+  }
+  const where = account === "*" ? " — in any account" : account ? " — in the “" + account + "” account" : (source === "1password" ? " — in your default account" : "");
+  if (/[*?[]/.test(text)) {
+    return "anything matching this pattern — * is one path segment, ** any depth" + where;
+  }
+  const ref = /^op:\/\/([^/]+)\/([^/]+)\/(.+)$/.exec(text);
+  if (ref) return "the “" + ref[3] + "” field of “" + ref[2] + "” in the " + ref[1] + " vault" + where;
+  return "exactly this" + where;
+}
+
+// widen takes a pattern one step wider: the last segment, exact → * → **.
+// The same step the terminal's ctrl+t takes.
+function widen(value) {
+  const v = value ?? "";
+  if (v === "" || v === "**" || v.endsWith("/**")) return v === "" ? "*" : v;
+  if (v === "*") return "**";
+  if (v.endsWith("/*")) return v.slice(0, -1) + "*";
+  const cut = v.lastIndexOf("/");
+  return cut >= 0 ? v.slice(0, cut + 1) + "*" : "*";
 }
 
 function originText(row) {
   switch (row.origin) {
-    case "global": return "your config.yaml · all hosts";
-    case "host": return "hosts/" + hostName() + ".yaml · you wrote it";
-    case "remembered": return "hosts/" + hostName() + ".yaml · devtun wrote it";
+    case "global": return "you wrote it · config.yaml · all hosts";
+    case "host": return "you wrote it · hosts/" + hostName() + ".yaml · rules:";
+    case "remembered": return "devtun wrote it · hosts/" + hostName() + ".yaml · remembered:";
     default: return "live · this session";
   }
 }
 
+// kindText is the KIND column. devtun's own rules are the answers you gave —
+// "always" and "never" — and the rules you wrote say what they say.
 function kindText(row) {
   if (row.isGrant) return row.action === "deny" ? "stop-ask" : "grant";
+  if (row.origin === "remembered") return row.action === "deny" ? "never" : "always";
   return row.action;
 }
 
@@ -884,11 +936,13 @@ function buildAccessRows(state) {
 function accessGroups() {
   const host = hostName();
   return [
-    { title: "LIVE — this session only, gone when devtun quits", test: (r) => r.isGrant && r.action !== "deny" },
-    { title: "REFUSALS — “No, and stop asking”, this session only", test: (r) => r.isGrant && r.action === "deny" },
-    { title: "REMEMBERED — devtun wrote these · hosts/" + host + ".yaml", test: (r) => r.origin === "remembered" },
-    { title: "THIS HOST — you wrote these · hosts/" + host + ".yaml", test: (r) => r.origin === "host" },
-    { title: "ALL HOSTS — your config.yaml · read-only here", test: (r) => r.origin === "global" },
+    // The same words as the terminal's Access tab, so the two surfaces are
+    // learned once. Refusals sit with the grants: both are answers given at a
+    // prompt this session, and both are gone when devtun quits.
+    { title: "LIVE — this session only, gone when devtun quits", test: (r) => r.isGrant },
+    { title: "WRITTEN BY DEVTUN — hosts/" + host + ".yaml · remembered:", test: (r) => r.origin === "remembered" },
+    { title: "YOU WROTE — hosts/" + host + ".yaml · rules:", test: (r) => r.origin === "host" },
+    { title: "ALL HOSTS — you wrote it in config.yaml · read-only here", test: (r) => r.origin === "global" },
   ];
 }
 
@@ -941,6 +995,12 @@ function renderAccess(state) {
       pol.append(el("span", "muted", p.short + ": "), el("span", unmatched === "deny" ? "deny" : "ask-c", unmatched));
       if (p.unmatched?.level && p.unmatched.level !== "default") pol.append(el("span", "muted", " (" + p.unmatched.level + ")"));
       if (p.unmatched?.err) pol.title = p.unmatched.err;
+      // An unreadable policy file refuses everything through that broker, and
+      // this is the line that says what happens to a request — so it says so.
+      if (p.policyErr) {
+        pol.replaceChildren(el("span", "muted", p.short + ": "), el("b", "deny", "refusing everything — policy file unreadable"));
+        pol.title = p.policyErr;
+      }
       td.append(pol);
     }
     td.append(button("Config ▸ Policy to change", () => selectTab("Config"), "linkish"));
@@ -948,6 +1008,7 @@ function renderAccess(state) {
     body.append(tr);
   }
 
+  $("access-what").textContent = "what " + (state.host || "the box") + " may use in your name, and what decides it — a deny always beats an allow";
   $("access-count").textContent = accessRows.length ? String(accessRows.length) : "";
   const empty = $("access-empty");
   empty.hidden = shown > 0;
@@ -992,9 +1053,9 @@ function accessRow(row) {
   tr.append(cell(kindText(row), "opt " + (deny ? "deny" : row.isGrant ? "live" : "allow")));
   tr.append(cell(row.host || "**", "opt muted"));
   let life;
-  if (row.isGrant) life = row.expires ? left(row.expires) : "this session";
-  else if (row.origin === "global") life = "always";
-  else life = row.added ? "since " + ago(row.added) : "always";
+  if (row.isGrant) life = row.expires ? left(row.expires) : "session";
+  else if (row.origin === "global") life = "all hosts";
+  else life = row.added ? ago(row.added) : "—";
   tr.append(cell(life, "opt muted"));
 
   const acts = el("td", "acts");
@@ -1086,7 +1147,7 @@ function actionsFor(row) {
     }
   } else {
     const deny = row.action === "deny";
-    out.push({ id: "remove", label: deny ? "remove refusal" : "remove", key: "r", inline: true,
+    out.push({ id: "remove", label: "remove", key: "r", inline: true,
       enabled: !readOnly, reason: ro, loosens: deny, danger: !deny,
       title: deny ? "delete this deny — what it refused falls through to the other rules"
         : "delete this rule — the next request falls through to the other rules" });
@@ -1096,8 +1157,8 @@ function actionsFor(row) {
     out.push({ id: "allow", label: "make it an allow", key: "A", inline: deny, enabled: !readOnly && deny,
       reason: readOnly ? ro : "it already allows", loosens: true,
       title: "rewrite this refusal into an allow — what it matches is allowed, without asking" });
-    out.push({ id: "edit", label: "edit…", key: "e", inline: true, enabled: !readOnly, reason: ro,
-      title: "change what it matches, where it applies, or its note" });
+    out.push({ id: "edit", label: "widen or change…", key: "w", inline: true, enabled: !readOnly, reason: ro,
+      title: "change what it matches, where it applies, or its note — asks first if it lets more through" });
   }
   out.push({ id: "test", label: "test a request like this", key: "t", enabled: true,
     title: "put this pattern in the test box" });
@@ -1130,7 +1191,7 @@ function runAction(row, a) {
     case "remove":
       if (row.action === "deny") {
         confirmLoosen({
-          title: "Remove a refusal?",
+          title: "Remove a deny?",
           row,
           consequence: fallThrough(row, ""),
           yes: "remove it", no: "keep refusing",
@@ -1154,7 +1215,7 @@ function runAction(row, a) {
       });
       break;
     case "edit":
-      openForm({ edit: row });
+      openForm({ edit: row, widen: true });
       break;
     case "test":
       openTest(row.source, row.subject, row.host);
@@ -1292,6 +1353,7 @@ function drawDrawer() {
   const kv = el("dl", "kv");
   const add = (k, v) => { if (v) kv.append(el("dt", "", k), el("dd", "", v)); };
   const fields = p?.schema?.fields ?? [];
+  if (!(row.isGrant && row.hostWide)) add("means", means(row.source, row.subject));
   if (!(row.isGrant && row.hostWide)) {
     fields.forEach((f, i) => add(f.label, (row.parts ?? [row.subject])[i]));
   }
@@ -1540,6 +1602,7 @@ function confirmLoosen(c) {
       document.createTextNode(row.isGrant && row.hostWide ? hostWideText(row) : row.subject));
     body.append(line);
     body.append(el("p", "muted", kindText(row) + " · " + originText(row) + (row.added ? " · " + ago(row.added) : "")));
+    if (!(row.isGrant && row.hostWide)) body.append(el("p", "", "means: " + means(row.source, row.subject)));
   }
   if (c.detail) body.append(c.detail);
   body.append(el("p", "", c.consequence));
@@ -1573,13 +1636,23 @@ function openForm(opts = {}) {
     host: editing ? (editing.host || "") : (lastState?.host || ""),
     lasts: "always",
     note: editing?.note || "",
-    values: editing ? (editing.parts ?? [editing.subject]) : (opts.subject ? splitSubject(policyOf(opts.source || policies[0].source), opts.subject) : []),
+    values: editing ? [...(editing.parts ?? [editing.subject])] : (opts.subject ? splitSubject(policyOf(opts.source || policies[0].source), opts.subject) : []),
   };
+  // w on a row opens the form one step wider than the rule already is, which
+  // is what it is usually for; saving that still asks first.
+  if (editing && opts.widen && editing.action === "allow" && st.values.length) {
+    st.values[0] = widen(st.values[0]);
+  }
   const box = el("div", "dialog");
-  const head = el("header", "", editing ? "edit rule" : "new rule");
+  const head = el("header", "", (editing ? "change a rule · " : "new rule · ") + "for " + hostName());
   const body = el("div", "body");
   const form = el("div", "form");
   const preview = el("div", "preview");
+  const meansLine = el("div", "muted");
+  function drawMeans() {
+    const subject = currentSubject();
+    meansLine.textContent = subject ? means(st.source, subject) : "—";
+  }
   body.append(form);
   box.append(head, body);
 
@@ -1610,10 +1683,19 @@ function openForm(opts = {}) {
       input.type = "text";
       input.value = st.values[i] ?? "";
       input.placeholder = i === 0 ? f.label : f.label + "  (blank = any)";
-      input.oninput = () => { st.values[i] = input.value; schedulePreview(); };
+      input.oninput = () => { st.values[i] = input.value; drawMeans(); schedulePreview(); };
       if (i === 0) input.setAttribute("autofocus", "");
-      row(f.label, input, (f.help ? f.help + " · " : "") + "* matches one part, ** matches everything below");
+      // One step wider at a time — exact, then *, then ** — so nobody has to
+      // know the glob rules to say "any field of this item".
+      const wrap = el("div", "seg");
+      wrap.style.flexWrap = "nowrap";
+      const wide = button("widen", () => { st.values[i] = widen(input.value.trim()); input.value = st.values[i]; drawMeans(); schedulePreview(); },
+        "", "one step wider: exact → * → **");
+      wrap.append(input, wide);
+      row(f.label, wrap, (f.help ? f.help + " · " : "") + "* matches one part, ** matches everything below");
     });
+    form.append(el("label", "k", "means"), meansLine);
+    drawMeans();
     const host = lastState?.host || "";
     // A grant is for one host — it is what a prompt would have answered for
     // that host — so "all hosts" is a rule or nothing.
@@ -1623,7 +1705,7 @@ function openForm(opts = {}) {
         : st.host ? "only requests from " + st.host : "every host — still written to this host's file, under devtun's own rules");
     if (grant) form.querySelectorAll(".seg")[2]?.lastChild?.setAttribute("disabled", "");
     if (!editing) {
-      row("lasts", seg([["always", "always (a rule)"], ["300", "5m"], ["3600", "1h"], ["0", "this session"]], st.lasts,
+      row("lasts", seg([["always", "always"], ["0", "this session"], ["300", "5m"]], st.lasts,
         (v) => { st.lasts = v; if (v !== "always") st.host = lastState?.host || ""; }),
         st.lasts === "always" ? "written to hosts/" + (host || "host") + ".yaml, under remembered:" : "a live grant — gone when it lapses or devtun quits");
     }
@@ -1744,14 +1826,15 @@ function forgetRefusals() {
     list.append(el("div", "match", "✕ " + shortOf(r.source) + "  " + (r.hostWide ? hostWideText(r) : r.subject)));
   }
   confirmLoosen({
-    title: "Forget " + refusals.length + " refusal" + (refusals.length === 1 ? "" : "s") + "?",
+    title: "Clear " + refusals.length + " refusal" + (refusals.length === 1 ? "" : "s") + "?",
     detail: list,
-    consequence: "You said “No, and stop asking” to these. Each will be asked about again — and a rule that allows it will simply let it through.",
-    yes: "forget them", no: "keep refusing",
+    consequence: refusals.length + " “No, and stop asking” answer" + (refusals.length === 1 ? " goes" : "s go") + ": " + hostName() +
+      " will be asked about " + (refusals.length === 1 ? "that one" : "them") + " again, and a Yes will hand it over. Deny rules on disk still refuse what they match.",
+    yes: "clear them", no: "keep refusing",
     run: async () => {
       try {
         const gone = await api("/api/grants/forget-refusals?confirm=1", "POST");
-        toast(gone.refusals ? "forgot " + gone.refusals + " refusal" + (gone.refusals === 1 ? "" : "s") : "nothing to forget", false);
+        toast(gone.refusals ? "cleared " + gone.refusals + " refusal" + (gone.refusals === 1 ? "" : "s") : "nothing to forget", false);
       } catch (err) {
         toast(err.message);
       }
@@ -1840,7 +1923,7 @@ async function openWhy(e) {
   }
   const buttons = el("div", "buttons");
   if (subject && p) {
-    buttons.append(button("new rule from this request", () => { closeModal(); selectTab("Access"); openForm({ source, subject }); }));
+    buttons.append(button("write a rule from this request", () => { closeModal(); selectTab("Access"); openForm({ source, subject }); }));
   }
   buttons.append(button("close", closeModal));
   body.append(buttons);
@@ -1863,11 +1946,12 @@ function openHelp() {
     ["space  ⋯  right-click", "every action for the row, with why the others can't be done"],
     ["r", "revoke a grant / remove a rule (asks first if it would let more through)"],
     ["D  A", "make it a deny / make it an allow (asks first)"],
-    ["e", "edit the rule"],
+    ["w", "widen or change the rule"],
     ["n", "new rule or grant"],
     ["t", "test: would this be allowed?"],
     ["y", "copy the pattern"],
-    ["F", "forget live allow grants (refusals stay)"],
+    ["F", "forget live allow grants and cached secrets (refusals stay)"],
+    ["X", "clear refusals (asks first)"],
     ["/", "filter"],
     ["approvals", ""],
     ["1 – 9", "answer"],
@@ -2056,6 +2140,7 @@ document.addEventListener("keydown", (event) => {
     case "n": event.preventDefault(); openForm(); return;
     case "t": event.preventDefault(); if (row) openTest(row.source, row.subject, row.host); else openTest(); return;
     case "F": event.preventDefault(); forgetGrants(); return;
+    case "X": event.preventDefault(); forgetRefusals(); return;
     case "Enter": if (row) { event.preventDefault(); openDrawer(row.key); } return;
     case " ":
       if (row) {
@@ -2384,7 +2469,7 @@ function line(e) {
   div.append(el("span", "txt", e.text ?? ""));
   // Every decision says what made it, so every decision can be asked why.
   if (e.fields?.by) {
-    div.append(button("why?", () => openWhy(e), "why-btn", "the rule, grant or policy that decided this"));
+    div.append(button("explain", () => openWhy(e), "why-btn", "the rule, grant or policy that decided this"));
   }
   return div;
 }

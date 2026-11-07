@@ -114,7 +114,7 @@ func accessServer(t *testing.T, book *testBook) (*Server, *gatedVault) {
 	return newTestServer(t, Options{Host: "bedev", Services: []service.Service{vault}}), vault
 }
 
-// post is a same-origin POST with the cookie, which is what the page sends.
+// post is a same-origin POST with the credential, which is what the page sends.
 func post(t *testing.T, s *Server, path string, query url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	return ask(t, s, http.MethodPost, path+"?"+query.Encode())
@@ -467,7 +467,7 @@ func TestAnAllowUnderACatchAllDenyIsOutranked(t *testing.T) {
 }
 
 // Every Access endpoint is behind the same guard as everything else: the
-// cookie, the loopback Host, and — for anything that changes state — the
+// bearer credential, the loopback Host, and — for anything that changes state — the
 // Origin.
 func TestTheAccessEndpointsAreGuarded(t *testing.T) {
 	book := &testBook{loaded: authz.Loaded{
@@ -495,12 +495,12 @@ func TestTheAccessEndpointsAreGuarded(t *testing.T) {
 		rec := httptest.NewRecorder()
 		s.mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("%s %s without the cookie = %d, want 401", method, path, rec.Code)
+			t.Errorf("%s %s without the credential = %d, want 401", method, path, rec.Code)
 		}
 
 		req = httptest.NewRequest(method, path, nil)
 		req.Host = "evil.example"
-		req.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+		req.Header.Set("Authorization", bearerPrefix+s.session)
 		rec = httptest.NewRecorder()
 		s.mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden {
@@ -511,7 +511,7 @@ func TestTheAccessEndpointsAreGuarded(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, path, nil)
 		req.Host = "127.0.0.1:1"
 		req.Header.Set("Origin", "http://127.0.0.1:3000")
-		req.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+		req.Header.Set("Authorization", bearerPrefix+s.session)
 		rec := httptest.NewRecorder()
 		s.mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden {
