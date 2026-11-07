@@ -1,6 +1,9 @@
 package authz
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // What a subject is made of, per broker.
 //
@@ -123,6 +126,11 @@ func (s Schema) Allows(pattern, subject string) bool {
 		return false
 	}
 	if len(s.Fields) <= 1 || s.Separator == "" {
+		// One field: the whole subject is that field's value, and the whole
+		// pattern is what names it.
+		if len(s.Fields) == 1 && slices.Contains(s.Fields[0].Literal, subject) {
+			return pattern == subject
+		}
 		return true
 	}
 	values := s.Split(subject)

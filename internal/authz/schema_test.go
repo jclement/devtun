@@ -37,3 +37,25 @@ func TestALiteralValueIsAllowedOnlyByName(t *testing.T) {
 		t.Error("an ordinary destination lost its wildcard allow")
 	}
 }
+
+// TestALiteralValueInAOneFieldSchema: Literal holds for a single-field schema
+// too — the whole subject is the field, and only the exact value allows it.
+func TestALiteralValueInAOneFieldSchema(t *testing.T) {
+	schema := Schema{Fields: []Field{{Name: "site", Literal: []string{"sensitive"}}}, PathLike: true}
+	for pattern, want := range map[string]bool{
+		"**":        false,
+		"*":         false,
+		"sens*":     false,
+		"sensitive": true,
+	} {
+		if got := schema.Allows(pattern, "sensitive"); got != want {
+			t.Errorf("Allows(%q, sensitive) = %v, want %v", pattern, got, want)
+		}
+	}
+	if !schema.Allows("**", "ordinary") {
+		t.Error("an ordinary value lost its wildcard allow")
+	}
+	if !schema.Match("**", "sensitive") {
+		t.Error("Match must still match, so a wildcard deny refuses the literal value")
+	}
+}
