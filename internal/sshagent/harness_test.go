@@ -168,15 +168,9 @@ func serveKeyring(t *testing.T, ring agent.Agent) func(context.Context) (net.Con
 	}
 }
 
-// bindTo builds a session-bind@openssh.com payload the way OpenSSH does: the
-// destination's host key, a session identifier, and that host key's signature
-// over the identifier.
-func bindTo(t *testing.T, hostKey ssh.Signer, forwarding bool) []byte {
-	bind, _ := bindSession(t, hostKey, forwarding)
-	return bind
-}
-
-// bindSession is bindTo that also returns the session identifier, for a test
+// bindSession builds a session-bind@openssh.com payload the way OpenSSH does —
+// the destination's host key, a session identifier, and that host key's
+// signature over the identifier — and returns the identifier too, for a test
 // that goes on to sign a login for that session.
 func bindSession(t *testing.T, hostKey ssh.Signer, forwarding bool) (bind, sessionID []byte) {
 	t.Helper()
