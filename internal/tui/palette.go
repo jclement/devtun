@@ -114,7 +114,7 @@ func (m *Model) actions() []action {
 		{title: "Show this event in full", short: "detail", tab: tabActivity, key: "enter", row: true, run: press("enter")},
 		{title: "Show the rule or grant that decided this", short: "show rule", tab: tabActivity, key: "o", row: true, run: press("o"),
 			disabled: func(mm *Model) string { return mm.decidingBlocked() }, alt: "why jump access explain"},
-				{title: "Write a rule from this request", tab: tabActivity, key: "n", row: true, run: press("n"),
+		{title: "Write a rule from this request", tab: tabActivity, key: "n", row: true, run: press("n"),
 			disabled: func(mm *Model) string { return mm.newFromEventBlocked() }, alt: "new allow deny add"},
 		{title: "Copy this log line", short: "copy", tab: tabActivity, key: "y", row: true, run: press("y"), alt: "yank clipboard"},
 		{title: "Filter the log by what it is about", short: "filter", tab: tabActivity, key: "f", run: press("f")},
