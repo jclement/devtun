@@ -179,3 +179,21 @@ func TestQuerySurvivesAndDistinguishesReferences(t *testing.T) {
 		t.Error("the query must not disturb the path")
 	}
 }
+
+func TestSubjectCarriesAnExplicitAccount(t *testing.T) {
+	cases := map[string][]string{
+		"op://Shared/App/password":            {"read", "op://Shared/App/password"},
+		"[personal] op://Shared/App/password": {"--account", "personal", "read", "op://Shared/App/password"},
+		"[work] op://Shared/App/password":     {"read", "op://Shared/App/password", "--account=work"},
+		"[work] op://V/Item/f":                {"item", "get", "Item", "--vault", "V", "--fields", "f", "--account", "work"},
+		"op item list --account work":         {"item", "list", "--account", "work"},
+	}
+	for want, argv := range cases {
+		if got := Subject(argv); got != want {
+			t.Errorf("Subject(%q) = %q, want %q", argv, got, want)
+		}
+	}
+	if got := Unscoped([]string{"--account", "personal", "read", "op://Shared/App/password"}); got != "op://Shared/App/password" {
+		t.Errorf("Unscoped kept the account: %q", got)
+	}
+}

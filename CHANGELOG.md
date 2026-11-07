@@ -15,6 +15,13 @@ this is 0.x, a minor bump may break something.
   must be for the bound session, or it is refused; git/SSHSIG signatures are
   asked about as `→ sshsig:<namespace>`; anything else as `→ (arbitrary data)`.
   A rule that matched every destination (`→ **`) still matches these.
+- **1Password `--account` is part of what is approved.** `op --account personal
+  read op://Shared/App/password` was authorised as the bare reference, so a
+  grant for the default account's `Shared/App/password` also read the
+  personal account's. A request that names an account is now asked about as
+  `[personal] op://…`; existing rules keep meaning the default account, deny
+  rules still apply whichever account is named, `--account` may appear only
+  once, and routing no longer adds a second `--account` to such a request.
 
 ### Fixed
 

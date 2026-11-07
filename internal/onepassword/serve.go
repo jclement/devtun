@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/jclement/devtun/internal/authz"
 	"io"
 	"net"
 	"strings"
 	"time"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/onepassword/opcli"
 	"github.com/jclement/devtun/internal/onepassword/opref"
@@ -99,13 +99,34 @@ func (s *Service) handleExec(ctx context.Context, l *link, request opRequest) *o
 	subject := opref.Subject(request.Argv)
 	l.requested(subject)
 
+	// A request that names its own account is authorised for that account
+	// (the subject carries it), but a refusal of the bare reference still
+	// stands: a deny rule is about the item, wherever it lives. Only a deny
+	// something actually said counts — a rule or a "stop asking" — not the
+	// unmatched policy, which would otherwise refuse every account-scoped
+	// request whose bare reference simply has no rule.
+	if explicit := opref.Account(request.Argv); explicit != "" {
+		v := s.gate.Decide(l.host, opref.Unscoped(request.Argv))
+		if v.Action == authz.ActionDeny && (v.By.Kind == authz.ByRule || v.By.Kind == authz.ByGrant) {
+			why := decision{reason: v.Reason, by: v.By}
+			l.denied(subject, why)
+			return &opResponse{Exit: ExitDenied, Error: "denied by devtun: " + why.reason}
+		}
+	}
+
 	allowed, why, until := s.authorize(ctx, l, subject, request.Argv)
 	if !allowed {
 		l.denied(subject, why)
 		return &opResponse{Exit: ExitDenied, Error: "denied by devtun: " + why.reason}
 	}
 
-	account := s.accountFor(subject)
+	// Routing picks an account only when the request did not. When it did, its
+	// own --account is the one the subject was authorised for, and adding a
+	// second would leave op to choose between them.
+	account := ""
+	if opref.Account(request.Argv) == "" {
+		account = s.accountFor(subject)
+	}
 	started := time.Now()
 
 	// The cache is consulted only after the request has been authorised, never

@@ -94,6 +94,10 @@ func (g *Guard) Check(argv []string) error {
 		}
 	}
 
+	if err := checkAccount(argv); err != nil {
+		return err
+	}
+
 	command, err := commandPath(argv)
 	if err != nil {
 		return err
@@ -218,4 +222,58 @@ func flagName(arg string) (string, bool) {
 
 func normalizeCommand(command string) string {
 	return strings.Join(strings.Fields(command), " ")
+}
+
+// checkAccount vets --account, which is part of what a request is authorised
+// for (see opref.Subject).
+//
+// More than one is refused because the subject can only name one, and which of
+// two `op` would honour is not something to guess about: guessing wrong
+// authorises one account and reads another. The value is kept to the
+// characters account shorthands, sign-in addresses and IDs are made of, so it
+// cannot reshape the subject it is written into — no space or bracket to fake
+// a second account, no slash to change what a `*` in a rule reaches.
+func checkAccount(argv []string) error {
+	seen := 0
+	for i := 0; i < len(argv); i++ {
+		arg := argv[i]
+		if arg == "--" {
+			break
+		}
+		name, inline, hasInline := strings.Cut(arg, "=")
+		if name != "--account" {
+			continue
+		}
+		seen++
+		value := inline
+		if !hasInline {
+			if i+1 >= len(argv) {
+				return fmt.Errorf("--account needs a value")
+			}
+			i++
+			value = argv[i]
+		}
+		if !safeAccount(value) {
+			return fmt.Errorf("--account %q is not an account name devtun can put in a policy subject", value)
+		}
+	}
+	if seen > 1 {
+		return fmt.Errorf("--account given %d times; name one account", seen)
+	}
+	return nil
+}
+
+func safeAccount(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '-', r == '_', r == '@', r == '+':
+		default:
+			return false
+		}
+	}
+	return true
 }

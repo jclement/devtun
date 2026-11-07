@@ -118,15 +118,53 @@ func Find(text string) []string {
 // reference share one rule. Everything else falls back to the normalised
 // command line, which is deliberately coarse: a rule for an unrecognised
 // command should not silently cover a different one.
+//
+// A reference names a vault but not an account, so a request that picks its
+// own account with --account carries it in front: `[work] op://Shared/App/pw`.
+// Two accounts can each hold a Shared/App/pw, and approving one must not
+// approve the other. A subject with no account in front means the account
+// devtun picks by itself — the configured routing for that vault, or op's
+// default — which is what every rule written before accounts were part of the
+// subject meant.
 func Subject(argv []string) string {
+	subject, isRef := unscoped(argv)
+	if !isRef {
+		return subject
+	}
+	if account := Account(argv); account != "" {
+		return "[" + account + "] " + subject
+	}
+	return subject
+}
+
+// Unscoped is the subject the same request would have without its --account:
+// the reference alone. Deny rules are checked against it as well as against
+// Subject, because a rule refusing op://Private/Root Keys/** was written about
+// that item wherever it lives, and naming an account must not step around it.
+func Unscoped(argv []string) string {
+	subject, _ := unscoped(argv)
+	return subject
+}
+
+// Account is the account the request selects for itself with --account, or ""
+// when it leaves the choice to devtun. The guard refuses a request that names
+// more than one, so the first is the only one.
+func Account(argv []string) string {
+	_, flags := splitArgs(argv)
+	return flags["account"]
+}
+
+// unscoped computes the account-free subject and reports whether it is
+// reference-shaped.
+func unscoped(argv []string) (string, bool) {
 	if len(argv) == 0 {
-		return "op"
+		return "op", false
 	}
 	positional, flags := splitArgs(argv)
 
 	if len(positional) > 0 && positional[0] == "read" && len(positional) > 1 {
 		if ref, err := Parse(positional[1]); err == nil {
-			return ref.String()
+			return ref.String(), true
 		}
 	}
 
@@ -139,10 +177,11 @@ func Subject(argv []string) string {
 			vault = "?"
 		}
 		ref := Ref{Vault: vault, Item: positional[2], Field: fieldFromFlag(flags["fields"])}
-		return ref.String()
+		return ref.String(), true
 	}
 
-	return "op " + strings.Join(argv, " ")
+	// The command line, account flag and all: it already says which account.
+	return "op " + strings.Join(argv, " "), false
 }
 
 // fieldFromFlag reduces --fields to a single field name for subject purposes.

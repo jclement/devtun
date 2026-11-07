@@ -405,6 +405,19 @@ The **Access** tab in `--tui` lists everything currently deciding — live grant
     by_vault: {Barreleye: barreleyesoftware.1password.com}
 ```
 
+**A request that picks its own account is approved for that account.** A
+secret reference names a vault but not an account, and two accounts can each
+hold `Shared/App/password`. So `op --account personal read op://Shared/App/password`
+is asked about as `[personal] op://Shared/App/password`, and approving the plain
+`op://Shared/App/password` — which means *the account devtun picks*: your
+`accounts:` routing for that vault, or `op`'s default — does not cover it. Rules
+follow the same shape: `op://Shared/**` keeps meaning the default account, and
+`[personal] op://Shared/**` allows that one account. Deny rules are the
+exception, on purpose: a deny written as a bare reference applies whichever
+account is named, because it was written about the item. `--account` may be
+given once, and devtun's own routing never adds a second one on top. (`op run`
+and `op inject` resolve their references in the default account.)
+
 Only read-only `op` commands are proxied at all — `read`, `item get`, `item list`, and friends. Anything else needs an explicit `allow_commands` entry, because "pass the arguments through" would otherwise hand anyone with a shell on that box `op item delete` against an unlocked vault.
 
 `allow_commands` sits directly under `1password:` — not inside a rule — in a host's file to widen that host alone, or in the global file to widen every host. It *adds* to the read-only defaults, so list only the extra commands. Each entry is a command path; `item create` allows `op item create …` with any arguments.
