@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jclement/devtun/internal/authz"
+	"github.com/jclement/devtun/internal/browser"
 	"github.com/jclement/devtun/internal/service"
 )
 
@@ -159,5 +160,46 @@ func TestThePageConfirmsALooseningSetting(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("the page is missing %q", want)
 		}
+	}
+}
+
+// Under --gate ask, with neither file saying anything about the gate, the
+// browser asks — so writing auto from the board, whether chosen outright or by
+// stepping back from inherit, is a loosening. The fallback is the session's
+// own, read from the real browser service, not assumed to be auto.
+func TestAGateAskFallbackMakesAutoALooseningOnTheBoard(t *testing.T) {
+	yes := true
+	for _, path := range []string{
+		"/api/config/gate?level=host&value=auto",
+		"/api/config/gate?level=host&step=-1",
+	} {
+		t.Run(path, func(t *testing.T) {
+			store := newMemStore()
+			site := browser.New(browser.Options{Ask: &yes})
+			s := newTestServer(t, Options{Host: "bedev", Store: store, Services: []service.Service{site}})
+
+			got := ask(t, s, http.MethodPost, path)
+			if got.Code != http.StatusPreconditionRequired {
+				t.Fatalf("without confirm = %d (%s), want 428", got.Code, got.Body)
+			}
+			if v := store.Setting("bedev", "browser", "gate"); v != "" {
+				t.Fatalf("a refused write reached the file: %q", v)
+			}
+			if got := ask(t, s, http.MethodPost, path+"&confirm=1"); got.Code != http.StatusOK {
+				t.Fatalf("with confirm = %d: %s", got.Code, got.Body)
+			}
+			if v := store.Setting("bedev", "browser", "gate"); v != "auto" {
+				t.Errorf("the confirmed write left %q, want auto", v)
+			}
+		})
+	}
+
+	// Without --gate ask the silent gate is already auto: writing auto opens
+	// nothing and needs no confirm.
+	store := newMemStore()
+	s := newTestServer(t, Options{Host: "bedev", Store: store,
+		Services: []service.Service{browser.New(browser.Options{})}})
+	if got := ask(t, s, http.MethodPost, "/api/config/gate?level=host&value=auto"); got.Code != http.StatusOK {
+		t.Errorf("auto over the default auto = %d (%s), want 200", got.Code, got.Body)
 	}
 }
