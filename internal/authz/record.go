@@ -66,6 +66,8 @@ func Record(s *Store, host, subject string, choice prompt.Choice, ttl time.Durat
 	case prompt.ChoiceAllowSecretAlways:
 		note := "approved interactively on " + time.Now().Format("2006-01-02")
 		if err := s.GrantPermanent(host, subject, note); err != nil {
+			// The answer still holds for this process; only "always" is lost.
+			s.GrantSession(host, subject)
 			return Outcome{Allowed: true, Err: err}
 		}
 		return Outcome{Allowed: true, Note: fmt.Sprintf("saved a rule allowing %s from %s", subject, host)}
@@ -77,6 +79,7 @@ func Record(s *Store, host, subject string, choice prompt.Choice, ttl time.Durat
 	case prompt.ChoiceRefuseAlways:
 		note := "refused interactively on " + time.Now().Format("2006-01-02")
 		if err := s.RefusePermanent(host, subject, note); err != nil {
+			s.RefuseSession(host, subject)
 			return Outcome{Err: err}
 		}
 		return Outcome{Note: fmt.Sprintf("saved a rule refusing %s from %s", subject, host)}

@@ -16,23 +16,11 @@ func newTestStore(t *testing.T, rules ...Rule) *Store {
 	})
 }
 
-// recordingSaver stands in for the host's config document. What matters is
-// whether it was written to at all, so every call is kept.
-type recordingSaver struct {
-	saved [][]Rule
-	err   error
-}
-
-func (r *recordingSaver) SaveRules(rules []Rule) error {
-	r.saved = append(r.saved, rules)
-	return r.err
-}
-
-func (r *recordingSaver) last() []Rule {
-	if len(r.saved) == 0 {
-		return nil
-	}
-	return r.saved[len(r.saved)-1]
+// withHostRules gives a store host and remembered rules, in memory.
+func withHostRules(s *Store, host []Rule, remembered ...Rule) *memoryBook {
+	book := &memoryBook{loaded: Loaded{Global: s.Config().Rules, Host: host, Remembered: remembered}}
+	s.AdoptBook(book)
+	return book
 }
 
 func TestDecideAsksWhenNothingMatches(t *testing.T) {
@@ -69,13 +57,13 @@ func TestDenyBeatsAllowRegardlessOfOrder(t *testing.T) {
 // global block, or a global allow would defeat a block written for one host.
 func TestDenyBeatsAllowAcrossBothRuleSets(t *testing.T) {
 	globalDeny := newTestStore(t, Rule{Host: "**", Subject: "op://Personal/Root/**", Action: ActionDeny})
-	globalDeny.AdoptHostRules([]Rule{{Host: "devbox", Subject: "op://Personal/**", Action: ActionAllow}}, nil)
+	withHostRules(globalDeny, []Rule{{Host: "devbox", Subject: "op://Personal/**", Action: ActionAllow}})
 	if verdict := globalDeny.Decide("devbox", "op://Personal/Root/key"); verdict.Action != ActionDeny {
 		t.Errorf("a per-host allow defeated a global deny: action = %q", verdict.Action)
 	}
 
 	globalAllow := newTestStore(t, Rule{Host: "**", Subject: "op://Personal/**", Action: ActionAllow})
-	globalAllow.AdoptHostRules([]Rule{{Host: "devbox", Subject: "op://Personal/Root/**", Action: ActionDeny}}, nil)
+	withHostRules(globalAllow, nil, Rule{Host: "devbox", Subject: "op://Personal/Root/**", Action: ActionDeny})
 	if verdict := globalAllow.Decide("devbox", "op://Personal/Root/key"); verdict.Action != ActionDeny {
 		t.Errorf("a global allow defeated a per-host deny: action = %q", verdict.Action)
 	}
@@ -122,99 +110,190 @@ func TestForgetGrants(t *testing.T) {
 	}
 }
 
-// "Always" has to outlive the process, which here means it reaches the saver
-// and comes back through AdoptHostRules on the next run.
-func TestGrantPermanentIsPersistedAndReloads(t *testing.T) {
-	saver := &recordingSaver{}
+// The panic button used to drop refusals too, reopening every question
+// somebody had closed with "no, and stop asking". The one action meant to
+// tighten everything loosened something.
+func TestForgetGrantsKeepsRefusals(t *testing.T) {
 	store := newTestStore(t)
-	store.AdoptHostRules(nil, saver)
+	store.GrantSession("devbox", "op://Work/CI")
+	store.RefuseSession("devbox", "op://Private/Root")
+
+	if got := store.ForgetGrants(); got != 1 {
+		t.Fatalf("ForgetGrants() = %d, want only the allow", got)
+	}
+	if got := store.Decide("devbox", "op://Private/Root"); got.Action != ActionDeny {
+		t.Errorf("the refusal did not survive Forget: %v", got.Action)
+	}
+	if got := store.ForgetRefusals(); got != 1 {
+		t.Errorf("ForgetRefusals() = %d, want 1", got)
+	}
+	if got := store.Decide("devbox", "op://Private/Root"); got.Action != ActionAsk {
+		t.Errorf("after ForgetRefusals the question should be asked again, got %v", got.Action)
+	}
+}
+
+// "Always" has to outlive the process, which here means it reaches the rule
+// book's remembered list and is read back from it.
+func TestGrantPermanentIsRememberedAndReloads(t *testing.T) {
+	store := newTestStore(t)
+	book := withHostRules(store, nil)
 
 	if err := store.GrantPermanent("devbox", "op://Personal/Docker/PAT", "approved in a test"); err != nil {
 		t.Fatalf("GrantPermanent: %v", err)
 	}
-	if len(saver.saved) != 1 {
-		t.Fatalf("the rule was saved %d times, want 1", len(saver.saved))
+	if len(book.loaded.Remembered) != 1 || len(book.loaded.Host) != 0 {
+		t.Fatalf("an always answer must land in remembered, not the hand-written list: %+v", book.loaded)
 	}
 
 	reloaded := newTestStore(t)
-	reloaded.AdoptHostRules(saver.last(), saver)
+	withHostRules(reloaded, nil, book.loaded.Remembered...)
 	if verdict := reloaded.Decide("devbox", "op://Personal/Docker/PAT"); verdict.Action != ActionAllow {
 		t.Fatalf("after reload: action = %q, want allow", verdict.Action)
 	}
-	if got := len(reloaded.Rules()); got != 1 {
-		t.Fatalf("reloaded %d rules, want 1", got)
+	rules := reloaded.Rules()
+	if len(rules) != 1 || rules[0].Source != SourceRemembered {
+		t.Fatalf("reloaded %+v, want one remembered rule", rules)
 	}
 }
 
 // A save that fails is reported rather than swallowed: the caller decides what
-// to do about it, and being asked again is the worst case.
+// to do about it.
 func TestGrantPermanentReportsASaveFailure(t *testing.T) {
-	saver := &recordingSaver{err: errors.New("disk full")}
 	store := newTestStore(t)
-	store.AdoptHostRules(nil, saver)
+	book := withHostRules(store, nil)
+	book.fail = errors.New("disk full")
 
 	if err := store.GrantPermanent("devbox", "op://V/I/F", ""); err == nil {
-		t.Fatal("GrantPermanent = nil, want the saver's error")
-	}
-	if verdict := store.Decide("devbox", "op://V/I/F"); verdict.Action != ActionAllow {
-		t.Errorf("action = %q; the user said yes, so the rule still applies in this process", verdict.Action)
+		t.Fatal("GrantPermanent = nil, want the book's error")
 	}
 }
 
-func TestRevoke(t *testing.T) {
-	saver := &recordingSaver{}
-	store := newTestStore(t)
-	store.AdoptHostRules(nil, saver)
+// IDs are what make a revoke on one screen safe while another screen is
+// open: they do not move when the list around them does.
+func TestRuleIDsSurviveOtherRulesBeingRemoved(t *testing.T) {
+	store := newTestStore(t, Rule{Subject: "op://Global/**", Action: ActionDeny})
+	withHostRules(store,
+		[]Rule{{Subject: "op://A/one/f", Action: ActionAllow}, {Subject: "op://A/two/f", Action: ActionAllow}},
+		Rule{Subject: "op://A/three/f", Action: ActionAllow})
 
-	for _, subject := range []string{"op://A/one/f", "op://A/two/f"} {
-		if err := store.GrantPermanent("devbox", subject, ""); err != nil {
-			t.Fatalf("GrantPermanent: %v", err)
+	before := store.Rules()
+	if len(before) != 4 {
+		t.Fatalf("want 4 rules, got %+v", before)
+	}
+	wantSources := []Source{SourceGlobal, SourceHost, SourceHost, SourceRemembered}
+	for i, r := range before {
+		if r.Source != wantSources[i] || r.ID == "" {
+			t.Errorf("rule %d = %+v, want source %s and an ID", i, r, wantSources[i])
 		}
 	}
-	if err := store.Revoke(0); err != nil {
-		t.Fatalf("Revoke: %v", err)
+	two, three := before[2].ID, before[3].ID
+
+	if err := store.RemoveRule(before[1].ID); err != nil {
+		t.Fatalf("RemoveRule: %v", err)
 	}
-	rules := store.Rules()
-	if len(rules) != 1 || rules[0].Subject != "op://A/two/f" {
-		t.Fatalf("rules after revoke = %+v", rules)
+	if r, ok := store.Rule(two); !ok || r.Subject != "op://A/two/f" {
+		t.Errorf("removing one rule moved another's ID: %+v %v", r, ok)
 	}
-	if got := len(saver.last()); got != 1 {
-		t.Errorf("the saver was left holding %d rules, want 1", got)
+	if r, ok := store.Rule(three); !ok || r.Subject != "op://A/three/f" {
+		t.Errorf("removing one rule moved another's ID: %+v %v", r, ok)
 	}
-	if err := store.Revoke(5); err == nil {
-		t.Error("revoking a missing index should fail")
+	// The removed one is gone, and removing it again says so rather than
+	// taking out whatever is now in its place.
+	if err := store.RemoveRule(before[1].ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a second remove = %v, want ErrNotFound", err)
 	}
 }
 
-// Deny rewrites an allow in place, persists it, and takes effect immediately —
-// the point of the edit is that the next request does not ask.
-func TestDenyTightensARuleAndPersistsIt(t *testing.T) {
-	saver := &recordingSaver{}
+func TestGlobalRulesAreReadOnly(t *testing.T) {
+	store := newTestStore(t, Rule{Subject: "op://Private/**", Action: ActionDeny})
+	id := store.Rules()[0].ID
+
+	if err := store.RemoveRule(id); !errors.Is(err, ErrReadOnly) {
+		t.Errorf("RemoveRule(global) = %v, want ErrReadOnly", err)
+	}
+	if _, err := store.SetRuleAction(id, ActionAllow); !errors.Is(err, ErrReadOnly) {
+		t.Errorf("SetRuleAction(global) = %v, want ErrReadOnly", err)
+	}
+	subject := "op://**"
+	if _, err := store.UpdateRule(id, RuleEdit{Subject: &subject}); !errors.Is(err, ErrReadOnly) {
+		t.Errorf("UpdateRule(global) = %v, want ErrReadOnly", err)
+	}
+	if got := store.Decide("bedev", "op://Private/x"); got.Action != ActionDeny {
+		t.Errorf("the global deny should still decide, got %v", got.Action)
+	}
+}
+
+// Changing a rule's action works in both directions through the API; the
+// confirm before loosening is the interface's job.
+func TestSetRuleActionFlipsEitherWayAndKeepsTheNote(t *testing.T) {
 	store := newTestStore(t)
-	store.AdoptHostRules(nil, saver)
+	withHostRules(store, []Rule{{Host: "devbox", Subject: "op://A/one/f", Action: ActionAllow, Note: "hand-typed"}})
+	id := store.Rules()[0].ID
 
-	if err := store.GrantPermanent("devbox", "op://A/one/f", "clicked always"); err != nil {
-		t.Fatalf("GrantPermanent: %v", err)
+	denied, err := store.SetRuleAction(id, ActionDeny)
+	if err != nil {
+		t.Fatalf("SetRuleAction(deny): %v", err)
 	}
-	if err := store.Deny(0); err != nil {
-		t.Fatalf("Deny: %v", err)
+	if denied.Action != ActionDeny || denied.Note != "hand-typed" || denied.Source != SourceHost {
+		t.Errorf("after deny: %+v", denied)
+	}
+	if denied.ID == id {
+		t.Error("the rule says something different now, so its ID should have changed")
+	}
+	if got := store.Decide("devbox", "op://A/one/f"); got.Action != ActionDeny || got.By.RuleID != denied.ID {
+		t.Errorf("verdict = %+v, want the rewritten rule to decide", got)
 	}
 
-	rules := store.Rules()
-	if len(rules) != 1 || rules[0].Action != ActionDeny {
-		t.Fatalf("rules after Deny = %+v", rules)
+	allowed, err := store.SetRuleAction(denied.ID, ActionAllow)
+	if err != nil {
+		t.Fatalf("SetRuleAction(allow): %v", err)
 	}
-	if rules[0].Note != "clicked always" {
-		t.Errorf("the note was lost: %q", rules[0].Note)
+	if allowed.Action != ActionAllow {
+		t.Errorf("after allow: %+v", allowed)
 	}
-	if saved := saver.last(); len(saved) != 1 || saved[0].Action != ActionDeny {
-		t.Errorf("the saver holds %+v", saved)
+	if _, err := store.SetRuleAction(allowed.ID, ActionAsk); err == nil {
+		t.Error("a rule cannot be made to ask")
 	}
-	if verdict := store.Decide("devbox", "op://A/one/f"); verdict.Action != ActionDeny {
-		t.Errorf("action = %q, want the rewritten rule to decide", verdict.Action)
+}
+
+func TestUpdateRuleChangesTextAndReturnsTheNewID(t *testing.T) {
+	store := newTestStore(t)
+	withHostRules(store, nil, Rule{Host: "devbox", Subject: "op://A/one/f", Action: ActionAllow})
+	id := store.Rules()[0].ID
+
+	subject, note := "op://A/*/f", "widened"
+	updated, err := store.UpdateRule(id, RuleEdit{Subject: &subject, Note: &note})
+	if err != nil {
+		t.Fatalf("UpdateRule: %v", err)
 	}
-	if err := store.Deny(5); err == nil {
-		t.Error("denying a missing index should fail")
+	if updated.Subject != subject || updated.Note != note || updated.Source != SourceRemembered {
+		t.Errorf("updated = %+v", updated)
+	}
+	if r, ok := store.Rule(updated.ID); !ok || r.Subject != subject {
+		t.Errorf("the returned ID does not find the rule: %+v %v", r, ok)
+	}
+	if got := store.Decide("devbox", "op://A/two/f"); got.Action != ActionAllow {
+		t.Errorf("the widened rule did not apply: %v", got.Action)
+	}
+	empty := " "
+	if _, err := store.UpdateRule(updated.ID, RuleEdit{Subject: &empty}); err == nil {
+		t.Error("a rule with no subject was accepted")
+	}
+}
+
+func TestAddRuleLandsInRemembered(t *testing.T) {
+	store := newTestStore(t)
+	withHostRules(store, []Rule{{Subject: "op://Hand/**", Action: ActionAllow}})
+
+	added, err := store.AddRule(Rule{Host: "devbox", Subject: "op://New/**", Action: ActionDeny, Source: SourceGlobal})
+	if err != nil {
+		t.Fatalf("AddRule: %v", err)
+	}
+	if added.Source != SourceRemembered || added.ID == "" || added.Added.IsZero() {
+		t.Errorf("added = %+v; want remembered, with an ID and a stamp, whatever source was asked for", added)
+	}
+	if _, err := store.AddRule(Rule{Subject: "x", Action: ActionAsk}); err == nil {
+		t.Error("a rule that asks was accepted")
 	}
 }
 
@@ -247,13 +326,12 @@ func TestSessionGrantsDoNotExpire(t *testing.T) {
 // A session grant lives in the process, not on disk, so quitting revokes it —
 // which is the whole difference between it and an "always" rule.
 func TestSessionGrantsAreNotPersisted(t *testing.T) {
-	saver := &recordingSaver{}
 	store := newTestStore(t)
-	store.AdoptHostRules(nil, saver)
+	book := withHostRules(store, nil)
 	store.GrantSession("devbox", "op://Personal/Docker/PAT")
 
-	if len(saver.saved) != 0 {
-		t.Errorf("a session grant wrote %d rule sets, want none", len(saver.saved))
+	if book.revision != 0 {
+		t.Errorf("a session grant wrote to the rule book %d times, want none", book.revision)
 	}
 	if got := store.ForgetGrants(); got != 1 {
 		t.Errorf("ForgetGrants() = %d, want 1", got)
@@ -302,13 +380,19 @@ func TestGrantsAreListableAndRevocable(t *testing.T) {
 		t.Errorf("a session grant has no expiry, got %d with none", session)
 	}
 
-	if !store.RevokeGrant("bedev", HostWildcard) {
+	var hostWideID string
+	for _, g := range grants {
+		if g.HostWide {
+			hostWideID = g.ID
+		}
+	}
+	if !store.RevokeGrant(hostWideID) {
 		t.Fatal("revoking a listed grant should find it")
 	}
 	if len(store.Grants()) != 2 {
 		t.Errorf("the revoked grant is still listed: %+v", store.Grants())
 	}
-	if store.RevokeGrant("bedev", "never granted") {
+	if store.RevokeGrant("g999") {
 		t.Error("revoking something that was never granted should report so")
 	}
 
@@ -365,7 +449,7 @@ func TestRefuseSessionIsListedAndRevocable(t *testing.T) {
 		t.Fatalf("a refusal should be listed as live state: %+v", grants)
 	}
 
-	if !store.RevokeGrant("bedev", "op://Private/Root") {
+	if !store.RevokeGrant(grants[0].ID) {
 		t.Fatal("a listed refusal should be revocable")
 	}
 	if got := store.Decide("bedev", "op://Private/Root"); got.Action != ActionAsk {
@@ -386,7 +470,6 @@ func TestSessionRefusalOutlivesNothingItShouldNot(t *testing.T) {
 // Deny wins at every level, so a permanent refusal cannot be clicked away.
 func TestRefusePermanentCannotBeUndoneByAGrant(t *testing.T) {
 	store := NewStore(Config{})
-	store.AdoptHostRules(nil, nopSaver{})
 
 	if err := store.RefusePermanent("bedev", "op://Private/Root", "never"); err != nil {
 		t.Fatalf("RefusePermanent: %v", err)
@@ -398,7 +481,3 @@ func TestRefusePermanentCannotBeUndoneByAGrant(t *testing.T) {
 		t.Errorf("a written refusal must beat a later approval, got %v (%s)", got.Action, got.Reason)
 	}
 }
-
-type nopSaver struct{}
-
-func (nopSaver) SaveRules([]Rule) error { return nil }

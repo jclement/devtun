@@ -37,6 +37,10 @@ type Asked struct {
 	Note string
 	// Err is a failure to persist. The decision still stands.
 	Err error
+	// By is what decided: a rule, a grant, the unmatched policy, a human, or
+	// nobody answering. A broker puts By.Fields() on its Activity event, which
+	// is what lets a refusal in the log lead back to the rule that refused it.
+	By Decider
 }
 
 // Broker asks the question a service cannot ask for itself.
@@ -55,9 +59,9 @@ func (b *Broker) Authorize(ctx context.Context, request prompt.Request) Asked {
 	verdict := b.Store.Decide(request.Host, request.Subject)
 	switch verdict.Action {
 	case ActionAllow:
-		return Asked{Allowed: true, Reason: verdict.Reason, Until: verdict.Until}
+		return Asked{Allowed: true, Reason: verdict.Reason, Until: verdict.Until, By: verdict.By}
 	case ActionDeny:
-		return Asked{Reason: verdict.Reason}
+		return Asked{Reason: verdict.Reason, By: verdict.By}
 	}
 
 	config := b.Store.Config()
@@ -76,14 +80,18 @@ func (b *Broker) Authorize(ctx context.Context, request prompt.Request) Asked {
 	// not good enough. A select whose cases are both ready picks at random, so
 	// an answer arriving in the same instant as the timeout could otherwise be
 	// returned as an approval the deadline had already refused.
+	timedOut := Asked{
+		Reason: fmt.Sprintf("no answer within %s", config.PromptTimeout),
+		By:     Decider{Kind: ByTimeout},
+	}
 	if askCtx.Err() != nil {
-		return Asked{Reason: fmt.Sprintf("no answer within %s", config.PromptTimeout)}
+		return timedOut
 	}
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return Asked{Reason: fmt.Sprintf("no answer within %s", config.PromptTimeout)}
+			return timedOut
 		}
-		return Asked{Reason: err.Error()}
+		return Asked{Reason: err.Error(), By: Decider{Kind: ByPrompt}}
 	}
 
 	// A refusal is recorded too, now that the menu can express "stop asking"
@@ -95,6 +103,7 @@ func (b *Broker) Authorize(ctx context.Context, request prompt.Request) Asked {
 		Note:    outcome.Note,
 		Err:     outcome.Err,
 		Reason:  "refused at the prompt",
+		By:      Decider{Kind: ByPrompt},
 	}
 	if outcome.Allowed {
 		asked.Reason = "approved: " + choice.String()

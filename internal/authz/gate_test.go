@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/jclement/devtun/internal/prompt"
 )
 
@@ -14,7 +16,7 @@ import (
 type fakeConfig struct {
 	docs   map[string]any
 	broken bool
-	saved  []Rule
+	saved  map[string][]Rule
 }
 
 func (c *fakeConfig) Get(key string, v any) (bool, error) { return c.GetLocal(key, v) }
@@ -27,17 +29,19 @@ func (c *fakeConfig) GetLocal(key string, v any) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	rules, ok := doc.([]Rule)
-	if !ok {
-		return false, errors.New("not rules")
+	data, err := yaml.Marshal(doc)
+	if err != nil {
+		return false, err
 	}
-	*(v.(*[]Rule)) = rules
-	return true, nil
+	return true, yaml.Unmarshal(data, v)
 }
 
 func (c *fakeConfig) Set(key string, v any) error {
 	if rules, ok := v.([]Rule); ok {
-		c.saved = rules
+		if c.saved == nil {
+			c.saved = map[string][]Rule{}
+		}
+		c.saved[key] = rules
 	}
 	if c.docs == nil {
 		c.docs = map[string]any{}
@@ -93,10 +97,11 @@ func TestGateAdoptsHostRulesOnceAndWritesBack(t *testing.T) {
 		t.Error("an adopted deny rule did not decide")
 	}
 
-	// An "always" answer is written back through the same config.
+	// An "always" answer is written back through the same config — into
+	// remembered, never into the list a person wrote.
 	gate.Authorize(context.Background(), prompt.Request{Host: "bedev", Subject: "op://V/allow/me"})
-	if len(config.saved) != 2 {
-		t.Errorf("the new rule was not saved: %+v", config.saved)
+	if len(config.saved["remembered"]) != 1 || config.saved["rules"] != nil {
+		t.Errorf("the new rule was not saved to remembered: %+v", config.saved)
 	}
 
 	// A second Adopt is a no-op: re-reading on every reconnect would restore

@@ -151,8 +151,9 @@ type Config interface {
 	// a copy that no longer tracks its source. Policy rules are the case that
 	// made this necessary.
 	GetLocal(key string, v any) (bool, error)
-	// Set marshals v and stores it under key, marking the file dirty. It does
-	// not write to disk; the session saves once, on exit.
+	// Set marshals v and stores it under key, on disk, before it returns. Only
+	// that key is changed, against the file as it is now, so anything else a
+	// person edited in the file meanwhile survives.
 	Set(key string, v any) error
 }
 

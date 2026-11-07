@@ -1,22 +1,24 @@
-// Package policy decides whether a remote host may have a particular secret.
+// Package authz decides whether a remote host may have a particular secret,
+// signature or site.
 //
 // There are two layers. Persistent *rules* are the ones the user can read, edit
 // and audit; they are what "always allow" writes. Temporary *grants* live only
 // in the running process and expire, which is what "allow for five minutes"
-// creates. Everything not covered by either falls through to a prompt.
+// creates. Everything not covered by either falls through to the broker's
+// *unmatched* policy: ask a human (the default), or refuse.
 //
-// Rules themselves come from two places — the global set in the user's config
-// and the per-host set devtun writes when a prompt is answered "always" — and
-// the store treats them as one list. That matters because deny always beats
-// allow, and it has to beat it across both sets or a global block could be
-// undone by a per-host approval. A persistent deny also beats a live grant, so
-// a rule added to block something cannot be undone by clicking through a
-// prompt.
+// Rules come from three places — the global config, the host file's own
+// `rules:`, and the `remembered:` list devtun writes beside it — and the store
+// treats them as one list. That matters because deny always beats allow, and it
+// has to beat it across every list or a global block could be undone by a
+// per-host approval. A persistent deny also beats a live grant, so a rule added
+// to block something cannot be undone by clicking through a prompt.
 package authz
 
 import (
+	"errors"
 	"fmt"
-	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,18 +43,6 @@ const (
 	defaultPromptTimeout = 2 * time.Minute
 )
 
-// Rule is one persistent policy entry. Host and Subject are globs (see Match).
-// The YAML tags are load-bearing: per-host rules are round-tripped through the
-// host's config document, and the global ones are read straight out of the
-// user's config file by the caller that builds the service.
-type Rule struct {
-	Host    string    `yaml:"host"`
-	Subject string    `yaml:"subject"`
-	Action  Action    `yaml:"action"`
-	Note    string    `yaml:"note,omitempty"`
-	Added   time.Time `yaml:"added,omitempty"`
-}
-
 // Config is everything the store and the guard need to know that does not
 // change while the process runs. It is passed in rather than read from a file,
 // because where these settings live is the caller's business.
@@ -63,8 +53,68 @@ type Config struct {
 	// that hangs forever is worse than one that fails, because it stalls
 	// whatever script made it.
 	PromptTimeout time.Duration
-	// Rules are the global rules, applying to every host.
+	// Rules are the global rules, applying to every host. Once a host's
+	// config is adopted they are re-read from the global file as it changes;
+	// these are what applies before that, and in tests.
 	Rules []Rule
+	// Schema is what this broker's subjects are made of. Zero means one
+	// path-like field.
+	Schema Schema
+}
+
+// Decider is what settled a verdict.
+//
+// The verdict used to carry only a sentence, built from the rule that matched
+// and then thrown away. That sentence could not say which file the rule was in,
+// and nothing could jump from a refusal in the Activity log to the rule that
+// refused it, or count how often a rule decides anything. Carrying the identity
+// costs a struct.
+type Decider struct {
+	Kind DeciderKind
+	// RuleID and Source name the rule, for ByRule.
+	RuleID string
+	Source Source
+	// GrantID names the grant, for ByGrant.
+	GrantID string
+	// Unmatched is what the unmatched policy said, for ByUnmatched: ask or
+	// deny.
+	Unmatched Action
+}
+
+// DeciderKind says which kind of thing decided.
+type DeciderKind string
+
+const (
+	ByRule  DeciderKind = "rule"
+	ByGrant DeciderKind = "grant"
+	// ByUnmatched is nothing matching: the broker's unmatched policy decided.
+	ByUnmatched DeciderKind = "unmatched"
+	// ByUnreadable is a policy file that could not be read. Everything is
+	// refused until it can be.
+	ByUnreadable DeciderKind = "unreadable"
+	// ByPrompt is a human answering. Only a broker's Asked carries it.
+	ByPrompt DeciderKind = "prompt"
+	// ByTimeout is nobody answering in time. Only a broker's Asked carries it.
+	ByTimeout DeciderKind = "timeout"
+)
+
+// Fields renders the decider as event fields, so every broker's Activity
+// record says what decided in the same words.
+func (d Decider) Fields() []any {
+	if d.Kind == "" {
+		return nil
+	}
+	out := []any{"by", string(d.Kind)}
+	if d.RuleID != "" {
+		out = append(out, "rule", d.RuleID, "source", string(d.Source))
+	}
+	if d.GrantID != "" {
+		out = append(out, "grant", d.GrantID)
+	}
+	if d.Unmatched != "" {
+		out = append(out, "unmatched", string(d.Unmatched))
+	}
+	return out
 }
 
 // Verdict is the result of a policy lookup, carrying the reason so the log can
@@ -77,6 +127,8 @@ type Verdict struct {
 	// anything derived from an allowed request — a cached secret, say — must
 	// not keep it past this.
 	Until time.Time
+	// By is what decided.
+	By Decider
 }
 
 // grant is an allowance created by answering a prompt. A zero expires means
@@ -84,9 +136,11 @@ type Verdict struct {
 // process, so quitting devtun revokes it. That is the middle ground between a
 // five-minute grant and a rule written to disk.
 type grant struct {
+	id      string
 	host    string
 	subject string
 	expires time.Time
+	created time.Time
 	// action is what answering the prompt decided. A grant can refuse as well
 	// as allow: "no, and stop asking this session" is a real answer, and
 	// without it the only way to stop being asked about something you keep
@@ -99,6 +153,13 @@ func (g grant) live(now time.Time) bool {
 	return g.expires.IsZero() || now.Before(g.expires)
 }
 
+func (g grant) public() Grant {
+	return Grant{
+		ID: g.id, Host: g.host, Subject: g.subject, Action: g.action,
+		Expires: g.expires, Created: g.created, HostWide: g.subject == HostWildcard,
+	}
+}
+
 // Grant is a live allowance, for something that wants to show or revoke one.
 //
 // The store keeps grants unexported because nothing outside should be able to
@@ -109,80 +170,59 @@ func (g grant) live(now time.Time) bool {
 // could be listed the only thing anyone could do about it was drop every grant
 // at once.
 type Grant struct {
+	// ID is stable for the life of the process, and never reused.
+	ID      string
 	Host    string
 	Subject string
 	// Action is what this grant decided. A refusal is as much live state as an
-	// approval, and showing only the approvals would make the Secrets tab
+	// approval, and showing only the approvals would make the Access tab
 	// answer "what is open" while quietly omitting "what is shut".
 	Action Action
 	// Expires is zero for a grant that lasts as long as devtun runs.
 	Expires time.Time
+	Created time.Time
 	// HostWide reports a grant covering everything from a host rather than one
-	// secret, which is the kind worth showing differently.
+	// subject, which is the kind worth showing differently.
 	HostWide bool
 }
 
-// Grants lists what is currently allowed by a prompt rather than by a rule,
-// dropping any that have lapsed.
-func (s *Store) Grants() []Grant {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now()
-	var out []Grant
-	for _, g := range s.grants {
-		if !g.live(now) {
-			continue
-		}
-		out = append(out, Grant{
-			Host: g.host, Subject: g.subject, Expires: g.expires, Action: g.action,
-			HostWide: g.subject == HostWildcard,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Host != out[j].Host {
-			return out[i].Host < out[j].Host
-		}
-		return out[i].Subject < out[j].Subject
-	})
-	return out
+// GrantSpec is a grant to create from the interface rather than a prompt.
+type GrantSpec struct {
+	Host    string
+	Subject string
+	// Action is allow, or deny for a "stop asking".
+	Action Action
+	// TTL is how long it lasts; zero is for this session.
+	TTL time.Duration
 }
 
-// RevokeGrant drops one live grant, reporting whether it found it. Revoking a
-// grant you can see is the counterpart to being able to see it at all.
-func (s *Store) RevokeGrant(host, subject string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for i, g := range s.grants {
-		if g.host == host && g.subject == subject {
-			s.grants = append(s.grants[:i], s.grants[i+1:]...)
-			return true
-		}
-	}
-	return false
-}
-
-// Saver writes a host's rules back to wherever they are kept. It is an
-// interface because the store has no business knowing: in devtun they go into
-// the host's own config document, and a nil Saver is a store that keeps its
-// rules in memory only, which is what tests use.
-type Saver interface {
-	SaveRules(rules []Rule) error
-}
-
-// Store holds the loaded policy and the live grants. It is safe for concurrent
-// use: several shim connections can be in flight at once.
+// Store holds the policy and the live grants. It is safe for concurrent use:
+// several shim connections can be in flight at once.
 type Store struct {
-	mu        sync.Mutex
-	config    Config
-	hostRules []Rule
-	saver     Saver
+	mu     sync.Mutex
+	config Config
+	book   RuleBook
+
+	// cached is the last Load, valid while the book's revision is unchanged.
+	// Loading means decoding YAML, and the interface asks for the rules twice a
+	// second per broker; the decision path asks on every request.
+	cached struct {
+		valid    bool
+		revision uint64
+		loaded   Loaded
+		err      error
+	}
+
 	grants    []grant
+	nextGrant int
+	// edits counts changes the book's revision does not: grants made, revoked
+	// and forgotten, and books swapped.
+	edits uint64
 }
 
 // NewStore returns a store for the given configuration, filling in the
-// durations the caller left at zero.
+// durations the caller left at zero. Until AdoptBook is called its host rules
+// live in memory.
 func NewStore(config Config) *Store {
 	if config.DefaultTTL <= 0 {
 		config.DefaultTTL = defaultTTL
@@ -190,18 +230,23 @@ func NewStore(config Config) *Store {
 	if config.PromptTimeout <= 0 {
 		config.PromptTimeout = defaultPromptTimeout
 	}
-	return &Store{config: config}
+	config.Schema = config.Schema.withDefaults()
+	return &Store{
+		config: config,
+		book:   &memoryBook{loaded: Loaded{Global: append([]Rule(nil), config.Rules...)}},
+	}
 }
 
-// AdoptHostRules installs the rules already recorded for the host this store is
-// serving, and the saver that writes new ones back. The store is built before
-// any connection exists — grants outlive every one of them — so the per-host
-// half arrives here rather than in the constructor.
-func (s *Store) AdoptHostRules(rules []Rule, saver Saver) {
+// AdoptBook installs where this store's rules are written down. The store is
+// built before any connection exists — grants outlive every one of them — so
+// the rule book arrives here rather than in the constructor.
+func (s *Store) AdoptBook(book RuleBook) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.hostRules = rules
-	s.saver = saver
+	// Carry the old book's count forward so Revision never goes backwards.
+	s.edits += s.book.Revision() + 1
+	s.book = book
+	s.cached.valid = false
 }
 
 // Config returns a copy of the configuration.
@@ -211,14 +256,143 @@ func (s *Store) Config() Config {
 	return s.config
 }
 
+// Schema is what this store's subjects are made of.
+func (s *Store) Schema() Schema {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.config.Schema
+}
+
+// loadLocked returns the rules as they are now, IDs assigned. The caller
+// holds s.mu.
+func (s *Store) loadLocked() (Loaded, error) {
+	rev := s.book.Revision()
+	if s.cached.valid && s.cached.revision == rev {
+		return s.cached.loaded, s.cached.err
+	}
+	loaded, err := s.book.Load()
+	if err != nil {
+		err = fmt.Errorf("%w: %w", ErrUnreadable, err)
+	}
+	loaded.Global = assignIDs(SourceGlobal, loaded.Global)
+	loaded.Host = assignIDs(SourceHost, loaded.Host)
+	loaded.Remembered = assignIDs(SourceRemembered, loaded.Remembered)
+	s.cached.valid, s.cached.revision, s.cached.loaded, s.cached.err = true, rev, loaded, err
+	return loaded, err
+}
+
+// allRules is the one ordered list: global, then the host's own, then what
+// devtun remembered. Order within a pass is immaterial to the verdict — every
+// rule of the matching action is tried — but it is the order an explanation
+// lists them in, so it has to be stable.
+func allRules(l Loaded) []Rule {
+	out := make([]Rule, 0, len(l.Global)+len(l.Host)+len(l.Remembered))
+	out = append(out, l.Global...)
+	out = append(out, l.Host...)
+	return append(out, l.Remembered...)
+}
+
+// PolicyErr reports a policy file that cannot be read. While it is non-nil
+// every request is refused.
+func (s *Store) PolicyErr() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.loadLocked()
+	return err
+}
+
+// Revision changes whenever the rules or grants change, including a hand edit
+// to a rule file picked up from disk. An interface compares it to know when
+// what it is showing is stale.
+func (s *Store) Revision() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.book.Revision() + s.edits
+}
+
+// UnmatchedPolicy is what happens to a request nothing matches.
+type UnmatchedPolicy struct {
+	// Action is ActionAsk or ActionDeny.
+	Action Action
+	// Level is which file said so: "host", "global" or "default".
+	Level string
+	// Err is a value that is neither ask nor deny. Action is then deny: a
+	// typo in the setting that makes an allowlist must not open it.
+	Err error
+}
+
+// Unmatched reports the effective unmatched policy.
+func (s *Store) Unmatched() UnmatchedPolicy {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	loaded, _ := s.loadLocked()
+	return unmatchedOf(loaded)
+}
+
+func unmatchedOf(l Loaded) UnmatchedPolicy {
+	value := strings.ToLower(strings.TrimSpace(l.Unmatched))
+	switch value {
+	case "":
+		return UnmatchedPolicy{Action: ActionAsk, Level: "default"}
+	case string(ActionAsk):
+		return UnmatchedPolicy{Action: ActionAsk, Level: l.UnmatchedLevel}
+	case string(ActionDeny):
+		return UnmatchedPolicy{Action: ActionDeny, Level: l.UnmatchedLevel}
+	}
+	return UnmatchedPolicy{
+		Action: ActionDeny, Level: l.UnmatchedLevel,
+		Err: fmt.Errorf("unmatched: %q is neither ask nor deny, so it is read as deny", l.Unmatched),
+	}
+}
+
+// Matched is one rule or grant that matched a request, in an Explanation.
+type Matched struct {
+	// Exactly one of Rule and Grant is set.
+	Rule  *Rule
+	Grant *Grant
+	// Decided marks the one that settled the verdict.
+	Decided bool
+	// Outranked marks one that matched and did not decide, because something
+	// earlier in evaluation order did: an allow under a matching deny, or a
+	// grant under a rule of the same sense.
+	Outranked bool
+}
+
+// Explanation is a verdict with its working shown.
+type Explanation struct {
+	Verdict Verdict
+	// Matches is every rule and grant that matched, in evaluation order: deny
+	// rules, deny grants, allow rules, allow grants.
+	Matches   []Matched
+	Unmatched UnmatchedPolicy
+}
+
 // Decide evaluates host and subject against the rules and live grants.
 func (s *Store) Decide(host, subject string) Verdict {
+	return s.Explain(host, subject).Verdict
+}
+
+// Explain is Decide with every rule and grant that matched, marked with which
+// one decided. It is the same evaluation, not a re-creation of it, so the test
+// box and the "why?" view cannot disagree with what a real request got.
+func (s *Store) Explain(host, subject string) Explanation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	loaded, err := s.loadLocked()
+	if err != nil {
+		// Fail closed, and completely. A broken file might be the one holding
+		// the deny that matters, and acting on the rest of the policy would be
+		// acting on a policy nobody wrote.
+		return Explanation{Verdict: Verdict{
+			Action: ActionDeny,
+			Reason: "refused: " + err.Error(),
+			By:     Decider{Kind: ByUnreadable},
+		}, Unmatched: unmatchedOf(loaded)}
+	}
+
 	// Refusals first — every refusal, written down or clicked through — then
-	// approvals. Deny wins over allow at every level, and the order matters
-	// more now that a prompt can create a refusal as well as a rule.
+	// approvals. Deny wins over allow at every level.
 	//
 	// It would be tidier to say "persistent beats live" and let a standing
 	// allow rule override a session refusal. It would also be wrong. If I have
@@ -227,82 +401,342 @@ func (s *Store) Decide(host, subject string) Verdict {
 	// policy that quietly kept allowing it would be answering a question I did
 	// not ask. Among decisions of the *same* sense, persistent still wins,
 	// which is why rules are consulted before grants within each pass.
-	if v, ok := s.denyLocked(host, subject); ok {
-		return v
+	var matches []Matched
+	rules := allRules(loaded)
+	now := time.Now()
+	for _, pass := range []Action{ActionDeny, ActionAllow} {
+		for i := range rules {
+			if rules[i].Action == pass && s.ruleMatches(rules[i], host, subject) {
+				r := rules[i]
+				matches = append(matches, Matched{Rule: &r})
+			}
+		}
+		for _, g := range s.grants {
+			if !g.live(now) || g.host != host || !s.config.Schema.Match(g.subject, subject) {
+				continue
+			}
+			if (pass == ActionDeny) != (g.action == ActionDeny) {
+				continue
+			}
+			pg := g.public()
+			matches = append(matches, Matched{Grant: &pg})
+		}
 	}
-	if v, ok := s.allowLocked(host, subject); ok {
-		return v
+
+	unmatched := unmatchedOf(loaded)
+	out := Explanation{Matches: matches, Unmatched: unmatched}
+	if len(matches) == 0 {
+		out.Verdict = Verdict{
+			Action: unmatched.Action,
+			Reason: "no matching rule",
+			By:     Decider{Kind: ByUnmatched, Unmatched: unmatched.Action},
+		}
+		if unmatched.Action == ActionDeny {
+			out.Verdict.Reason = "no rule allows it, and unmatched requests are refused"
+		}
+		return out
 	}
-	return Verdict{Action: ActionAsk, Reason: "no matching rule"}
+	for i := range matches {
+		matches[i].Outranked = i > 0
+	}
+	matches[0].Decided = true
+	out.Verdict = verdictOf(matches[0], now)
+	return out
 }
 
-// denyLocked reports any standing refusal, rule or grant. Caller holds s.mu.
-func (s *Store) denyLocked(host, subject string) (Verdict, bool) {
-	for _, rule := range s.allRulesLocked() {
-		if rule.Action == ActionDeny && ruleMatches(rule, host, subject) {
-			return Verdict{Action: ActionDeny, Reason: fmt.Sprintf("denied by rule %s → %s", rule.Host, rule.Subject)}, true
+// verdictOf turns the deciding match into a verdict.
+func verdictOf(m Matched, now time.Time) Verdict {
+	if r := m.Rule; r != nil {
+		verb := "allowed"
+		if r.Action == ActionDeny {
+			verb = "denied"
+		}
+		// The host is spelled out even when the rule left it empty, and the
+		// subject is quoted rather than joined to the host with an arrow,
+		// because an SSH subject already contains one: "denied by rule  → ** →
+		// **" was an empty host and two arrows, and read as nothing at all.
+		return Verdict{
+			Action: r.Action,
+			Reason: fmt.Sprintf("%s by rule %q (%s, %s)", verb, r.Subject, sourceWords(r.Source), hostWords(r.HostPattern())),
+			By:     Decider{Kind: ByRule, RuleID: r.ID, Source: r.Source},
 		}
 	}
-	now := time.Now()
-	for _, g := range s.grants {
-		if g.action != ActionDeny || g.host != host || !g.live(now) || !Match(g.subject, subject) {
-			continue
-		}
-		if g.expires.IsZero() {
-			return Verdict{Action: ActionDeny, Reason: "refused for this session"}, true
+
+	g := m.Grant
+	by := Decider{Kind: ByGrant, GrantID: g.ID}
+	if g.Action == ActionDeny {
+		if g.Expires.IsZero() {
+			return Verdict{Action: ActionDeny, Reason: "refused for this session", By: by}
 		}
 		return Verdict{
-			Action: ActionDeny,
-			Reason: fmt.Sprintf("refused, %s left", time.Until(g.expires).Round(time.Second)),
-		}, true
-	}
-	return Verdict{}, false
-}
-
-// allowLocked reports any standing approval. Caller holds s.mu.
-func (s *Store) allowLocked(host, subject string) (Verdict, bool) {
-	for _, rule := range s.allRulesLocked() {
-		if rule.Action == ActionAllow && ruleMatches(rule, host, subject) {
-			return Verdict{Action: ActionAllow, Reason: fmt.Sprintf("allowed by rule %s → %s", rule.Host, rule.Subject)}, true
+			Action: ActionDeny, By: by,
+			Reason: fmt.Sprintf("refused, %s left", g.Expires.Sub(now).Round(time.Second)),
 		}
 	}
+	scope := "grant"
+	if g.HostWide {
+		scope = "host grant"
+	}
+	if g.Expires.IsZero() {
+		return Verdict{Action: ActionAllow, Reason: scope + ", this session", By: by}
+	}
+	return Verdict{
+		Action: ActionAllow, By: by, Until: g.Expires,
+		Reason: fmt.Sprintf("%s, %s left", scope, g.Expires.Sub(now).Round(time.Second)),
+	}
+}
+
+func sourceWords(s Source) string {
+	switch s {
+	case SourceGlobal:
+		return "global config"
+	case SourceHost:
+		return "host file"
+	default:
+		return "remembered"
+	}
+}
+
+func hostWords(pattern string) string {
+	if pattern == HostWildcard {
+		return "every host"
+	}
+	return "host " + pattern
+}
+
+func (s *Store) ruleMatches(rule Rule, host, subject string) bool {
+	return Match(rule.HostPattern(), host) && s.config.Schema.Match(rule.Subject, subject)
+}
+
+// Rules is every rule — global, the host's own, then remembered — IDs and
+// sources filled in. A file that cannot be read contributes nothing; PolicyErr
+// says why.
+func (s *Store) Rules() []Rule {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	loaded, _ := s.loadLocked()
+	return allRules(loaded)
+}
+
+// Rule finds one rule by ID.
+func (s *Store) Rule(id string) (Rule, bool) {
+	for _, r := range s.Rules() {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return Rule{}, false
+}
+
+// AddRule records a new rule in the remembered list and returns it as stored.
+// Its Added stamp is filled in if the caller left it zero.
+func (s *Store) AddRule(r Rule) (Rule, error) {
+	if r.Action != ActionAllow && r.Action != ActionDeny {
+		return Rule{}, fmt.Errorf("a rule allows or denies; %q is neither", r.Action)
+	}
+	if strings.TrimSpace(r.Subject) == "" {
+		return Rule{}, errors.New("a rule needs a subject")
+	}
+	if r.Added.IsZero() {
+		r.Added = time.Now().UTC().Truncate(time.Second)
+	}
+	r.ID, r.Source = "", ""
+
+	var stored Rule
+	err := s.edit(SourceRemembered, func(rules []Rule) ([]Rule, error) {
+		rules = append(rules, r)
+		stored = assignIDs(SourceRemembered, rules)[len(rules)-1]
+		return rules, nil
+	})
+	return stored, err
+}
+
+// RemoveRule deletes one rule.
+func (s *Store) RemoveRule(id string) error {
+	return s.editByID(id, func(Rule) (*Rule, error) { return nil, nil })
+}
+
+// SetRuleAction turns a rule into an allow or a deny, keeping its subject and
+// note.
+//
+// Either direction. Turning a deny into an allow is loosening, and the confirm
+// that should stand in front of it belongs to the interface, which knows there
+// is a person to ask; the store's job is to do what it is told, exactly, to the
+// rule it was told.
+func (s *Store) SetRuleAction(id string, action Action) (Rule, error) {
+	if action != ActionAllow && action != ActionDeny {
+		return Rule{}, fmt.Errorf("a rule allows or denies; %q is neither", action)
+	}
+	return s.updateByID(id, func(r *Rule) {
+		if r.Action != action {
+			r.Action = action
+			r.Added = time.Now().UTC().Truncate(time.Second)
+		}
+	})
+}
+
+// RuleEdit is a change to a rule's text. A nil field is left as it is.
+type RuleEdit struct {
+	Host    *string
+	Subject *string
+	Note    *string
+}
+
+// UpdateRule changes a rule's host, subject or note. The rule's ID changes with
+// its content; the returned rule carries the new one.
+func (s *Store) UpdateRule(id string, e RuleEdit) (Rule, error) {
+	if e.Subject != nil && strings.TrimSpace(*e.Subject) == "" {
+		return Rule{}, errors.New("a rule needs a subject")
+	}
+	return s.updateByID(id, func(r *Rule) {
+		if e.Host != nil {
+			r.Host = *e.Host
+		}
+		if e.Subject != nil {
+			r.Subject = *e.Subject
+		}
+		if e.Note != nil {
+			r.Note = *e.Note
+		}
+	})
+}
+
+func (s *Store) updateByID(id string, change func(*Rule)) (Rule, error) {
+	var updated Rule
+	err := s.editByID(id, func(r Rule) (*Rule, error) {
+		change(&r)
+		updated = r
+		return &r, nil
+	})
+	if err != nil {
+		return Rule{}, err
+	}
+	// The new ID is the one the rule has in its list as written, which an
+	// ordinal can make different from its bare hash; read it back.
+	for _, r := range s.Rules() {
+		if r.Source == updated.Source && r.sameContent(updated) {
+			return r, nil
+		}
+	}
+	return updated, nil
+}
+
+// editByID finds a rule by ID in the list it belongs to — as that list is on
+// disk now — and replaces it with what change returns, or removes it for nil.
+func (s *Store) editByID(id string, change func(Rule) (*Rule, error)) error {
+	source, err := s.sourceOf(id)
+	if err != nil {
+		return err
+	}
+	return s.edit(source, func(rules []Rule) ([]Rule, error) {
+		for i, r := range rules {
+			if r.ID != id {
+				continue
+			}
+			next, err := change(r)
+			if err != nil {
+				return nil, err
+			}
+			if next == nil {
+				return append(rules[:i:i], rules[i+1:]...), nil
+			}
+			out := append([]Rule(nil), rules...)
+			out[i] = *next
+			return out, nil
+		}
+		return nil, ErrNotFound
+	})
+}
+
+// sourceOf works out which list an ID is in. Global IDs are refused here,
+// which is the one place ErrReadOnly comes from.
+func (s *Store) sourceOf(id string) (Source, error) {
+	r, ok := s.Rule(id)
+	switch {
+	case !ok:
+		return "", ErrNotFound
+	case !r.Editable():
+		return "", ErrReadOnly
+	}
+	return r.Source, nil
+}
+
+// edit runs one transaction against the rule book and drops the cache.
+func (s *Store) edit(source Source, change func([]Rule) ([]Rule, error)) error {
+	s.mu.Lock()
+	book := s.book
+	s.mu.Unlock()
+
+	err := book.Edit(source, func(rules []Rule) ([]Rule, error) {
+		// Strip what is derived before it is written: the book stores rules,
+		// and IDs and sources are worked out on the way back in.
+		next, err := change(rules)
+		for i := range next {
+			next[i].ID, next[i].Source = "", ""
+		}
+		return next, err
+	})
+
+	s.mu.Lock()
+	s.cached.valid = false
+	s.mu.Unlock()
+	return err
+}
+
+// Grants lists what is currently allowed or refused by a prompt rather than by
+// a rule, dropping any that have lapsed. Oldest first.
+func (s *Store) Grants() []Grant {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	now := time.Now()
+	var out []Grant
 	for _, g := range s.grants {
-		if g.action == ActionDeny || g.host != host || !g.live(now) || !Match(g.subject, subject) {
-			continue
+		if g.live(now) {
+			out = append(out, g.public())
 		}
-		scope := "grant"
-		if g.subject == HostWildcard {
-			scope = "host grant"
-		}
-		if g.expires.IsZero() {
-			return Verdict{Action: ActionAllow, Reason: scope + ", this session"}, true
-		}
-		return Verdict{
-			Action: ActionAllow,
-			Reason: fmt.Sprintf("%s, %s left", scope, time.Until(g.expires).Round(time.Second)),
-			Until:  g.expires,
-		}, true
 	}
-	return Verdict{}, false
+	return out
 }
 
-// allRulesLocked is the global set followed by the host's own. Order within a
-// pass is immaterial — every rule of the matching action is tried — so this
-// only has to be stable.
-func (s *Store) allRulesLocked() []Rule {
-	all := make([]Rule, 0, len(s.config.Rules)+len(s.hostRules))
-	all = append(all, s.config.Rules...)
-	all = append(all, s.hostRules...)
-	return all
+// RevokeGrant drops one live grant, reporting whether it found it.
+//
+// By ID, and only a live one. It used to be by host and subject, and found the
+// first grant with that pair — which, once a five-minute grant had lapsed and
+// been granted again, was the lapsed one. The revoke "succeeded", the live
+// grant carried on, and the screen said it was gone.
+func (s *Store) RevokeGrant(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for i, g := range s.grants {
+		if g.id == id && g.live(now) {
+			s.grants = append(s.grants[:i], s.grants[i+1:]...)
+			s.edits++
+			return true
+		}
+	}
+	return false
 }
 
-func ruleMatches(rule Rule, host, subject string) bool {
-	hostPattern := rule.Host
-	if hostPattern == "" {
-		hostPattern = HostWildcard
+// AddGrant creates a grant from the interface, for something a person wants
+// open (or shut) before it is asked for.
+func (s *Store) AddGrant(spec GrantSpec) (Grant, error) {
+	if spec.Action != ActionAllow && spec.Action != ActionDeny {
+		return Grant{}, fmt.Errorf("a grant allows or refuses; %q is neither", spec.Action)
 	}
-	return Match(hostPattern, host) && Match(rule.Subject, subject)
+	if strings.TrimSpace(spec.Host) == "" || strings.TrimSpace(spec.Subject) == "" {
+		return Grant{}, errors.New("a grant needs a host and a subject")
+	}
+	if spec.TTL < 0 {
+		return Grant{}, errors.New("a grant cannot last a negative time")
+	}
+	g := grant{host: spec.Host, subject: spec.Subject, action: spec.Action}
+	if spec.TTL > 0 {
+		g.expires = time.Now().Add(spec.TTL)
+	}
+	return s.addGrant(g).public(), nil
 }
 
 // GrantTemporary allows subject from host until the TTL expires. A subject of
@@ -327,111 +761,66 @@ func (s *Store) RefuseSession(host, subject string) {
 	s.addGrant(grant{host: host, subject: subject, action: ActionDeny})
 }
 
-// RefusePermanent appends a deny rule to the host's own set and persists it.
-//
-// This is "never", and it is meant to be hard to undo: a deny beats every
-// allow, including one clicked through later, so the way back is to edit the
-// file or use `devtun policy`. That asymmetry is deliberate. An approval given
-// by mistake costs you one secret; a refusal given by mistake costs you a
-// moment's confusion, and the two should not be equally easy to reverse by
-// accident.
-func (s *Store) RefusePermanent(host, subject, note string) error {
-	return s.appendRule(Rule{
-		Host: host, Subject: subject, Action: ActionDeny, Note: note,
-		Added: time.Now().UTC().Truncate(time.Second),
-	})
-}
-
-func (s *Store) addGrant(g grant) {
+func (s *Store) addGrant(g grant) grant {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked()
+	s.nextGrant++
+	g.id = fmt.Sprintf("g%d", s.nextGrant)
+	g.created = time.Now()
 	s.grants = append(s.grants, g)
+	s.edits++
+	return g
 }
 
-// GrantPermanent appends an allow rule to the host's own set and persists it.
+// RefusePermanent records a deny rule for the host, in the remembered list.
+//
+// This is "never", and it is meant to be hard to undo by accident: a deny beats
+// every allow, including one clicked through later. The way back is to remove
+// it on the Access tab, behind a confirm, or edit the file.
+func (s *Store) RefusePermanent(host, subject, note string) error {
+	_, err := s.AddRule(Rule{Host: host, Subject: subject, Action: ActionDeny, Note: note})
+	return err
+}
+
+// GrantPermanent records an allow rule for the host, in the remembered list.
 func (s *Store) GrantPermanent(host, subject, note string) error {
-	return s.appendRule(Rule{
-		Host: host, Subject: subject, Action: ActionAllow, Note: note,
-		Added: time.Now().UTC().Truncate(time.Second),
-	})
+	_, err := s.AddRule(Rule{Host: host, Subject: subject, Action: ActionAllow, Note: note})
+	return err
 }
 
-// appendRule adds one rule to the host's own set and writes it out. Allow and
-// deny share this so the two can never drift in how they are recorded.
-func (s *Store) appendRule(rule Rule) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.hostRules = append(s.hostRules, rule)
-	return s.saveLocked()
-}
-
-// Rules returns a copy of the host's own rules — the ones devtun wrote and can
-// take back. The global rules are the user's file to edit.
-func (s *Store) Rules() []Rule {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]Rule, len(s.hostRules))
-	copy(out, s.hostRules)
-	return out
-}
-
-// GlobalRules returns the rules that came from the top-level config, which
-// devtun did not write and will not remove.
+// ForgetGrants drops every live *allow* grant — the "lock it back up" action.
 //
-// They are listed separately rather than folded into Rules because the two are
-// different kinds of thing to a person reading them: one is a decision devtun
-// recorded on their behalf and can take back, the other is a line they typed
-// into a file. An interface that offered to revoke the second would be offering
-// something it cannot do.
-func (s *Store) GlobalRules() []Rule {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]Rule, len(s.config.Rules))
-	copy(out, s.config.Rules)
-	return out
-}
-
-// Revoke removes the host rule at index (as printed by Rules) and persists the
-// remainder.
-func (s *Store) Revoke(index int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if index < 0 || index >= len(s.hostRules) {
-		return fmt.Errorf("no rule at index %d (there are %d)", index, len(s.hostRules))
-	}
-	s.hostRules = append(s.hostRules[:index], s.hostRules[index+1:]...)
-	return s.saveLocked()
-}
-
-// Deny turns the host rule at index into a refusal, keeping its subject and
-// its note.
-//
-// It only tightens. An allow becomes a deny; a deny is already the stricter
-// answer and is left alone. The reverse — turning a deny into an allow with one
-// keystroke on whichever row the cursor happens to be on — is exactly the
-// accident the deny-beats-allow rule exists to prevent, so loosening stays a
-// deliberate act: revoke the deny, or edit the file.
-func (s *Store) Deny(index int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if index < 0 || index >= len(s.hostRules) {
-		return fmt.Errorf("no rule at index %d (there are %d)", index, len(s.hostRules))
-	}
-	if s.hostRules[index].Action == ActionDeny {
-		return nil
-	}
-	s.hostRules[index].Action = ActionDeny
-	s.hostRules[index].Added = time.Now().UTC().Truncate(time.Second)
-	return s.saveLocked()
-}
-
-// ForgetGrants drops every live grant, which is the "lock it back up" action.
+// Refusals survive it. They used to go too, which made the panic button reopen
+// every question somebody had closed with "no, and stop asking": the one
+// action meant to tighten everything loosened something. ForgetRefusals is the
+// separate, deliberate way to drop those.
 func (s *Store) ForgetGrants() int {
+	return s.forget(func(g grant) bool { return g.action != ActionDeny })
+}
+
+// ForgetRefusals drops every live refusal ("stop asking" grants).
+func (s *Store) ForgetRefusals() int {
+	return s.forget(func(g grant) bool { return g.action == ActionDeny })
+}
+
+func (s *Store) forget(drop func(grant) bool) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n := len(s.grants)
-	s.grants = nil
+	s.pruneLocked()
+	kept := s.grants[:0]
+	n := 0
+	for _, g := range s.grants {
+		if drop(g) {
+			n++
+			continue
+		}
+		kept = append(kept, g)
+	}
+	s.grants = kept
+	if n > 0 {
+		s.edits++
+	}
 	return n
 }
 
@@ -444,13 +833,4 @@ func (s *Store) pruneLocked() {
 		}
 	}
 	s.grants = kept
-}
-
-func (s *Store) saveLocked() error {
-	if s.saver == nil {
-		return nil // in-memory store, used by tests
-	}
-	out := make([]Rule, len(s.hostRules))
-	copy(out, s.hostRules)
-	return s.saver.SaveRules(out)
 }

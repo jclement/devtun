@@ -68,7 +68,7 @@ func TestUnknownChoiceRefuses(t *testing.T) {
 // gave: they said yes, and the worst case is being asked again.
 func TestFailingToSaveARuleStillAllows(t *testing.T) {
 	store := NewStore(Config{})
-	store.AdoptHostRules(nil, failingSaver{})
+	store.AdoptBook(&memoryBook{fail: errSaveFailed})
 
 	out := Record(store, "bedev", "op://V/I/F", prompt.ChoiceAllowSecretAlways, time.Minute)
 
@@ -78,13 +78,18 @@ func TestFailingToSaveARuleStillAllows(t *testing.T) {
 	if out.Err == nil {
 		t.Error("the failure should still be reported")
 	}
+	// The user said yes: it holds for the rest of this process even though it
+	// could not be written down.
+	if got := store.Decide("bedev", "op://V/I/F"); got.Action != ActionAllow {
+		t.Errorf("after a failed save the answer should still hold this session, got %v", got.Action)
+	}
 }
 
 // The mirror of the above: a "never" that could not be written must still
 // refuse this request.
 func TestFailingToSaveARefusalStillRefuses(t *testing.T) {
 	store := NewStore(Config{})
-	store.AdoptHostRules(nil, failingSaver{})
+	store.AdoptBook(&memoryBook{fail: errSaveFailed})
 
 	out := Record(store, "bedev", "op://V/I/F", prompt.ChoiceRefuseAlways, time.Minute)
 
@@ -94,11 +99,10 @@ func TestFailingToSaveARefusalStillRefuses(t *testing.T) {
 	if out.Err == nil {
 		t.Error("the failure should be reported")
 	}
+	if got := store.Decide("bedev", "op://V/I/F"); got.Action != ActionDeny {
+		t.Errorf("after a failed save the refusal should still hold this session, got %v", got.Action)
+	}
 }
-
-type failingSaver struct{}
-
-func (failingSaver) SaveRules([]Rule) error { return errSaveFailed }
 
 var errSaveFailed = &saveError{}
 
