@@ -109,7 +109,7 @@ func (s *Service) handleExec(ctx context.Context, l *link, request opRequest) *o
 	subject := s.opts.Accounts.Scope(account, bare)
 	l.requested(subject)
 
-	if refused := s.bareRefusal(l, subject, bare); refused != nil {
+	if refused := s.otherRefusal(l, subject, opref.Scoped(account, bare), bare); refused != nil {
 		return refused
 	}
 
@@ -190,23 +190,37 @@ func cacheKey(account string, argv []string) (string, bool) {
 	return account + "\x00" + ref.String(), true
 }
 
-// bareRefusal checks a scoped request against the bare reference's denies.
-// A deny rule written as a bare reference is about the item wherever it lives,
-// so naming — or being routed to — another account must not step around it.
+// otherRefusal checks the request's other identities for a deny.
+//
+// A request reaching an account has two names: the scoped one,
+// `[work] op://…`, and the bare reference. Allows are matched on subject alone
+// — bare for the default account, scoped otherwise — so a bare allow means the
+// default account and nothing more. Denies are different: any deny on either
+// name refuses. A deny written as a bare reference is about the item wherever
+// it lives, and a deny written for `[work]` is about the work account even
+// when work is the default — if it were not, making an account the default
+// would quietly switch off every deny written for it. subject itself has
+// already been, or is about to be, authorised normally; this checks the rest.
+//
 // Only a deny something actually said counts, a rule or a "stop asking": the
-// unmatched policy would otherwise refuse every scoped request whose bare
-// reference simply has no rule.
-func (s *Service) bareRefusal(l *link, subject, bare string) *opResponse {
-	if subject == bare {
-		return nil
+// unmatched policy would otherwise refuse every request whose other name
+// simply has no rule. The identities are evaluated one Decide at a time, so a
+// rule edited in the instant between two of them is seen by one and not the
+// other; either way the request is evaluated against rules that existed.
+func (s *Service) otherRefusal(l *link, subject string, identities ...string) *opResponse {
+	for _, identity := range identities {
+		if identity == subject {
+			continue
+		}
+		v := s.gate.Decide(l.host, identity)
+		if v.Action != authz.ActionDeny || (v.By.Kind != authz.ByRule && v.By.Kind != authz.ByGrant) {
+			continue
+		}
+		why := decision{reason: v.Reason, by: v.By}
+		l.denied(subject, why)
+		return &opResponse{Exit: ExitDenied, Error: "denied by devtun: " + why.reason}
 	}
-	v := s.gate.Decide(l.host, bare)
-	if v.Action != authz.ActionDeny || (v.By.Kind != authz.ByRule && v.By.Kind != authz.ByGrant) {
-		return nil
-	}
-	why := decision{reason: v.Reason, by: v.By}
-	l.denied(subject, why)
-	return &opResponse{Exit: ExitDenied, Error: "denied by devtun: " + why.reason}
+	return nil
 }
 
 // handleResolve authorises and reads a batch of secret references. It is
@@ -230,7 +244,7 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 		account := s.opts.Accounts.For(bare)
 		subject := s.opts.Accounts.Scope(account, bare)
 		l.requested(subject)
-		if refused := s.bareRefusal(l, subject, bare); refused != nil {
+		if refused := s.otherRefusal(l, subject, opref.Scoped(account, bare), bare); refused != nil {
 			return refused
 		}
 

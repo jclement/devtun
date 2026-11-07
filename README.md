@@ -424,7 +424,9 @@ account, however it was reached. **If you route vaults to a second account,
 rules for those vaults need the `[account]` prefix** (or `[*] op://…` for any
 account). Deny rules written as a bare reference are the exception, on purpose:
 they apply whichever account is reached, because they were written about the
-item.
+item. And a deny written with an account, `[work] op://…`, applies to the work
+account even when work is the default — making an account the default never
+switches off the denies written for it.
 
 `--account` must name one of the accounts in your `accounts:` config, spelled
 exactly as there, and may be given once. `op` also accepts a sign-in address or

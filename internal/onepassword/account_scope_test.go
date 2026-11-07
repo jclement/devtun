@@ -218,3 +218,55 @@ func TestUnmatchedDenyDoesNotRefuseAnAccountAllow(t *testing.T) {
 		t.Fatalf("unmatched: deny should still refuse what nothing allows: exit = %d", response.Exit)
 	}
 }
+
+// TestADefaultAccountsScopedDenyStillApplies is the re-review's R1. With work
+// as the default, its subjects are bare, so a deny written as
+// `[work] op://Shared/App/password` used to match nothing and a broad allow
+// won — by --account, by omission, and by resolve. Denies are now checked
+// against the scoped identity as well as the bare one, always.
+func TestADefaultAccountsScopedDenyStillApplies(t *testing.T) {
+	opts := Options{
+		Accounts: Accounts{Default: "work"},
+		Rules: []authz.Rule{
+			{Host: "**", Subject: "**", Action: authz.ActionAllow},
+			{Host: "**", Subject: "[work] op://Shared/App/password", Action: authz.ActionDeny},
+		},
+	}
+	h := start(t, opts, map[string]string{"op://Shared/App/password": "s", "op://Shared/App/other": "fine"})
+
+	for name, argv := range map[string][]string{
+		"explicit": {"--account", "work", "read", "op://Shared/App/password"},
+		"implicit": {"read", "op://Shared/App/password"},
+	} {
+		if response := h.exec(t, argv...); response.Exit != ExitDenied {
+			t.Errorf("%s: the default account's scoped deny did not apply: exit = %d", name, response.Exit)
+		}
+	}
+	if response := h.resolve(t, "op://Shared/App/password"); response.Exit != ExitDenied {
+		t.Errorf("resolve: the default account's scoped deny did not apply: exit = %d", response.Exit)
+	}
+	if n := h.runner.reads(); n != 0 {
+		t.Errorf("the vault was read %d times", n)
+	}
+	if response := h.exec(t, "read", "op://Shared/App/other"); response.Exit != 0 {
+		t.Errorf("a neighbouring secret was refused: %q", response.Error)
+	}
+}
+
+// TestADenyOutlivesItsAccountBecomingTheDefault: a deny written for work while
+// work was a routed account keeps refusing after work is made the default.
+func TestADenyOutlivesItsAccountBecomingTheDefault(t *testing.T) {
+	rules := []authz.Rule{
+		{Host: "**", Subject: "**", Action: authz.ActionAllow},
+		{Host: "**", Subject: "[work] op://Shared/**", Action: authz.ActionDeny},
+	}
+	for name, accounts := range map[string]Accounts{
+		"routed":  {Default: "personal", ByVault: map[string]string{"Shared": "work"}},
+		"default": {Default: "work"},
+	} {
+		h := start(t, Options{Accounts: accounts, Rules: rules}, map[string]string{"op://Shared/App/password": "s"})
+		if response := h.exec(t, "read", "op://Shared/App/password"); response.Exit != ExitDenied {
+			t.Errorf("%s: the [work] deny did not apply: exit = %d", name, response.Exit)
+		}
+	}
+}
