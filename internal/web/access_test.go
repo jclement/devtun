@@ -707,3 +707,58 @@ func TestApprovalAnswersAreArmedPerQuestion(t *testing.T) {
 		t.Error("the arming is reset on every poll, not once per question")
 	}
 }
+
+// An edit is an edit of that rule, in that broker, and nothing else: the update
+// route reads host, subject and note only, so it cannot turn a deny into an
+// allow, become a grant, or land in another broker under the rule's id. (The
+// terminal's form had a path that could; this pins that the board's cannot.)
+func TestAnEditCannotChangeEffectBrokerOrKind(t *testing.T) {
+	book := &testBook{loaded: authz.Loaded{
+		Remembered: []authz.Rule{{Host: "bedev", Subject: "op://Work/**", Action: authz.ActionDeny}},
+	}}
+	vault := newVault(t, book, authz.Schema{})
+	agent := &namedVault{gatedVault: newVault(t, &testBook{}, sshSchema), id: "ssh-agent", title: "SSH agent"}
+	s := newTestServer(t, Options{Host: "bedev", Services: []service.Service{vault, agent}})
+	rule := ruleNamed(t, vault, "op://Work/**")
+
+	// Extra parameters an edit has no business sending are ignored.
+	recorder := post(t, s, "/api/rules/update", q("source", "1password", "id", rule.ID,
+		"note", "kept", "action", "allow", "ttl", "300", "kind", "grant"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("note edit = %d: %s", recorder.Code, recorder.Body)
+	}
+	got := vault.Rules()
+	if len(got) != 1 || got[0].Action != authz.ActionDeny || got[0].Note != "kept" || len(vault.Grants()) != 0 {
+		t.Errorf("after the edit: rules %+v grants %+v — want the same deny, noted, and no grant", got, vault.Grants())
+	}
+
+	// The rule's id under another broker names nothing there.
+	if code := post(t, s, "/api/rules/update", q("source", "ssh-agent", "id", got[0].ID,
+		"subject", "** → **", "confirm", "1")).Code; code != http.StatusConflict {
+		t.Errorf("an edit sent to another broker = %d, want 409", code)
+	}
+	if len(agent.Rules()) != 0 {
+		t.Errorf("the other broker gained a rule: %+v", agent.Rules())
+	}
+}
+
+// The page's form keeps an edit on its own broker and effect, and never offers
+// "lasts" for one, so a save can only be an update of that rule.
+func TestThePageFormCannotTurnAnEditIntoSomethingElse(t *testing.T) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{
+		`editing ? "a rule stays with the service it belongs to" : ""`,
+		`editing ? "use “make it an allow / a deny” for that" : ""`,
+		`if (!editing) {
+      row("lasts"`,
+		`const path = "/api/rules/update?source=" + encodeURIComponent(editing.source) + "&id=" + encodeURIComponent(editing.id) +`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the form is missing %q", want)
+		}
+	}
+}

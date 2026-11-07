@@ -33,6 +33,9 @@ func TestLooseningSettingsNeedAConfirm(t *testing.T) {
 		{"unmatched deny → inherit (default ask)", map[string]string{"bedev/1password/unmatched": "deny"},
 			"/api/config/unmatched.1password?level=host&value=", http.StatusPreconditionRequired,
 			"bedev/1password/unmatched", "deny", ""},
+		{"unmatched deny → the word inherit", map[string]string{"bedev/1password/unmatched": "deny"},
+			"/api/config/unmatched.1password?level=host&value=inherit", http.StatusPreconditionRequired,
+			"bedev/1password/unmatched", "deny", ""},
 		{"unmatched deny → a step", map[string]string{"bedev/1password/unmatched": "deny"},
 			"/api/config/unmatched.1password?level=host&step=1", http.StatusPreconditionRequired,
 			"bedev/1password/unmatched", "deny", ""},
@@ -69,6 +72,10 @@ func TestLooseningSettingsNeedAConfirm(t *testing.T) {
 			}
 			if v := store.values[c.storeAt]; v == c.before {
 				t.Errorf("the confirmed write did not land: still %q", v)
+			}
+			// Inherit clears the level; the word itself is never written.
+			if v := store.values[c.storeAt]; v == "inherit" {
+				t.Errorf("%q was stored literally", v)
 			}
 		})
 	}
