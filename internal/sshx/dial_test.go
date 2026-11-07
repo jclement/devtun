@@ -2,9 +2,11 @@ package sshx
 
 import (
 	"context"
+	"errors"
 	"net"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -184,4 +186,102 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Errorf("timed out waiting for %s", what)
+}
+
+// TestAJumpedHandshakeHonoursItsTimeout: behind a jump host the target conn is
+// an SSH channel, which takes no deadline, so a target that accepts the channel
+// and never sends a banner used to hold Dial forever. It must give up at the
+// connect timeout.
+func TestAJumpedHandshakeHonoursItsTimeout(t *testing.T) {
+	isolatedHome(t)
+	mute := muteListener(t)
+	jump := startServer(t, serverOptions{noAuth: true})
+	jump.echo = mute
+
+	d, err := Resolve(mute, nil, Overrides{User: "tester", ProxyJump: jump.addr()})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		client, err := Dial(t.Context(), d, Options{HostKeyMode: HostKeyNone, ConnectTimeout: 300 * time.Millisecond})
+		if client != nil {
+			client.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Dial succeeded against a target that never spoke")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Dial through a jump host ignored its connect timeout")
+	}
+}
+
+// TestAJumpedHandshakeHonoursCancellation: the same silent target, with the
+// session's own context cancelled rather than the timeout reached — the path a
+// shutdown or a supervisor giving up takes.
+func TestAJumpedHandshakeHonoursCancellation(t *testing.T) {
+	isolatedHome(t)
+	mute := muteListener(t)
+	jump := startServer(t, serverOptions{noAuth: true})
+	jump.echo = mute
+
+	d, err := Resolve(mute, nil, Overrides{User: "tester", ProxyJump: jump.addr()})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		client, err := Dial(ctx, d, Options{HostKeyMode: HostKeyNone, ConnectTimeout: time.Hour})
+		if client != nil {
+			client.Close()
+		}
+		done <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Dial = %v, want it to report the cancellation", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Dial through a jump host ignored cancellation")
+	}
+}
+
+// muteListener accepts TCP connections and never writes a byte: an SSH target
+// that hangs before its banner.
+func muteListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening: %v", err)
+	}
+	var held []net.Conn
+	var mu sync.Mutex
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range held {
+			conn.Close()
+		}
+	})
+	return ln.Addr().String()
 }

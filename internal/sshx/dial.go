@@ -162,6 +162,15 @@ func dialHop(ctx context.Context, d *Destination, through *ssh.Client, verifier 
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
+	// A deadline is not enough on its own. Through a jump host conn is an SSH
+	// channel, and x/crypto's channel conn refuses deadlines outright — the
+	// error above is ignored because there is nothing better to do with it —
+	// so a target behind a bastion that accepts the channel and never sends a
+	// banner would hold the handshake forever, past both the timeout and
+	// cancellation, and the supervisor could never reconnect. Closing the conn
+	// when the context ends is what reliably unblocks it, for either kind of
+	// conn; release hands the conn over once the handshake is done with it.
+	release := context.AfterFunc(ctx, func() { _ = conn.Close() })
 
 	// The authenticator holds the agent connection open for the handshake and
 	// no longer: signers are never used again once authentication is done, and
@@ -197,8 +206,18 @@ func dialHop(ctx context.Context, d *Destination, through *ssh.Client, verifier 
 	})
 	connection, channels, requests, err := ssh.NewClientConn(conn, d.Addr(), config)
 	hint.Stop()
+	handedOver := release()
+	if err == nil && !handedOver {
+		// The context ended in the instant after the handshake finished, and
+		// the conn under the new client is already closed.
+		_ = connection.Close()
+		err = ctx.Err()
+	}
 	if err != nil {
 		_ = conn.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("ssh handshake with %s: %w", d.Addr(), ctxErr)
+		}
 		return nil, fmt.Errorf("ssh handshake: %w%s", err, authHint(err, d, auth.offeredCredentials()))
 	}
 	_ = conn.SetDeadline(time.Time{})
