@@ -340,3 +340,47 @@ func accessRowBySubject(m *Model, s string) (accessRow, bool) {
 	}
 	return accessRow{}, false
 }
+
+// The Config tab asks the catalogue, so the prompt and browser-gate rows'
+// loosening edits confirm with no tab-specific code.
+func TestConfigConfirmsPromptAndGateLoosening(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SetSetting("bedev", "", "prompt", "deny"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSetting("bedev", "browser", "gate", "ask"); err != nil {
+		t.Fatal(err)
+	}
+	services := []service.Service{stubService{meta: service.Meta{ID: "browser", Title: "Browser", Glyph: "◱"}}}
+	m := newTestModel(t, deps{services: services, store: store})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	send(m, "5")
+	sel := func(key string) {
+		for i, r := range m.cfgRows {
+			if r.setting != nil && r.setting.Key == key {
+				m.setCursor(i)
+			}
+		}
+	}
+
+	sel("prompt")
+	send(m, "right") // deny → inherit, and the default asks everywhere
+	if m.confirm == nil || store.Setting("bedev", "", "prompt") != "deny" {
+		t.Fatal("prompt deny → inherit was applied without a confirm")
+	}
+	send(m, "n")
+
+	sel("gate")
+	send(m, "right") // ask → auto
+	if m.confirm == nil || store.Setting("bedev", "browser", "gate") != "ask" {
+		t.Fatal("gate ask → auto was applied without a confirm")
+	}
+	send(m, "y")
+	if got := store.Setting("bedev", "browser", "gate"); got != "auto" {
+		t.Errorf("after y the gate is %q", got)
+	}
+	send(m, "left") // auto → ask: tightens, immediate
+	if m.confirm != nil || store.Setting("bedev", "browser", "gate") != "ask" {
+		t.Error("gate auto → ask asked first or was not applied")
+	}
+}

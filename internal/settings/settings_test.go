@@ -358,7 +358,90 @@ func TestAStepThatLoosensIsClassified(t *testing.T) {
 	if Loosening(row, LevelHost, value) == "" {
 		t.Errorf("stepping deny → %q is not classified as loosening", value)
 	}
-	if Loosening(find(t, d, "prompt"), LevelHost, "all") != "" {
+	if Loosening(find(t, d, "setup"), LevelGlobal, "auto") != "" {
 		t.Error("a setting with no Loosens classified an edit")
+	}
+}
+
+// "Approvals appear" loosens when the effective value goes from asking nowhere
+// to asking somewhere: a refusal becomes a question a person can approve.
+func TestLooseningClassifiesPromptEdits(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		host, global  string
+		level         Level
+		value         string
+		wantLoosening bool
+	}{
+		{"host deny → all", "deny", "", LevelHost, "all", true},
+		{"host deny → tui", "deny", "", LevelHost, "tui", true},
+		{"host deny → tui,web", "deny", "", LevelHost, "tui,web", true},
+		{"host none → native", "none", "", LevelHost, "native", true},
+		{"host deny → inherit, default auto asks", "deny", "", LevelHost, "", true},
+		{"host deny → inherit, global deny", "deny", "deny", LevelHost, "", false},
+		{"host all → deny", "all", "", LevelHost, "deny", false},
+		{"host tui → web", "tui", "", LevelHost, "web", false},
+		{"host silent → all (auto already asks)", "", "", LevelHost, "all", false},
+		{"global deny → all", "", "deny", LevelGlobal, "all", true},
+		{"global deny → all under a host deny", "deny", "deny", LevelGlobal, "all", true},
+		{"global deny → inherit", "", "deny", LevelGlobal, OptInherit, true},
+		{"host unparseable → all", "nowhere", "", LevelHost, "all", true},
+		{"host deny → unparseable", "deny", "", LevelHost, "nowhere", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			store := newStore()
+			if c.host != "" {
+				_ = store.SetSetting("bedev", "", "prompt", c.host)
+			}
+			if c.global != "" {
+				_ = store.SetSetting("", "", "prompt", c.global)
+			}
+			got := Loosening(find(t, deps(store), "prompt"), c.level, c.value)
+			if (got != "") != c.wantLoosening {
+				t.Errorf("Loosening = %q, want loosening %v", got, c.wantLoosening)
+			}
+		})
+	}
+}
+
+type browserService struct{ service.Service }
+
+func (browserService) Meta() service.Meta { return service.Meta{ID: "browser", Title: "Browser"} }
+
+// The browser's gate loosens when it stops being ask: anything else opens
+// sites without a question.
+func TestLooseningClassifiesBrowserGateEdits(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		host, global  string
+		level         Level
+		value         string
+		wantLoosening bool
+	}{
+		{"host ask → auto", "ask", "", LevelHost, "auto", true},
+		{"host ask → inherit, default auto", "ask", "", LevelHost, "", true},
+		{"host ask → inherit, global ask", "ask", "ask", LevelHost, "", false},
+		{"host auto → ask", "auto", "", LevelHost, "ask", false},
+		{"host silent → auto", "", "", LevelHost, "auto", false},
+		{"global ask → auto", "", "ask", LevelGlobal, "auto", true},
+		{"global ask → auto under a host ask", "ask", "ask", LevelGlobal, "auto", true},
+		{"global auto → ask", "", "auto", LevelGlobal, "ask", false},
+		{"host ask → something else", "ask", "", LevelHost, "sometimes", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			store := newStore()
+			if c.host != "" {
+				_ = store.SetSetting("bedev", "browser", "gate", c.host)
+			}
+			if c.global != "" {
+				_ = store.SetSetting("", "browser", "gate", c.global)
+			}
+			d := deps(store)
+			d.Services = []service.Service{browserService{}}
+			got := Loosening(find(t, d, "gate"), c.level, c.value)
+			if (got != "") != c.wantLoosening {
+				t.Errorf("Loosening = %q, want loosening %v", got, c.wantLoosening)
+			}
+		})
 	}
 }

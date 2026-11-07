@@ -145,6 +145,11 @@ this is 0.x, a minor bump may break something.
 
 ### Fixed — the interface
 
+- **Turning approvals back on, and turning the browser's gate off, ask
+  first.** "Approvals appear" going from deny (nowhere to ask) to anywhere
+  that can ask turns refusals into questions; "Ask before a site" going from
+  ask to auto lets the remote open sites unasked. Both are classified like
+  `unmatched`, over both levels.
 - **Loosening a broker's `unmatched` policy asks first.** Changing it from
   deny to ask — or clearing it so an ask is inherited — turns refusals into
   questions; the Config tab confirms it, and the settings catalogue says which

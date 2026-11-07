@@ -252,6 +252,9 @@ func (d Deps) approvalSettings() []*Setting {
 		}
 		return ""
 	}
+	promptRow.Loosens = func(level Level, value string) string {
+		return promptLoosens(promptRow, level, value)
+	}
 	promptRow.After = func() {
 		if d.ApplyPrompt == nil {
 			return
@@ -270,6 +273,9 @@ func (d Deps) approvalSettings() []*Setting {
 		gate.Options = []string{OptInherit, "ask", "auto"}
 		gate.Help = func() string {
 			return "ask before the remote opens each site · from the next connection"
+		}
+		gate.Loosens = func(level Level, value string) string {
+			return gateLoosens(gate, level, value)
 		}
 		settings = append(settings, gate)
 	}
@@ -328,12 +334,28 @@ func (d Deps) policySettings() []*Setting {
 // does not decide for itself, so this host deciding for itself is no reason
 // not to ask.
 func unmatchedLoosens(row *Setting, level Level, value, title string) string {
-	effective := func(override bool) string {
+	refuses := func(v string) bool {
+		// Neither ask nor deny reads as deny: fail closed.
+		return v != string(authz.ActionAsk)
+	}
+	before, after := effectiveValues(row, level, value, string(authz.ActionAsk))
+	if refuses(before) && !refuses(after) {
+		return title + " requests that no rule or grant matches will be asked about instead of refused"
+	}
+	return ""
+}
+
+// effectiveValues is what a two-level setting resolves to before and after
+// writing value at level, lower-cased, with fallback when no level says
+// anything. A host edit is resolved over both levels. A global edit is
+// resolved over the global file alone: it reaches every host that does not
+// decide for itself, so this host deciding for itself is no reason to call the
+// edit harmless. Every loosening classifier works from this, so they all
+// agree on what "effective" means.
+func effectiveValues(row *Setting, level Level, value, fallback string) (before, after string) {
+	resolve := func(override bool) string {
 		for _, l := range row.Levels {
 			if level == LevelGlobal && l == LevelHost {
-				// A global edit reaches every host that does not decide
-				// for itself, not only this one — judge it on the global
-				// file alone, which is conservative for this host.
 				continue
 			}
 			v := row.Raw(l)
@@ -344,16 +366,40 @@ func unmatchedLoosens(row *Setting, level Level, value, title string) string {
 			if v == "" || v == OptInherit {
 				continue
 			}
-			if v != string(authz.ActionAsk) {
-				// Neither ask nor deny reads as deny: fail closed.
-				return string(authz.ActionDeny)
-			}
 			return v
 		}
-		return string(authz.ActionAsk)
+		return strings.ToLower(fallback)
 	}
-	if effective(false) == string(authz.ActionDeny) && effective(true) != string(authz.ActionDeny) {
-		return title + " requests that no rule or grant matches will be asked about instead of refused"
+	return resolve(false), resolve(true)
+}
+
+// promptLoosens is the Loosens of "Approvals appear". With nowhere to ask, a
+// request nothing allows is refused; with somewhere to ask, it becomes a
+// question a person can say yes to. So an edit loosens when the effective
+// value goes from asking nowhere to asking somewhere. A value that does not
+// parse counts as asking nowhere, so replacing one with a real surface asks
+// first. (A --prompt on the command line still overrides the files for this
+// run; that is not weighed here, which errs towards asking.)
+func promptLoosens(row *Setting, level Level, value string) string {
+	canAsk := func(v string) bool {
+		surfaces, err := prompt.ParseSurfaces(v)
+		return err == nil && surfaces.Any()
+	}
+	before, after := effectiveValues(row, level, value, "auto")
+	if !canAsk(before) && canAsk(after) {
+		return "requests no rule allows will be put to a person to approve, instead of refused"
+	}
+	return ""
+}
+
+// gateLoosens is the Loosens of the browser's "Ask before a site". The
+// browser asks only when the value is exactly ask; anything else opens sites
+// without a question. So an edit loosens when the effective value stops
+// being ask.
+func gateLoosens(row *Setting, level Level, value string) string {
+	before, after := effectiveValues(row, level, value, "auto")
+	if before == "ask" && after != "ask" {
+		return "the remote box will open sites in your browser without asking"
 	}
 	return ""
 }
