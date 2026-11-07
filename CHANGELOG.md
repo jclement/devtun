@@ -145,6 +145,23 @@ this is 0.x, a minor bump may break something.
 
 ### Fixed — the interface
 
+- **Loosening a broker's `unmatched` policy asks first.** Changing it from
+  deny to ask — or clearing it so an ask is inherited — turns refusals into
+  questions; the Config tab confirms it, and the settings catalogue says which
+  edits loosen (`settings.Loosening`) so every surface asks about the same
+  ones.
+- **Narrowing or moving a deny asks first.** Editing an existing rule's
+  pattern confirms whatever its effect; note-only edits and new denies are
+  still immediate.
+- **A rule written from an approval goes to the broker that asked.** Prompt
+  requests carry the asking broker's id; the form is locked to it, and answers
+  the request only when broker, host and pattern all agree.
+- **A cancelled approval no longer comes back.** One that times out or is
+  answered elsewhere while its rule form is open is detached from the form.
+- Removing a refusal says what would really happen next — another deny still
+  refusing, an allow letting it through, a prompt, or unmatched deny — and
+  names the rule's own host pattern.
+
 - **Removing a refusal asks first.** `r` on a deny rule or a "stop asking"
   refusal deleted it on one keystroke; it now opens a confirm that says what
   will be asked about again, and only `y` accepts.
