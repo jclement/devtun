@@ -226,7 +226,7 @@ func (b *configBook) Load() (Loaded, error) {
 		var unmatched string
 		if found, err := gr.GetGlobal(unmatchedKey, &unmatched); err != nil {
 			errs = append(errs, err)
-		} else if found && strings.TrimSpace(unmatched) != "" {
+		} else if found && !inherits(unmatched) {
 			l.Unmatched, l.UnmatchedLevel = unmatched, "global"
 		}
 	}
@@ -238,16 +238,24 @@ func (b *configBook) Load() (Loaded, error) {
 		errs = append(errs, err)
 	}
 	// An empty or null value is no value: it inherits, it does not reset to
-	// ask. `unmatched:` left blank in a host file under a global deny is a
+	// ask. Nor is the literal "inherit", which an older settings writer could
+	// store: it means what it says, at both levels. `unmatched:` left blank in a host file under a global deny is a
 	// half-finished edit, and reading it as "ask" would quietly undo the
 	// allowlist the global file set.
 	var unmatched string
 	if found, err := b.config.GetLocal(unmatchedKey, &unmatched); err != nil {
 		errs = append(errs, err)
-	} else if found && strings.TrimSpace(unmatched) != "" {
+	} else if found && !inherits(unmatched) {
 		l.Unmatched, l.UnmatchedLevel = unmatched, "host"
 	}
 	return l, errors.Join(errs...)
+}
+
+// inherits reports whether a stored unmatched value says nothing at its
+// level: blank, or the literal "inherit" in any case.
+func inherits(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || strings.EqualFold(value, "inherit")
 }
 
 func (b *configBook) Revision() uint64 {

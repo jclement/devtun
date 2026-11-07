@@ -169,8 +169,7 @@ func (m *Model) writeConfig(s *settings.Setting, level settings.Level, value str
 			body: []string{
 				ui.Secret.Render(s.Title) + " → " + ui.Warn.Render(shown) + ui.Muted.Render("  ("+where+")"),
 				"",
-				why + ".",
-				ui.Muted.Render("Rules and grants are not touched; this is what happens when none match."),
+				why,
 			},
 			yes:    "loosen it",
 			no:     "keep it",

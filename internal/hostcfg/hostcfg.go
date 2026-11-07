@@ -519,10 +519,12 @@ func (s *Store) Prompt(label, fallback string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if v := strings.TrimSpace(s.hostDoc(label).Prompt); v != "" {
+	// "inherit" is the interface's word for "not set here", and a file an
+	// older build wrote it into still means that.
+	if v := strings.TrimSpace(s.hostDoc(label).Prompt); v != "" && !strings.EqualFold(v, "inherit") {
 		return v
 	}
-	if v := strings.TrimSpace(s.globalDoc().Prompt); v != "" {
+	if v := strings.TrimSpace(s.globalDoc().Prompt); v != "" && !strings.EqualFold(v, "inherit") {
 		return v
 	}
 	return fallback

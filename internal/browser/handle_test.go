@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"github.com/jclement/devtun/internal/hostcfg"
 	"net"
 	"strings"
 	"sync"
@@ -439,3 +440,64 @@ func TestGateAutoOpensWithoutAsking(t *testing.T) {
 type promptFunc func() (prompt.Choice, error)
 
 func (f promptFunc) Ask(context.Context, prompt.Request) (prompt.Choice, error) { return f() }
+
+// fileHost is a host whose config is the real hostcfg store, so the gate is
+// read exactly as a session reads it.
+type fileHost struct {
+	stubHost
+	section service.Config
+}
+
+func (h fileHost) Config() service.Config { return h.section }
+
+// attachAsks attaches the service over a real config directory and reports
+// whether it asks before opening a site.
+func attachAsks(t *testing.T, store *hostcfg.Store) bool {
+	t.Helper()
+	asked := 0
+	svc := New(Options{
+		Prompter: promptFunc(func() (prompt.Choice, error) { asked++; return prompt.ChoiceDeny, nil }),
+		Tunnels:  &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174}}},
+		Open:     func(context.Context, string) error { return nil },
+	})
+	if _, err := svc.Attach(context.Background(), fileHost{stubHost: newStubHost(), section: store.Section("bedev", "browser")}); err != nil {
+		t.Fatal(err)
+	}
+	exchange(t, svc, openRequest{URL: "https://github.com/login"})
+	return asked > 0
+}
+
+// The gate is read case-insensitively, a value it does not recognise asks
+// (fail closed), and a literal "inherit" falls through to the global value —
+// the same reading the settings catalogue classifies edits with.
+func TestTheGateIsReadTheWayTheSettingsClassifyIt(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		host, global string
+		wantAsk      bool
+	}{
+		{"ASK in capitals", "ASK", "", true},
+		{"Auto in mixed case", "Auto", "", false},
+		{"an unknown value", "sometimes", "", true},
+		{"literal inherit under a global ask", "inherit", "ask", true},
+		{"literal inherit under a global auto", "inherit", "auto", false},
+		{"nothing anywhere", "", "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			store := hostcfg.Open(t.TempDir())
+			if c.host != "" {
+				if err := store.SetSetting("bedev", "browser", gateKey, c.host); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.global != "" {
+				if err := store.SetSetting("", "browser", gateKey, c.global); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := attachAsks(t, store); got != c.wantAsk {
+				t.Errorf("asks = %v, want %v", got, c.wantAsk)
+			}
+		})
+	}
+}

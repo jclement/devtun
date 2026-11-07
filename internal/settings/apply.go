@@ -1,7 +1,5 @@
 package settings
 
-import "strings"
-
 // Writing a setting is shared for the same reason describing one is.
 //
 // Stepping through options, clearing a level, refusing a value that will not
@@ -61,7 +59,10 @@ type Result struct {
 // that came from, because "cleared" on its own leaves the person to go and look
 // up what they have just started inheriting.
 func Apply(s *Setting, level Level, value, host string) (Result, error) {
-	value = strings.TrimSpace(value)
+	// What is written is the canonical form — "inherit" clears the level,
+	// an option is stored in its own spelling — so the value stored, the
+	// value classified by Loosening, and the value every reader sees agree.
+	value = Canonical(s, value)
 	if s.Validate != nil {
 		if err := s.Validate(value); err != nil {
 			// Refused rather than saved: a bad hide list fails on the next

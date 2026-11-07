@@ -108,7 +108,8 @@ type Setting struct {
 	// synced to next.
 	Unusable func() string
 	// Loosens reports what writing value at level would open up, or "" when
-	// it would not loosen anything. Nil for settings that cannot loosen
+	// it would not loosen anything. The answer is the whole consequence, in
+	// sentences, specific to the setting — a surface shows it as it is. Nil for settings that cannot loosen
 	// access. It is the server-side answer to "does this edit need a
 	// confirm?", so every surface asks it rather than deciding for itself.
 	Loosens func(level Level, value string) string
@@ -122,7 +123,42 @@ func Loosening(s *Setting, level Level, value string) string {
 	if s == nil || s.Loosens == nil {
 		return ""
 	}
-	return s.Loosens(level, value)
+	// Classified as it will be written, not as it was typed: Apply stores
+	// Canonical's answer, so that is the edit there is to judge.
+	return s.Loosens(level, Canonical(s, value))
+}
+
+// Canonical is what an edit actually writes. "inherit", in any case, clears
+// the level rather than being stored — a stored literal "inherit" would
+// shadow the other level for any reader that did not know the word. A value
+// matching one of the setting's options in another case is stored in the
+// option's spelling, so `ASK` and `ask` are the same edit to every reader.
+// Anything else is stored as typed, after trimming, for Validate to judge.
+func Canonical(s *Setting, value string) string {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, OptInherit) {
+		return ""
+	}
+	if s != nil {
+		for _, option := range s.Options {
+			if strings.EqualFold(option, value) {
+				if option == OptInherit {
+					return ""
+				}
+				return option
+			}
+		}
+	}
+	return value
+}
+
+// Inherits reports whether a stored value says nothing at its level: empty,
+// or the literal "inherit" that older builds could write. Every reader of a
+// two-level setting treats it as absent, so a file that has one still means
+// what the interface showed.
+func Inherits(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || strings.EqualFold(value, OptInherit)
 }
 
 // Writes reports whether the setting can be written at a level.
@@ -277,6 +313,7 @@ func (d Deps) approvalSettings() []*Setting {
 		gate.Loosens = func(level Level, value string) string {
 			return gateLoosens(gate, level, value)
 		}
+		gate.Validate = ValidGate
 		settings = append(settings, gate)
 	}
 	return settings
@@ -340,7 +377,7 @@ func unmatchedLoosens(row *Setting, level Level, value, title string) string {
 	}
 	before, after := effectiveValues(row, level, value, string(authz.ActionAsk))
 	if refuses(before) && !refuses(after) {
-		return title + " requests that no rule or grant matches will be asked about instead of refused"
+		return title + " requests that no rule or grant matches will be asked about instead of refused. Rules and grants still decide everything they match."
 	}
 	return ""
 }
@@ -362,11 +399,10 @@ func effectiveValues(row *Setting, level Level, value, fallback string) (before,
 			if override && l == level {
 				v = value
 			}
-			v = strings.ToLower(strings.TrimSpace(v))
-			if v == "" || v == OptInherit {
+			if Inherits(v) {
 				continue
 			}
-			return v
+			return strings.ToLower(strings.TrimSpace(v))
 		}
 		return strings.ToLower(fallback)
 	}
@@ -387,21 +423,32 @@ func promptLoosens(row *Setting, level Level, value string) string {
 	}
 	before, after := effectiveValues(row, level, value, "auto")
 	if !canAsk(before) && canAsk(after) {
-		return "requests no rule allows will be put to a person to approve, instead of refused"
+		return "Requests no rule or grant decides will be put to a person to approve, instead of refused. Rules and grants still decide everything they match."
 	}
 	return ""
 }
 
 // gateLoosens is the Loosens of the browser's "Ask before a site". The
-// browser asks only when the value is exactly ask; anything else opens sites
-// without a question. So an edit loosens when the effective value stops
-// being ask.
+// browser reads the value the same way (browser.GateAsks): auto means open
+// without asking, and ask — or anything it does not recognise, failing
+// closed — means ask. So an edit loosens when the effective value becomes
+// auto.
 func gateLoosens(row *Setting, level Level, value string) string {
+	asks := func(v string) bool { return v != "auto" }
 	before, after := effectiveValues(row, level, value, "auto")
-	if before == "ask" && after != "ask" {
-		return "the remote box will open sites in your browser without asking"
+	if asks(before) && !asks(after) {
+		return "The remote box will open sites in your browser without asking. With the gate off the browser's rules and grants are not consulted either — nothing is checked."
 	}
 	return ""
+}
+
+// ValidGate refuses a gate value that is neither ask nor auto, in any case.
+func ValidGate(value string) error {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", OptInherit, "ask", "auto":
+		return nil
+	}
+	return errors.New("gate is ask or auto")
 }
 
 // ValidUnmatched refuses an unmatched value that is neither ask nor deny.
@@ -455,10 +502,10 @@ func (d Deps) ConfiguredPrompt() (string, Level) {
 	if d.Store == nil {
 		return "all", LevelNone
 	}
-	if v := d.Store.Setting(d.Host, "", hostcfg.KeyPrompt); v != "" {
+	if v := d.Store.Setting(d.Host, "", hostcfg.KeyPrompt); !Inherits(v) {
 		return v, LevelHost
 	}
-	if v := d.Store.Setting("", "", hostcfg.KeyPrompt); v != "" {
+	if v := d.Store.Setting("", "", hostcfg.KeyPrompt); !Inherits(v) {
 		return v, LevelGlobal
 	}
 	return "all", LevelNone
@@ -595,7 +642,7 @@ func (d Deps) storeSetting(key, title, section, name string, levels []Level, fal
 		Raw:    at,
 		Value: func() (string, Level) {
 			for _, level := range levels {
-				if v := at(level); v != "" {
+				if v := at(level); !Inherits(v) {
 					return v, level
 				}
 			}

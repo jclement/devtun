@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"github.com/jclement/devtun/internal/browser"
 	"strings"
 	"testing"
 
@@ -426,7 +427,11 @@ func TestLooseningClassifiesBrowserGateEdits(t *testing.T) {
 		{"global ask → auto", "", "ask", LevelGlobal, "auto", true},
 		{"global ask → auto under a host ask", "ask", "ask", LevelGlobal, "auto", true},
 		{"global auto → ask", "", "auto", LevelGlobal, "ask", false},
-		{"host ask → something else", "ask", "", LevelHost, "sometimes", true},
+		// The browser reads anything but auto as ask (fail closed), so an
+		// unknown value does not loosen — and Validate refuses it anyway.
+		{"host ask → something else", "ask", "", LevelHost, "sometimes", false},
+		{"host ask → AUTO", "ask", "", LevelHost, "AUTO", true},
+		{"host ask → ASK", "ask", "", LevelHost, "ASK", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			store := newStore()
@@ -441,6 +446,143 @@ func TestLooseningClassifiesBrowserGateEdits(t *testing.T) {
 			got := Loosening(find(t, d, "gate"), c.level, c.value)
 			if (got != "") != c.wantLoosening {
 				t.Errorf("Loosening = %q, want loosening %v", got, c.wantLoosening)
+			}
+		})
+	}
+}
+
+// What Apply writes is the canonical form: "inherit" in any case clears the
+// level, and an option is stored in its own spelling. Against the real store,
+// so nothing between Apply and the file can turn it back into a literal.
+func TestApplyWritesTheCanonicalValue(t *testing.T) {
+	store := hostcfg.Open(t.TempDir())
+	d := deps(store)
+	d.Services = []service.Service{browserService{}, newGated("ssh-agent")}
+	gate := find(t, d, "gate")
+
+	if _, err := Apply(gate, LevelHost, "ASK", "bedev"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Setting("bedev", "browser", "gate"); got != "ask" {
+		t.Errorf("ASK was stored as %q, want ask", got)
+	}
+	if _, err := Apply(gate, LevelHost, "Inherit", "bedev"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Setting("bedev", "browser", "gate"); got != "" {
+		t.Errorf("inherit was stored as %q, want the key cleared", got)
+	}
+	if _, err := Apply(gate, LevelHost, "sometimes", "bedev"); err == nil {
+		t.Error("a gate value that is neither ask nor auto was accepted")
+	}
+	unmatched := find(t, d, "unmatched.ssh-agent")
+	if _, err := Apply(unmatched, LevelHost, "deny", "bedev"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(unmatched, LevelHost, "INHERIT", "bedev"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Setting("bedev", "ssh-agent", "unmatched"); got != "" {
+		t.Errorf("INHERIT was stored as %q, want the key cleared", got)
+	}
+}
+
+// The classifier and the broker read the same files the same way. Each case
+// is set up in real files, with the broker's own Unmatched read before and
+// after the edit, and the edit must ask first exactly when the broker goes
+// from refusing to asking.
+func TestUnmatchedClassificationAgreesWithTheBroker(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		host, global string // written to the files directly, as an old build might
+		edit         string
+		wantConfirm  bool
+	}{
+		// An "inherit" already in the file means inherit: with nothing
+		// global that is the default ask, so ask changes nothing.
+		{"existing host inherit, no global → ask", "inherit", "", "ask", false},
+		// Under a global deny the broker refuses; an explicit ask loosens.
+		{"existing host inherit, global deny → ask", "inherit", "deny", "ask", true},
+		{"host deny → literal inherit under a global ask", "deny", "ask", "inherit", true},
+		{"host deny → literal inherit under a global deny", "deny", "deny", "inherit", false},
+		{"host deny → ASK", "deny", "", "ASK", true},
+		{"host ask → DENY", "ask", "", "DENY", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			store := hostcfg.Open(t.TempDir())
+			if c.host != "" {
+				_ = store.SetSetting("bedev", "ssh-agent", "unmatched", c.host)
+			}
+			if c.global != "" {
+				_ = store.SetSetting("", "ssh-agent", "unmatched", c.global)
+			}
+			gate := authz.NewGate(authz.Config{}, nil)
+			if err := gate.Adopt("bedev", store.Section("bedev", "ssh-agent"), "SSH"); err != nil {
+				t.Fatal(err)
+			}
+			d := deps(store)
+			d.Services = []service.Service{gatedService{id: "ssh-agent", Surface: gate.Surface()}}
+			row := find(t, d, "unmatched.ssh-agent")
+
+			before := gate.Unmatched().Action
+			confirm := Loosening(row, LevelHost, c.edit) != ""
+			if _, err := Apply(row, LevelHost, c.edit, "bedev"); err != nil {
+				t.Fatal(err)
+			}
+			after := gate.Unmatched().Action
+
+			brokerLoosened := before == authz.ActionDeny && after != authz.ActionDeny
+			if confirm != c.wantConfirm || confirm != brokerLoosened {
+				t.Errorf("confirm = %v (want %v); the broker went %s → %s", confirm, c.wantConfirm, before, after)
+			}
+		})
+	}
+}
+
+// The gate's classification agrees with what the browser does with the file,
+// read through browser.GateAsks and the store's own levels.
+func TestGateClassificationAgreesWithTheBrowser(t *testing.T) {
+	asks := func(store *hostcfg.Store) bool {
+		host, global := store.Setting("bedev", "browser", "gate"), store.Setting("", "browser", "gate")
+		switch {
+		case !Inherits(host):
+			return browser.GateAsks(host)
+		case !Inherits(global):
+			return browser.GateAsks(global)
+		}
+		return false
+	}
+	for _, c := range []struct {
+		name         string
+		host, global string
+		edit         string
+		wantConfirm  bool
+	}{
+		{"host ask → ASK", "ask", "", "ASK", false},
+		{"host ask → literal inherit under a global ask", "ask", "ask", "inherit", false},
+		{"host ask → literal inherit, global silent", "ask", "", "inherit", true},
+		{"host ask → Auto", "ask", "", "Auto", true},
+		{"existing host ASK → auto", "ASK", "", "auto", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			store := hostcfg.Open(t.TempDir())
+			if c.host != "" {
+				_ = store.SetSetting("bedev", "browser", "gate", c.host)
+			}
+			if c.global != "" {
+				_ = store.SetSetting("", "browser", "gate", c.global)
+			}
+			d := deps(store)
+			d.Services = []service.Service{browserService{}}
+			row := find(t, d, "gate")
+			before := asks(store)
+			confirm := Loosening(row, LevelHost, c.edit) != ""
+			if _, err := Apply(row, LevelHost, c.edit, "bedev"); err != nil {
+				t.Fatal(err)
+			}
+			after := asks(store)
+			if confirm != c.wantConfirm || confirm != (before && !after) {
+				t.Errorf("confirm = %v (want %v); the browser went asks=%v → asks=%v", confirm, c.wantConfirm, before, after)
 			}
 		})
 	}

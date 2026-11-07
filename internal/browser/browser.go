@@ -221,9 +221,8 @@ func (s *Service) Attach(_ context.Context, h service.Host) (service.Instance, e
 	// globally should apply to every host that has not said otherwise. Rules
 	// are the opposite and are read with GetLocal, inside the gate.
 	ask := askDefault(s.opts.Ask)
-	var mode string
-	if ok, err := h.Config().Get(gateKey, &mode); ok && err == nil {
-		ask = mode == "ask"
+	if mode, ok := gateMode(h.Config()); ok {
+		ask = GateAsks(mode)
 	}
 
 	s.mu.Lock()
@@ -509,4 +508,41 @@ func portOf(u *url.URL) int {
 		}
 	}
 	return defaultPort(u.Scheme)
+}
+
+// gateMode reads the gate preference: the host's own value unless it says
+// nothing — blank, or a literal "inherit" an older build could store — then
+// the global one. ok is false when neither level says anything.
+func gateMode(cfg service.Config) (string, bool) {
+	inherits := func(v string) bool {
+		v = strings.TrimSpace(v)
+		return v == "" || strings.EqualFold(v, "inherit")
+	}
+	var local string
+	if found, err := cfg.GetLocal(gateKey, &local); err == nil && found && !inherits(local) {
+		return local, true
+	}
+	if g, isGlobal := cfg.(interface {
+		GetGlobal(key string, v any) (bool, error)
+	}); isGlobal {
+		var global string
+		if found, err := g.GetGlobal(gateKey, &global); err == nil && found && !inherits(global) {
+			return global, true
+		}
+		return "", false
+	}
+	var merged string
+	if found, err := cfg.Get(gateKey, &merged); err == nil && found && !inherits(merged) {
+		return merged, true
+	}
+	return "", false
+}
+
+// GateAsks is how a gate value is read: "auto", in any case, opens sites
+// without asking; "ask" asks; and anything else asks too. A typo in the one
+// setting that decides whether the remote box may open your browser unasked
+// must not be read as permission. The settings catalogue classifies edits
+// with the same reading.
+func GateAsks(mode string) bool {
+	return !strings.EqualFold(strings.TrimSpace(mode), "auto")
 }
