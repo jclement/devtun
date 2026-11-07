@@ -304,10 +304,29 @@ ID survives reordering, filtering, restarts and other processes; it changes
 when the rule's own text does, and an edit returns the new one.
 
 Every write is a read-modify-write of one key against the file on disk, done
-on the YAML node tree so the rest of the file and its comments survive, under
-a lock file shared by every devtun process. Reads re-read a file whose size or
-mtime moved. The bug this replaced was writing back the startup copy whole,
-which erased hand edits made while devtun ran.
+on the YAML node tree so the rest of the file and its comments survive. Reads
+re-read a file whose size or mtime moved. The bug this replaced was writing
+back the startup copy whole, which erased hand edits made while devtun ran.
+
+devtun processes serialise on an OS advisory lock (flock; LockFileEx on
+Windows) over a lock file that is never deleted, so a holder that dies releases
+it and a holder that is merely slow keeps it. An age-based lock file, the first
+attempt, let a second writer take a paused writer's lock.
+
+An editor takes no lock, so a transaction re-reads the file (existence, size,
+mtime, content hash) immediately before renaming its replacement into place,
+and re-runs against the new contents if it moved — a few times, then
+ErrConflict. **A residual window remains**: the few system calls between that
+final check and the rename. A save landing exactly there is replaced. Closing it
+would need every writer, editors included, to cooperate on a lock, or devtun to
+keep what it writes in a file nobody else edits. The window is microseconds
+against human-speed saves, and it is stated here rather than promised away.
+
+The node tree is strict: duplicate keys, aliases and merge keys are refused as
+unreadable rather than resolved, and every rule must decode exactly (action
+allow or deny, a subject, no unknown fields). Each looser reading had a case
+where a deny was silently dropped. An empty or null `unmatched:` inherits from
+the level above rather than resetting to ask.
 
 A file that cannot be read or parsed refuses every request through the broker
 that reads it (`ByUnreadable`) until it is fixed, and is never written over.

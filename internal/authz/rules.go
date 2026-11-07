@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Where rules live, and who may change them.
@@ -58,6 +60,41 @@ type Rule struct {
 	Action  Action    `yaml:"action"`
 	Note    string    `yaml:"note,omitempty"`
 	Added   time.Time `yaml:"added,omitempty"`
+}
+
+// UnmarshalYAML reads one rule and refuses one it cannot read exactly.
+//
+// Decoding into the struct alone accepted anything shaped like a map: an
+// action of `denyy`, a missing subject, a misspelt `subjet:`. Each decoded to a
+// rule no pass ever matched, so a deny written with a typo silently stopped
+// applying while the allow beside it went on allowing. A rule that is not
+// exactly readable makes the whole file unreadable instead, which refuses every
+// request until it is fixed — the same as a syntax error.
+func (r *Rule) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: a rule is a map with a subject and an action", node.Line)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		switch key := node.Content[i].Value; key {
+		case "host", "subject", "action", "note", "added":
+		default:
+			return fmt.Errorf("line %d: a rule has no field %q (it takes host, subject, action, note, added)",
+				node.Content[i].Line, key)
+		}
+	}
+	type plain Rule // the same fields without this method, so Decode does not recurse
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	if p.Action != ActionAllow && p.Action != ActionDeny {
+		return fmt.Errorf("line %d: a rule's action is allow or deny, not %q", node.Line, p.Action)
+	}
+	if strings.TrimSpace(p.Subject) == "" {
+		return fmt.Errorf("line %d: a rule needs a subject", node.Line)
+	}
+	*r = Rule(p)
+	return nil
 }
 
 // Editable reports whether the interface may change this rule.

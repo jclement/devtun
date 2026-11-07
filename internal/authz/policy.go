@@ -605,25 +605,23 @@ func (s *Store) updateByID(id string, change func(*Rule)) (Rule, error) {
 	var updated Rule
 	err := s.editByID(id, func(r Rule) (*Rule, error) {
 		change(&r)
-		updated = r
 		return &r, nil
-	})
+	}, func(r Rule) { updated = r })
 	if err != nil {
 		return Rule{}, err
-	}
-	// The new ID is the one the rule has in its list as written, which an
-	// ordinal can make different from its bare hash; read it back.
-	for _, r := range s.Rules() {
-		if r.Source == updated.Source && r.sameContent(updated) {
-			return r, nil
-		}
 	}
 	return updated, nil
 }
 
 // editByID finds a rule by ID in the list it belongs to — as that list is on
 // disk now — and replaces it with what change returns, or removes it for nil.
-func (s *Store) editByID(id string, change func(Rule) (*Rule, error)) error {
+//
+// result, when given, receives the edited rule as it will be stored — its ID
+// computed at its own position in the list being written, inside the same
+// transaction. Recovering it afterwards by searching for a rule with the same
+// content found the first of two identical rules, not necessarily the one
+// edited, and a later remove by that ID took out the other.
+func (s *Store) editByID(id string, change func(Rule) (*Rule, error), result ...func(Rule)) error {
 	source, err := s.sourceOf(id)
 	if err != nil {
 		return err
@@ -642,6 +640,9 @@ func (s *Store) editByID(id string, change func(Rule) (*Rule, error)) error {
 			}
 			out := append([]Rule(nil), rules...)
 			out[i] = *next
+			for _, report := range result {
+				report(assignIDs(source, out)[i])
+			}
 			return out, nil
 		}
 		return nil, ErrNotFound
@@ -665,7 +666,15 @@ func (s *Store) sourceOf(id string) (Source, error) {
 func (s *Store) edit(source Source, change func([]Rule) ([]Rule, error)) error {
 	s.mu.Lock()
 	book := s.book
+	// No writes while any of the policy cannot be read. The edit touches one
+	// list, but the person deciding what to add is looking at a policy that is
+	// not the one in force, and a remembered rule written beside a broken
+	// hand-written list is a decision made blind.
+	_, loadErr := s.loadLocked()
 	s.mu.Unlock()
+	if loadErr != nil {
+		return loadErr
+	}
 
 	err := book.Edit(source, func(rules []Rule) ([]Rule, error) {
 		// Strip what is derived before it is written: the book stores rules,

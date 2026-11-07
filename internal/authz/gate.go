@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -225,7 +226,7 @@ func (b *configBook) Load() (Loaded, error) {
 		var unmatched string
 		if found, err := gr.GetGlobal(unmatchedKey, &unmatched); err != nil {
 			errs = append(errs, err)
-		} else if found {
+		} else if found && strings.TrimSpace(unmatched) != "" {
 			l.Unmatched, l.UnmatchedLevel = unmatched, "global"
 		}
 	}
@@ -236,10 +237,14 @@ func (b *configBook) Load() (Loaded, error) {
 	if _, err := b.config.GetLocal(rememberedKey, &l.Remembered); err != nil {
 		errs = append(errs, err)
 	}
+	// An empty or null value is no value: it inherits, it does not reset to
+	// ask. `unmatched:` left blank in a host file under a global deny is a
+	// half-finished edit, and reading it as "ask" would quietly undo the
+	// allowlist the global file set.
 	var unmatched string
 	if found, err := b.config.GetLocal(unmatchedKey, &unmatched); err != nil {
 		errs = append(errs, err)
-	} else if found {
+	} else if found && strings.TrimSpace(unmatched) != "" {
 		l.Unmatched, l.UnmatchedLevel = unmatched, "host"
 	}
 	return l, errors.Join(errs...)
