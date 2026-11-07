@@ -38,6 +38,14 @@ type accessRow struct {
 	// did not write it, and quietly editing a file the user hand-wrote would be
 	// a worse surprise than saying no.
 	global bool
+
+	// outranked is set on an allow that a deny also matches: it never wins,
+	// or — for a pattern with wildcards — does not win for everything it
+	// names. exact says which: true when the allow names one subject, so
+	// "never wins" is a fact rather than a likelihood. by is what beats it.
+	outranked bool
+	exact     bool
+	by        []authz.Matched
 }
 
 // action is the row's effect: allow or deny, for a grant and a rule alike.
@@ -65,6 +73,12 @@ func (r accessRow) label() string {
 		return "stop-ask"
 	case r.isGrant:
 		return "grant"
+	case r.rule.Source == authz.SourceRemembered && r.rule.Action == authz.ActionDeny:
+		// An answer to a prompt, kept: "never" and "always" are the words
+		// the prompt used, so the row says what was clicked.
+		return "never"
+	case r.rule.Source == authz.SourceRemembered:
+		return "always"
 	default:
 		return string(r.rule.Action)
 	}
@@ -77,9 +91,10 @@ func (r accessRow) svc() string { return ui.ShortService(r.source.id) }
 // Section headings. They say where a row lives, because that is what decides
 // whether it can be changed here and what changing it means.
 const (
-	headLive   = "LIVE — this session only, gone when devtun quits"
-	headHost   = "THIS HOST — "
-	headGlobal = "ALL HOSTS — your config.yaml · read-only here"
+	headLive       = "LIVE — this session only, gone when devtun quits"
+	headRemembered = "WRITTEN BY DEVTUN — "
+	headHost       = "YOU WROTE — "
+	headGlobal     = "ALL HOSTS — you wrote it in config.yaml · read-only here"
 )
 
 // reloadAccess pulls the live grants and every rule, grouped.
@@ -99,7 +114,7 @@ func (m *Model) reloadAccess() {
 		return q == "" || strings.Contains(strings.ToLower(text), q)
 	}
 
-	var live, host, global []accessRow
+	var live, remembered, host, global []accessRow
 	for _, src := range m.d.secrets {
 		for _, g := range src.ctrl.Grants() {
 			grant := g
@@ -117,11 +132,14 @@ func (m *Model) reloadAccess() {
 			if !matches(src.title + " " + r.Host + " " + r.Subject + " " + r.Note) {
 				continue
 			}
-			if r.Source == authz.SourceGlobal {
+			switch r.Source {
+			case authz.SourceGlobal:
 				global = append(global, accessRow{rule: r, source: src, global: true})
-				continue
+			case authz.SourceRemembered:
+				remembered = append(remembered, accessRow{rule: r, source: src})
+			default:
+				host = append(host, accessRow{rule: r, source: src})
 			}
-			host = append(host, accessRow{rule: r, source: src})
 		}
 	}
 
@@ -131,11 +149,15 @@ func (m *Model) reloadAccess() {
 		rows  []accessRow
 	}{
 		{headLive, live},
-		{headHost + "hosts/" + m.d.host + ".yaml", host},
+		{headRemembered + "hosts/" + m.d.host + ".yaml · remembered:", remembered},
+		{headHost + "hosts/" + m.d.host + ".yaml · rules:", host},
 		{headGlobal, global},
 	} {
 		if len(group.rows) == 0 {
 			continue
+		}
+		for i := range group.rows {
+			m.markOutranked(&group.rows[i])
 		}
 		rows = append(rows, accessRow{heading: group.title, count: len(group.rows)})
 		rows = append(rows, group.rows...)
@@ -165,6 +187,39 @@ func sameAccess(a, b accessRow) bool {
 		return a.grant.ID == b.grant.ID
 	}
 	return a.rule.ID == b.rule.ID
+}
+
+// markOutranked asks the store whether a deny beats an allow row.
+//
+// The question is put with the allow's own pattern as the subject. For a
+// pattern with no wildcard that is the one request it allows, so the answer
+// is exact: a deny decided it, and the allow never wins. For a wildcard
+// pattern a deny matching the pattern's own text means at least part of what
+// it allows is refused — worth a warning, and worded as one.
+func (m *Model) markOutranked(r *accessRow) {
+	if r.action() != authz.ActionAllow || (r.isGrant && r.grant.HostWide) {
+		return
+	}
+	subject := r.subject()
+	ex := r.source.ctrl.Explain(m.d.host, subject)
+	for _, mt := range ex.Matches {
+		if denyMatch(mt) {
+			r.by = append(r.by, mt)
+		}
+	}
+	r.outranked = len(r.by) > 0
+	r.exact = !strings.ContainsAny(subject, "*?[")
+}
+
+// denyMatch reports whether an explanation entry is a refusal.
+func denyMatch(mt authz.Matched) bool {
+	switch {
+	case mt.Rule != nil:
+		return mt.Rule.Action == authz.ActionDeny
+	case mt.Grant != nil:
+		return mt.Grant.Action == authz.ActionDeny
+	}
+	return false
 }
 
 // selectedAccess is the highlighted row, when one is.
@@ -205,6 +260,14 @@ func (m *Model) accessHeader() string {
 	if c.note > 0 {
 		line += "NOTE"
 	}
+	for _, r := range m.accessRows {
+		if r.outranked {
+			// The marker is one cell in the list; the header spells it out.
+			line = clampWidth(line, m.listWidth()-16)
+			line += strings.Repeat(" ", max(m.listWidth()-16-ansi.StringWidth(line), 1)) + "⚠ a deny beats it"
+			break
+		}
+	}
 	return ui.Header.Render(clampWidth(line, m.listWidth()))
 }
 
@@ -234,12 +297,21 @@ func (m *Model) accessEmptyView(h int) string {
 	if !m.promptNow.Any() {
 		ask = "Every request from it is refused: approvals are off (prompt: deny)."
 	}
+	for _, src := range m.d.secrets {
+		if w, _ := m.unmatchedWord(src); w != "ask" {
+			ask = "What nothing matches is refused or asked, per broker — see the last line."
+			break
+		}
+	}
 	text := []string{
 		ui.Banner.Render("Nothing is open, and no rule is written down for " + m.d.host + "."),
 		ui.Muted.Render(ask),
 		"",
-		ui.Muted.Render("Rules come from answering a prompt with \"always\" or \"never\","),
-		ui.Muted.Render("or from hosts/" + m.d.host + ".yaml and config.yaml.  ? explains how they combine."),
+		ui.Banner.Render("n") + ui.Muted.Render("  write a rule now — allow or deny something before it is asked for"),
+		ui.Banner.Render("t") + ui.Muted.Render("  test what a request would get"),
+		"",
+		ui.Muted.Render("Rules also come from answering a prompt with \"always\" or \"never\","),
+		ui.Muted.Render("and from hosts/" + m.d.host + ".yaml and config.yaml.  A deny always beats an allow."),
 	}
 	lines := make([]string, h)
 	top := max((h-len(text))/2, 0)
@@ -253,22 +325,42 @@ func (m *Model) accessEmptyView(h int) string {
 	return strings.Join(lines, "\n")
 }
 
-// fallbackLine is the rule nobody wrote: what happens when nothing matches.
-// It decides most requests, so it is on screen like any other rule.
+// fallbackLine is the rule nobody wrote: what each broker does when nothing
+// matches. It decides most requests, so it is on screen like any other rule.
+// A broker whose policy file cannot be read takes the line over instead —
+// while that lasts, it refuses everything, and nothing else on the tab is
+// telling the truth about that broker.
 func (m *Model) fallbackLine() string {
-	verdict := ui.Warn.Render("ask")
-	hint := "(Config ▸ prompt to change)"
-	if !m.promptNow.Any() {
-		verdict = ui.Error.Render("deny")
-		hint = "(approvals are off — Config ▸ prompt)"
+	for _, src := range m.d.secrets {
+		if err := src.ctrl.PolicyErr(); err != nil {
+			return clampWidth(" "+ui.Danger.Render("⚠ "+ui.ShortService(src.id)+" refuses everything: ")+
+				ui.Error.Render(firstLine(err.Error())), m.inner())
+		}
 	}
 	var b strings.Builder
 	b.WriteString(" " + ui.Header.Render("NOTHING MATCHES →") + " ")
 	for _, src := range m.d.secrets {
-		b.WriteString(" " + ui.Muted.Render(ui.ShortService(src.id)+":") + " " + verdict + "  ")
+		word, style := m.unmatchedWord(src)
+		b.WriteString(" " + ui.Muted.Render(ui.ShortService(src.id)+":") + " " + style.Render(word) + "  ")
 	}
-	b.WriteString(ui.Muted.Render(hint))
+	b.WriteString(ui.Muted.Render("(Config ▸ Policy to change)"))
 	return clampWidth(b.String(), m.inner())
+}
+
+// unmatchedWord is what a broker does with a request nothing matches: its
+// unmatched policy, except that "ask" with nowhere to ask is a refusal and is
+// shown as one.
+func (m *Model) unmatchedWord(src accessSource) (string, lipgloss.Style) {
+	u := src.ctrl.Unmatched()
+	switch {
+	case u.Err != nil:
+		return "deny (bad value)", ui.Error
+	case u.Action == authz.ActionDeny:
+		return "deny", ui.Error
+	case !m.promptNow.Any():
+		return "deny (nowhere to ask)", ui.Error
+	}
+	return "ask", ui.Warn
 }
 
 // accessLine renders one row. The subject carries ui.Secret, the same
@@ -303,10 +395,17 @@ func (m *Model) accessLine(r accessRow, selected bool) string {
 	}
 
 	life, lifeStyle := m.lifetime(r)
-	line := lead + glyph + "  " + ui.Muted.Render(pad(r.svc(), 5)) +
+	warn := " "
+	if r.outranked {
+		warn = ui.Warn.Render("⚠")
+	}
+	line := lead + glyph + warn + " " + ui.Muted.Render(pad(r.svc(), 5)) +
 		matchStyle.Render(pad(match, c.match)) + "  " +
 		effect.Render(pad(r.label(), c.kind)) + lifeStyle.Render(pad(life, c.life))
-	if c.note > 0 && !r.isGrant && r.rule.Note != "" {
+	switch {
+	case c.note > 0 && r.outranked:
+		line += ui.Warn.Render(pad(outrankedNote(r), c.note))
+	case c.note > 0 && !r.isGrant && r.rule.Note != "":
 		line += ui.Muted.Render(pad(r.rule.Note, c.note))
 	}
 
@@ -318,6 +417,14 @@ func (m *Model) accessLine(r accessRow, selected bool) string {
 		return ui.Selected.Reverse(true).Render(ansi.Strip(line))
 	}
 	return line
+}
+
+// outrankedNote is the NOTE column's one line on an outranked allow.
+func outrankedNote(r accessRow) string {
+	if r.exact {
+		return "never wins — a deny matches it"
+	}
+	return "partly refused — a deny matches it"
 }
 
 // lifetime is the LIFETIME column: how long a grant has left, how old a rule
@@ -394,6 +501,28 @@ func hostWideGloss(service, host string) string {
 		return "any site " + host + " opens"
 	}
 	return "anything from " + host
+}
+
+// sourceWhere names the file a rule lives in, and the key within it.
+func (m *Model) sourceWhere(r authz.Rule) string {
+	switch r.Source {
+	case authz.SourceGlobal:
+		return "config.yaml · rules:"
+	case authz.SourceRemembered:
+		return "hosts/" + m.d.host + ".yaml · remembered:"
+	}
+	return "hosts/" + m.d.host + ".yaml · rules:"
+}
+
+// sourceWho says who wrote a rule, the way the detail box puts it.
+func sourceWho(r authz.Rule) string {
+	switch r.Source {
+	case authz.SourceRemembered:
+		return "devtun wrote it"
+	case authz.SourceGlobal:
+		return "you wrote it · all hosts"
+	}
+	return "you wrote it"
 }
 
 // splitSSH splits an agent subject, `<key type> <fingerprint> → <dest>`, at
@@ -499,6 +628,8 @@ func (m *Model) handleAccessKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.copyReference()
 	case "F":
 		return m.forgetGrants()
+	case "X":
+		return m.clearRefusals()
 	}
 	return nil
 }
@@ -586,7 +717,7 @@ func (m *Model) revokeSelected() tea.Cmd {
 
 // loosenConfirm is the question before removing a refusal.
 func (m *Model) loosenConfirm(row accessRow) confirmState {
-	title, what := "Remove a refusal?", "deny rule · hosts/"+m.d.host+".yaml"
+	title, what := "Remove a refusal?", "deny rule · "+m.sourceWhere(row.rule)
 	if row.isGrant {
 		title, what = "Stop refusing?", "\"No, and stop asking\" · this session"
 	}
@@ -673,43 +804,81 @@ func (m *Model) copyReference() tea.Cmd {
 	return tea.Batch(yank(ref), m.showToast(toastMsg{text: "copied " + ref}))
 }
 
-// forgetGrants drops the live grants, and everything cached under one, across
-// every broker.
+// forgetGrants drops the live approvals, and everything cached under one,
+// across every broker.
 //
-// It is the "lock it back up" action, and for allows that is what it does.
-// But today's Forget drops the refusals too — every "No, and stop asking" —
-// which re-opens questions you closed. Dropping an allow only tightens and
-// stays one keystroke; when refusals would go with it, it asks first and says
-// how many.
+// It is the "lock it back up" action, and it only ever tightens: refusals —
+// every "No, and stop asking" — survive it, because a panic button that
+// re-opened questions you had closed would be the opposite of one. So it is
+// one keystroke. Clearing the refusals is its own action, X, behind a confirm.
 func (m *Model) forgetGrants() tea.Cmd {
 	if len(m.d.secrets) == 0 {
 		return nil
 	}
-	var allows, refusals int
+	var grants, cached int
+	for _, src := range m.d.secrets {
+		g, c := src.ctrl.Forget()
+		grants, cached = grants+g, cached+c
+	}
+	m.reloadAccess()
+	m.clampCursor()
+	text := "forgot " + itoa(grants) + " grant" + plural(grants) + " and " + itoa(cached) + " cached value" + plural(cached)
+	if grants == 0 && cached == 0 {
+		text = "nothing to forget"
+	}
+	if n := m.liveRefusals(); n > 0 {
+		text += " · kept " + itoa(n) + " refusal" + plural(n) + " (X clears them)"
+	}
+	return m.showToast(toastMsg{text: text})
+}
+
+// liveRefusals counts the "stop asking" refusals held right now.
+func (m *Model) liveRefusals() int {
+	n := 0
 	for _, src := range m.d.secrets {
 		for _, g := range src.ctrl.Grants() {
 			if g.Action == authz.ActionDeny {
-				refusals++
-			} else {
-				allows++
+				n++
 			}
 		}
 	}
-	if refusals == 0 {
-		return m.doForget()
+	return n
+}
+
+// refusalsBlocked says why X has nothing to do, or "".
+func (m *Model) refusalsBlocked() string {
+	if m.liveRefusals() == 0 {
+		return "no \"stop asking\" refusals are live"
+	}
+	return ""
+}
+
+// clearRefusals drops every live "stop asking" refusal, after asking: each
+// one is a question you closed, and this opens all of them again.
+func (m *Model) clearRefusals() tea.Cmd {
+	n := m.liveRefusals()
+	if n == 0 {
+		return m.showToast(toastMsg{text: m.refusalsBlocked(), bad: true})
 	}
 	return m.ask(confirmState{
-		title: "Forget " + itoa(allows) + " grant" + plural(allows) + " and " + itoa(refusals) + " refusal" + plural(refusals) + "?",
+		title: "Clear " + itoa(n) + " refusal" + plural(n) + "?",
 		body: []string{
-			"Every live grant goes, and any value cached under one.",
-			ui.Error.Render(itoa(refusals)+" \"No, and stop asking\" answer"+plural(refusals)) + " " + goes(refusals) + " with them:",
-			m.d.host + " will be asked about " + pluralThose(refusals) + " again.",
-			ui.Muted.Render("Rules on disk are not touched."),
+			itoa(n) + " \"No, and stop asking\" answer" + plural(n) + " " + goes(n) + ":",
+			m.d.host + " will be asked about " + pluralThose(n) + " again, and a Yes will hand it over.",
+			ui.Muted.Render("Deny rules on disk still refuse what they match."),
 		},
-		yes:    "forget them all",
-		no:     "keep them",
+		yes:    "clear them",
+		no:     "keep refusing",
 		danger: true,
-		run:    func(mm *Model) tea.Cmd { return mm.doForget() },
+		run: func(mm *Model) tea.Cmd {
+			total := 0
+			for _, src := range mm.d.secrets {
+				total += src.ctrl.ForgetRefusals()
+			}
+			mm.reloadAccess()
+			mm.clampCursor()
+			return mm.showToast(toastMsg{text: "cleared " + itoa(total) + " refusal" + plural(total)})
+		},
 	})
 }
 
@@ -727,22 +896,70 @@ func pluralThose(n int) string {
 	return "those"
 }
 
-func (m *Model) doForget() tea.Cmd {
-	var grants, cached int
-	for _, src := range m.d.secrets {
-		g, c := src.ctrl.Forget()
-		grants, cached = grants+g, cached+c
+// --- detail ----------------------------------------------------------------
+
+// rankingText is the detail's account of how a row stands against the rest:
+// for an allow, what beats it; for a deny, what it beats. Both come from the
+// store's own Explain, asked with the row's pattern as the subject.
+func (m *Model) rankingText(r accessRow) string {
+	var b strings.Builder
+	if r.action() == authz.ActionAllow {
+		if !r.outranked {
+			return ""
+		}
+		if r.exact {
+			b.WriteString("\n  " + ui.Warn.Render("⚠ This never wins. A deny matches every request it would allow:") + "\n")
+		} else {
+			b.WriteString("\n  " + ui.Warn.Render("⚠ A deny matches this pattern, so at least some of what it allows is refused:") + "\n")
+		}
+		for _, mt := range r.by {
+			b.WriteString("      " + m.matchLine(r.source, mt) + "\n")
+		}
+		b.WriteString("  " + ui.Muted.Render("A deny always beats an allow. To allow only some things, set this broker's") + "\n")
+		b.WriteString("  " + ui.Muted.Render("\"unmatched\" to deny (Config ▸ Policy) and drop the catch-all deny.") + "\n")
+		return b.String()
 	}
-	m.reloadAccess()
-	m.clampCursor()
-	if grants == 0 && cached == 0 {
-		return m.showToast(toastMsg{text: "nothing to forget"})
+	if r.isGrant && r.grant.HostWide {
+		return ""
 	}
-	return m.showToast(toastMsg{text: "forgot " + itoa(grants) + " grant" + plural(grants) +
-		" and " + itoa(cached) + " cached value" + plural(cached)})
+	ex := r.source.ctrl.Explain(m.d.host, r.subject())
+	var beats []authz.Matched
+	for _, mt := range ex.Matches {
+		if !denyMatch(mt) {
+			beats = append(beats, mt)
+		}
+	}
+	b.WriteString("\n  " + ui.Muted.Render("A deny always beats an allow, wherever the allow is written.") + "\n")
+	if len(beats) > 0 {
+		b.WriteString("  " + ui.Muted.Render("It beats:") + "\n")
+		for _, mt := range beats {
+			b.WriteString("      " + m.matchLine(r.source, mt) + "\n")
+		}
+	}
+	return b.String()
 }
 
-// --- detail ----------------------------------------------------------------
+// matchLine is one rule or grant from an explanation, in a line.
+func (m *Model) matchLine(src accessSource, mt authz.Matched) string {
+	switch {
+	case mt.Rule != nil:
+		glyph := ui.OK.Render("✓ allow")
+		if mt.Rule.Action == authz.ActionDeny {
+			glyph = ui.Error.Render("✕ deny ")
+		}
+		return glyph + "  " + ui.Secret.Render(m.glossSubject(accessRow{rule: *mt.Rule, source: src}, 48)) +
+			"  " + ui.Muted.Render(sourceWho(*mt.Rule)+" · "+m.sourceWhere(*mt.Rule))
+	case mt.Grant != nil:
+		row := accessRow{grant: mt.Grant, isGrant: true, source: src}
+		glyph := ui.OK.Render("✓ grant")
+		if mt.Grant.Action == authz.ActionDeny {
+			glyph = ui.Error.Render("✕ stop-ask")
+		}
+		life, _ := m.lifetime(row)
+		return glyph + "  " + ui.Secret.Render(m.glossSubject(row, 48)) + "  " + ui.Muted.Render("live · "+life)
+	}
+	return ""
+}
 
 // accessDetailBox is everything known about the selected row, and what can be
 // done to it — including what cannot, and why.
@@ -758,12 +975,12 @@ func (m *Model) accessDetailBox() string {
 		return "  " + ui.Muted.Render(pad(label, 10)) + value + "\n"
 	}
 
-	kind, where := "rule", "hosts/"+m.d.host+".yaml"
+	kind, where := "rule", sourceWho(r.rule)+" · "+m.sourceWhere(r.rule)
 	switch {
 	case r.isGrant:
 		kind, where = r.label(), "in memory, this session"
 	case r.global:
-		where = "config.yaml · read-only here"
+		where += " · read-only here"
 	}
 
 	glyph := ui.OK.Render("✓ allow")
@@ -797,8 +1014,6 @@ func (m *Model) accessDetailBox() string {
 		}
 		b.WriteString(row("note", r.rule.Note))
 	}
-	if r.action() == authz.ActionDeny {
-		b.WriteString("\n  " + ui.Muted.Render("A deny always beats an allow, wherever the allow is written.") + "\n")
-	}
+	b.WriteString(m.rankingText(r))
 	return m.detailFrame(b.String())
 }

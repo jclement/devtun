@@ -242,7 +242,7 @@ func TestSecretsTabListsRulesAndRevokesTheSelectedOne(t *testing.T) {
 	send(m, "3")
 
 	view := plainView(m)
-	for _, want := range []string{"op://Personal/Docker/PAT", "op://Work/Deploy/key", "allow", "deny"} {
+	for _, want := range []string{"op://Personal/Docker/PAT", "op://Work/Deploy/key", "always", "never"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("the secrets tab is missing %q:\n%s", want, view)
 		}
@@ -881,7 +881,7 @@ func TestSecretsTabShowsGlobalRulesButWillNotRevokeThem(t *testing.T) {
 	if !strings.Contains(view, "op://Private/**") {
 		t.Errorf("a global rule is not listed:\n%s", view)
 	}
-	if !strings.Contains(view, "ALL HOSTS — your config.yaml") {
+	if !strings.Contains(view, "ALL HOSTS — you wrote it in config.yaml") {
 		t.Errorf("a global rule should say where it came from:\n%s", view)
 	}
 

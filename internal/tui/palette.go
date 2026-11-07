@@ -125,8 +125,10 @@ func (m *Model) actions() []action {
 			disabled: func(mm *Model) string { return mm.denyBlocked() }, alt: "refuse block tighten never"},
 		{title: "Copy the reference, never the secret", short: "copy", tab: tabAccess, key: "y", row: true, run: press("y"),
 			disabled: func(mm *Model) string { return mm.copyBlocked() }, alt: "yank clipboard op://"},
-		{title: "Forget the live grants", short: "forget", tab: tabAccess, key: "F", run: press("F"),
-			disabled: func(mm *Model) string { return mm.forgetBlocked() }, alt: "lock revoke panic clear"},
+		{title: "Forget the live grants — refusals stay", short: "forget", tab: tabAccess, key: "F", run: press("F"),
+			disabled: func(mm *Model) string { return mm.forgetBlocked() }, alt: "lock revoke panic"},
+		{title: "Clear the \"stop asking\" refusals", tab: tabAccess, key: "X", run: press("X"),
+			disabled: func(mm *Model) string { return mm.refusalsBlocked() }, alt: "unrefuse forget refusals ask again"},
 
 		{title: "Turn this service on or off here", short: "on/off", tab: tabServices, key: "e", row: true, run: press("e"), alt: "enable disable toggle 1password agent gpg browser"},
 

@@ -73,7 +73,7 @@ func TestClickingARowSelectsItAndClickingAgainOpensIt(t *testing.T) {
 // Headings are labels: a click on one must not arm r against nothing.
 func TestClickingASectionHeadingSelectsNothing(t *testing.T) {
 	m, _ := accessFixture(t)
-	x, y := locate(t, m, "THIS HOST")
+	x, y := locate(t, m, "WRITTEN BY DEVTUN")
 	click(m, x, y)
 	if m.hasSelection() {
 		t.Errorf("a heading took the cursor (row %d)", m.cursor())
@@ -197,29 +197,33 @@ func TestTheConfirmsButtonsAreClickable(t *testing.T) {
 	}
 }
 
-// F used to drop "No, and stop asking" answers without a word. With refusals
-// live it now asks and counts them; with only allows it only tightens and
-// stays one key.
-func TestForgetAsksWhenItWouldDropRefusals(t *testing.T) {
+// F is the panic button and only tightens: approvals and cached values go,
+// "stop asking" refusals stay, so it needs no confirm. Clearing the refusals
+// is X, which loosens and asks first.
+func TestForgetKeepsRefusalsAndClearingThemAsks(t *testing.T) {
 	m, s := accessFixture(t)
 	send(m, "F")
-	if m.confirm == nil || s.forgot {
-		t.Fatal("F dropped refusals without asking")
+	if m.confirm != nil || !s.forgot {
+		t.Fatal("F should forget in one key")
 	}
-	if !strings.Contains(m.confirm.title, "1 refusal") {
-		t.Errorf("the confirm does not count the refusals: %q", m.confirm.title)
-	}
-	send(m, "y")
-	if !s.forgot {
-		t.Error("y did not forget")
+	if !strings.Contains(m.toast.text, "kept 1 refusal") {
+		t.Errorf("F does not say the refusal survived: %q", m.toast.text)
 	}
 
-	only := &stubSecrets{live: []authz.Grant{{Host: "bedev", Subject: "op://A/B/c", Action: authz.ActionAllow}}}
-	m = newTestModel(t, deps{secrets: oneSource(only)})
-	send(m, "3")
-	send(m, "F")
-	if m.confirm != nil || !only.forgot {
-		t.Error("forgetting allows only should not ask")
+	send(m, "X")
+	if m.confirm == nil || s.refusalsForgot != 0 {
+		t.Fatal("X cleared refusals without asking")
+	}
+	if !strings.Contains(m.confirm.title, "1 refusal") {
+		t.Errorf("the confirm does not count them: %q", m.confirm.title)
+	}
+	send(m, "y")
+	if s.refusalsForgot != 1 {
+		t.Error("y did not clear the refusals")
+	}
+	send(m, "X")
+	if m.confirm != nil {
+		t.Error("X asked with no refusals left")
 	}
 }
 

@@ -190,6 +190,20 @@ type stubSecrets struct {
 	revokedBy []string
 	denied    []int
 	nextID    int
+
+	// explain, unmatched and policyErr stand in for the store's answers.
+	// Nil means "nothing matched", ask, and readable.
+	schema    *authz.Schema
+	explain   func(host, subject string) authz.Explanation
+	unmatched *authz.UnmatchedPolicy
+	policyErr error
+	// refusalsForgot counts ForgetRefusals calls; added collects AddRule and
+	// AddGrant calls, in order.
+	refusalsForgot int
+	addedRules     []authz.Rule
+	addedGrants    []authz.GrantSpec
+	allowed        []string
+	updated        []authz.RuleEdit
 }
 
 // ids gives every rule and grant an ID the first time it is listed, the way
@@ -265,12 +279,16 @@ func (s *stubSecrets) SetRuleAction(id string, a authz.Action) (authz.Rule, erro
 	}
 	if a == authz.ActionDeny {
 		s.denied = append(s.denied, i)
+	} else {
+		s.allowed = append(s.allowed, id)
 	}
 	s.rules[i].Action = a
 	return s.rules[i], nil
 }
 
 func (s *stubSecrets) AddRule(r authz.Rule) (authz.Rule, error) {
+	s.addedRules = append(s.addedRules, r)
+	r.Source = authz.SourceRemembered
 	s.rules = append(s.rules, r)
 	s.ids()
 	return s.rules[len(s.rules)-1], nil
@@ -281,9 +299,15 @@ func (s *stubSecrets) UpdateRule(id string, e authz.RuleEdit) (authz.Rule, error
 	if err != nil {
 		return authz.Rule{}, err
 	}
+	s.updated = append(s.updated, e)
 	if e.Subject != nil {
 		s.rules[i].Subject = *e.Subject
 	}
+	if e.Note != nil {
+		s.rules[i].Note = *e.Note
+	}
+	s.rules[i].ID = "" // its content changed, so its identity does
+	s.ids()
 	return s.rules[i], nil
 }
 
@@ -304,21 +328,50 @@ func (s *stubSecrets) RevokeGrant(id string) bool {
 }
 
 func (s *stubSecrets) AddGrant(spec authz.GrantSpec) (authz.Grant, error) {
+	s.addedGrants = append(s.addedGrants, spec)
 	g := authz.Grant{Host: spec.Host, Subject: spec.Subject, Action: spec.Action}
 	s.live = append(s.live, g)
 	s.ids()
 	return s.live[len(s.live)-1], nil
 }
 
-func (s *stubSecrets) ForgetGrants() int   { return 0 }
-func (s *stubSecrets) ForgetRefusals() int { return 0 }
+func (s *stubSecrets) ForgetGrants() int { return 0 }
 
-func (s *stubSecrets) Explain(string, string) authz.Explanation { return authz.Explanation{} }
+// ForgetRefusals drops the live deny grants, as the store does.
+func (s *stubSecrets) ForgetRefusals() int {
+	s.refusalsForgot++
+	kept, n := s.live[:0], 0
+	for _, g := range s.live {
+		if g.Action == authz.ActionDeny {
+			n++
+			continue
+		}
+		kept = append(kept, g)
+	}
+	s.live = kept
+	return n
+}
+
+func (s *stubSecrets) Explain(host, subject string) authz.Explanation {
+	if s.explain != nil {
+		return s.explain(host, subject)
+	}
+	return authz.Explanation{Unmatched: s.Unmatched()}
+}
+
 func (s *stubSecrets) Unmatched() authz.UnmatchedPolicy {
+	if s.unmatched != nil {
+		return *s.unmatched
+	}
 	return authz.UnmatchedPolicy{Action: authz.ActionAsk, Level: "default"}
 }
-func (s *stubSecrets) Schema() authz.Schema { return authz.DefaultSchema }
-func (s *stubSecrets) PolicyErr() error     { return nil }
+func (s *stubSecrets) Schema() authz.Schema {
+	if s.schema != nil {
+		return *s.schema
+	}
+	return authz.DefaultSchema
+}
+func (s *stubSecrets) PolicyErr() error     { return s.policyErr }
 func (s *stubSecrets) Revision() uint64     { return 0 }
 
 func (s *stubSecrets) Forget() (int, int) {
