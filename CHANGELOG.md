@@ -92,6 +92,47 @@ this is 0.x, a minor bump may break something.
 - Activity events for decisions carry what decided: `by=rule|grant|unmatched|…`
   with the rule's ID and source or the grant's ID.
 
+### Changed — the interface
+
+- **The interface is menu-driven and works with the mouse throughout.** Every
+  row has an action menu (`.`, or right-click) listing all its actions with
+  their keys; the ones that can't run there are shown dimmed with the reason,
+  so "that rule came from your config file" is something you read before
+  pressing `r`, not after. Detail boxes list the same actions as clickable
+  lines, and confirms, menu entries, palette entries and approval answers are
+  all clickable — an approval only once it has been on screen for a moment, so
+  a click aimed at whatever was there before cannot answer it. A click on the
+  selected row opens it; the wheel scrolls menus and tall boxes; **☰ commands**
+  in the tab bar opens the palette.
+- **Double-clicking a port opens its detail**, as on every other tab, rather
+  than the browser. The detail's first action is the browser (`b` still opens
+  it directly).
+- **The key bar lists what works right now**, built from the same catalogue as
+  the palette and the menus, and keeps `:` when it runs out of room.
+- **The header says what is being brokered**, and the rule under the tabs says
+  what the current tab shows.
+- **Access is grouped by where a rule lives** — live, this host, all hosts —
+  with SVC, MATCHES, KIND and LIFETIME columns, a pinned NOTHING MATCHES line,
+  per-broker wording for host-wide grants ("any secret from bedev", "any
+  signature from bedev, to anywhere"), SSH keys shortened to keep the
+  destination, and an `enter` detail.
+
+### Fixed — the interface
+
+- **Removing a refusal asks first.** `r` on a deny rule or a "stop asking"
+  refusal deleted it on one keystroke; it now opens a confirm that says what
+  will be asked about again, and only `y` accepts.
+- **`F` no longer drops refusals silently.** When live refusals would go with
+  the grants it asks first and counts them.
+- **`: deny` ran Revoke.** "deny" was one of Revoke's search words and Revoke
+  was listed first; on a deny row that deleted the refusal you asked for. The
+  palette now ranks title matches above alias matches, and Revoke no longer
+  answers to "deny".
+- **The Access cursor follows the row, not its position**, so a grant lapsing
+  above it no longer moves the next `r` onto a neighbour.
+- The approval's footer said "enter approve" with the cursor on a No; it says
+  "enter choose".
+
 ## v0.1.22
 
 ### Fixed

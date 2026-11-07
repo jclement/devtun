@@ -287,6 +287,13 @@ func (m *Model) accessLine(r accessRow, selected bool) string {
 	if r.action() == authz.ActionDeny {
 		glyph, effect = ui.Error.Render("✕"), ui.Error
 	}
+	lead := " "
+	if selected {
+		// A pointer as well as the reverse video: on a terminal with no
+		// colour, or in a screenshot pasted as text, reverse video is gone
+		// and the row the next r acts on would be anyone's guess.
+		lead = "▸"
+	}
 	match := m.glossSubject(r, c.match)
 	matchStyle := ui.Secret
 	if r.isGrant && r.grant.HostWide {
@@ -296,7 +303,7 @@ func (m *Model) accessLine(r accessRow, selected bool) string {
 	}
 
 	life, lifeStyle := m.lifetime(r)
-	line := " " + glyph + "  " + ui.Muted.Render(pad(r.svc(), 5)) +
+	line := lead + glyph + "  " + ui.Muted.Render(pad(r.svc(), 5)) +
 		matchStyle.Render(pad(match, c.match)) + "  " +
 		effect.Render(pad(r.label(), c.kind)) + lifeStyle.Render(pad(life, c.life))
 	if c.note > 0 && !r.isGrant && r.rule.Note != "" {
@@ -498,7 +505,7 @@ func (m *Model) handleAccessKey(msg tea.KeyPressMsg) tea.Cmd {
 
 // readOnlyReason is what a global rule says when asked to change. It names
 // the file, so the message is a direction and not just a refusal.
-const readOnlyReason = "a global rule — edit it in your config.yaml"
+const readOnlyReason = "global rule — edit it in config.yaml"
 
 // revokeBlocked says why `r` cannot act on the selected row, or "".
 func (m *Model) revokeBlocked() string {
@@ -695,7 +702,7 @@ func (m *Model) forgetGrants() tea.Cmd {
 		title: "Forget " + itoa(allows) + " grant" + plural(allows) + " and " + itoa(refusals) + " refusal" + plural(refusals) + "?",
 		body: []string{
 			"Every live grant goes, and any value cached under one.",
-			ui.Error.Render(itoa(refusals)+" \"No, and stop asking\" answer"+plural(refusals)) + " go with them:",
+			ui.Error.Render(itoa(refusals)+" \"No, and stop asking\" answer"+plural(refusals)) + " " + goes(refusals) + " with them:",
 			m.d.host + " will be asked about " + pluralThose(refusals) + " again.",
 			ui.Muted.Render("Rules on disk are not touched."),
 		},
@@ -704,6 +711,13 @@ func (m *Model) forgetGrants() tea.Cmd {
 		danger: true,
 		run:    func(mm *Model) tea.Cmd { return mm.doForget() },
 	})
+}
+
+func goes(n int) string {
+	if n == 1 {
+		return "goes"
+	}
+	return "go"
 }
 
 func pluralThose(n int) string {
@@ -773,10 +787,11 @@ func (m *Model) accessDetailBox() string {
 		b.WriteString(row("lasts", life))
 		b.WriteString(row("host", r.grant.Host))
 	} else {
-		b.WriteString(row("applies", hostScope(r.rule.Host)))
-		if r.rule.Host != "" && r.rule.Host != "*" && r.rule.Host != "**" {
-			b.WriteString(row("", ui.Muted.Render("host pattern "+r.rule.Host)))
+		applies := hostScope(r.rule.Host)
+		if r.rule.Host == m.d.host {
+			applies = m.d.host + " only"
 		}
+		b.WriteString(row("applies", applies))
 		if !r.rule.Added.IsZero() {
 			b.WriteString(row("added", r.rule.Added.Format("2006-01-02")+" · "+ago(m.d.now().Sub(r.rule.Added))))
 		}

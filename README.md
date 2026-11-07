@@ -182,12 +182,13 @@ A summary strip across the top counts what is live, new, hidden and broken, with
 | `c` | settings — sort, and which services run here (`← →` changes a row) |
 | `p` | pause new tunnels |
 | `/` `s` `r` | search, sort, reverse |
-| `r` · `D` | Access tab: revoke a rule or grant · rewrite an allow as a deny |
+| `.` | **this row's actions** — every one, with its key; the ones that can't run here say why |
+| `r` · `D` · `F` | Access tab: revoke a rule or grant · rewrite an allow as a deny · forget live grants |
 | `esc`, `q` | quit — it asks, then dissolves the screen in green rain |
 
 Don't learn any of that. Press `:` and type what you want — "hide", "revoke", "browser", "prompt" — and it tells you which tab it lives on and which key runs it. The keyboard is twenty-five keys deep across five tabs and the same letter deliberately means different things on different ones; the palette is how you stop caring, and it teaches its own way out of a job.
 
-It's clickable too, because it's 2026 and you have a mouse — and `m` hands the mouse back to your terminal when you want to select and copy text instead.
+It's clickable too, because it's 2026 and you have a mouse. Click a tab, a row, a button or anything in the key bar; click the selected row again (or double-click it) to open it; right-click a row for its action menu; the wheel scrolls lists, menus and tall boxes; and **☰ commands** at the end of the tab bar opens the palette. The key bar only lists what would work on the selected row right now — the rest, with the reason it can't run, is behind `.`. And `m` hands the mouse back to your terminal when you want to select and copy text instead; the bottom border says *mouse off* until you take it back.
 
 ## Your SSH keys, without handing them over
 
@@ -399,9 +400,11 @@ becomes a silent yes, and it never becomes a silent no either.
 
 **When nothing matches, the broker asks — or refuses, if you say so.** Each broker has an `unmatched:` setting, `ask` (the default) or `deny`, at either level and on the Config tab's *Policy* section. `deny` is how you write an allowlist: because deny beats allow, an allow plus a deny-everything refuses the allow too, whereas an allow plus `unmatched: deny` means exactly "only this". It applies only when no rule and no grant matched, so it never loosens anything, and a value that is neither `ask` nor `deny` is read as `deny`. An empty or `null` value in a host file means "not set here": it inherits the global answer rather than resetting to `ask`.
 
-The **Access** tab in `--tui` lists everything currently deciding — live grants and refusals with their remaining time, and every rule, with where it lives. `r` revokes a grant or a rule, and `D` rewrites a rule you regret as a deny, which is the difference between "stop allowing this" and "stop asking me about it". Rules from your global config are marked *from your config* and are not editable there. Rules are addressed by a stable identity, not by their position, so a revoke on the web board while the terminal is open cannot land on the wrong rule.
+The **Access** tab in `--tui` lists everything currently deciding, grouped by where it lives: **LIVE** (grants and "stop asking" refusals, with their remaining time — gone when devtun quits), **THIS HOST** (`hosts/<host>.yaml`), and **ALL HOSTS** (your `config.yaml`, read-only here). Each row says which broker it belongs to (`op`, `key`, …), what it matches — an SSH key shrinks to its tail so the destination stays readable — and what kind of thing it is. The last line, **NOTHING MATCHES**, is the rule nobody wrote: what happens to a request no rule or grant covers. `enter` opens a row in full, with what it means in plain words and every action that applies. `r` revokes, and `D` rewrites a rule you regret as a deny, which is the difference between "stop allowing this" and "stop asking me about it". Rules from your global config are not editable there — the row's menu says so before you try. Rules are addressed by a stable identity, not by their position, so a revoke on the web board while the terminal is open cannot land on the wrong rule.
 
 `F` drops every live *approval* and every cached value — the "lock it back up" button. Refusals you gave as *stop asking* survive it, because the panic button should never re-open a question you had closed.
+
+`D` only ever tightens. Turning a deny back into an allow on one keystroke, over whichever row the cursor happens to be on, is precisely the accident that deny-beating-allow exists to prevent — so loosening stays deliberate. `r` on an allow is one key, because it only tightens; `r` on a deny rule or a "stop asking" refusal opens a confirm that names exactly what will be asked about again, and only `y` accepts it.
 
 ```yaml
 # ~/.config/devtun/config.yaml

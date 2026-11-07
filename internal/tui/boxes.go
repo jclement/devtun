@@ -252,7 +252,7 @@ func (m *Model) wideHelpBox() string {
 // terminal instead of rendering a tall popup whose lower half is clipped.
 func (m *Model) compactHelpBox() string {
 	row := func(keys, desc string) string {
-		return "  " + ui.Banner.Render(pad(keys, 13)) + ui.Muted.Render(desc) + "\n"
+		return "  " + ui.Banner.Render(pad(keys, 16)) + ui.Muted.Render(desc) + "\n"
 	}
 	var b strings.Builder
 	b.WriteString(ui.Banner.Render("devtun "+m.d.version) + "\n")
@@ -260,7 +260,7 @@ func (m *Model) compactHelpBox() string {
 	b.WriteString(row("tab, ←→, 1-5", "switch tab"))
 	b.WriteString(row("↑↓ / j k / gG", "move / first / last"))
 	b.WriteString(row(": · /", "every action by name · search this tab"))
-	b.WriteString(row("c · w", "Config tab · web board"))
+	b.WriteString(row(". · c · w", "row actions (or right click) · Config · web"))
 	b.WriteString(row("m · R", "mouse off (select text) · reconnect"))
 	b.WriteString(ui.Muted.Render("a port") + "\n")
 	b.WriteString(row("enter, d", "detail"))
@@ -271,7 +271,7 @@ func (m *Model) compactHelpBox() string {
 	b.WriteString(row("s / r · p", "sort / reverse · pause"))
 	b.WriteString(ui.Muted.Render("other tabs") + "\n")
 	b.WriteString(row("f", "activity: filter by class"))
-	b.WriteString(row("r · D · y · F", "access: revoke · deny · copy ref · forget"))
+	b.WriteString(row("r · D · y · F", "access: revoke · deny · copy · forget"))
 	b.WriteString(row("e", "services: on/off for this host"))
 	b.WriteString(row("←→ · g", "config: change · this host or every host"))
 	b.WriteString(ui.Muted.Render("leave") + "\n")

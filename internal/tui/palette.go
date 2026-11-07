@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jclement/devtun/internal/ui"
 )
@@ -120,9 +121,9 @@ func (m *Model) actions() []action {
 		// asking for.
 		{title: "Revoke this rule or grant", short: "revoke", tab: tabAccess, key: "r", row: true, run: press("r"),
 			disabled: func(mm *Model) string { return mm.revokeBlocked() }, alt: "remove delete undo take back"},
-		{title: "Deny this instead — rewrite an allow as a deny", short: "deny", tab: tabAccess, key: "D", row: true, run: press("D"),
+		{title: "Make this rule a deny", short: "deny", tab: tabAccess, key: "D", row: true, run: press("D"),
 			disabled: func(mm *Model) string { return mm.denyBlocked() }, alt: "refuse block tighten never"},
-		{title: "Copy the reference — never the secret", short: "copy", tab: tabAccess, key: "y", row: true, run: press("y"),
+		{title: "Copy the reference, never the secret", short: "copy", tab: tabAccess, key: "y", row: true, run: press("y"),
 			disabled: func(mm *Model) string { return mm.copyBlocked() }, alt: "yank clipboard op://"},
 		{title: "Forget the live grants", short: "forget", tab: tabAccess, key: "F", run: press("F"),
 			disabled: func(mm *Model) string { return mm.forgetBlocked() }, alt: "lock revoke panic clear"},
@@ -420,13 +421,20 @@ func (m *Model) paletteBox() string {
 		b.WriteString("\n")
 	}
 	end := min(m.cmd.offset+m.paletteRoom(), len(m.cmd.matches))
+	// As wide as the longest title on screen, so no title is cut and the
+	// columns after it still line up.
+	titleW := 0
+	for i := m.cmd.offset; i < end; i++ {
+		titleW = max(titleW, ansi.StringWidth(m.cmd.matches[i].title)+2)
+	}
+	titleW = min(titleW, max(m.width-24, 20))
 	for i := m.cmd.offset; i < end; i++ {
 		act := m.cmd.matches[i]
 		where := act.tab.String()
 		if act.tab == tabCount {
 			where = "anywhere"
 		}
-		title := pad(act.title, 46)
+		title := pad(act.title, titleW)
 		if why := act.reason(m); why != "" && act.tab == m.tab {
 			// Dimmed, not hidden: it exists, it just cannot run on this row.
 			title = ui.Muted.Render(title)

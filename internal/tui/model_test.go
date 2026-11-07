@@ -997,7 +997,7 @@ func TestDenyRefusesWhatItCannotTighten(t *testing.T) {
 	if len(secrets.denied) != 0 {
 		t.Errorf("D rewrote a rule from the config file")
 	}
-	if !strings.Contains(m.toast.text, "edit it in your config.yaml") {
+	if !strings.Contains(m.toast.text, "edit it in config.yaml") {
 		t.Errorf("nothing said why:\n%s", plainView(m))
 	}
 }

@@ -630,6 +630,8 @@ func (m *Model) editorLabel() string {
 	case editorConfigValue:
 		prompt = m.configEditorPrompt()
 		hint = "blank clears · enter to save · esc to cancel"
+	case editorCommand:
+		prompt, hint = "command", "type to narrow · enter runs it · esc closes"
 	}
 	return ui.Banner.Render(prompt) + ui.Muted.Render(" ▸ ") + m.input.Render() +
 		ui.Muted.Render("   "+hint)
