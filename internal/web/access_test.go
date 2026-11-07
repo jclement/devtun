@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/service"
@@ -607,5 +609,36 @@ func TestARowShowsOnlyItsPrimaryAction(t *testing.T) {
 	}
 	if !strings.Contains(text, `tr:hover .reveal`) || !strings.Contains(text, `tr[aria-selected="true"] .reveal`) {
 		t.Error("the revealed action has no rule showing it on hover and selection")
+	}
+}
+
+// The TTL is bounded before it is multiplied into a Duration. A value large
+// enough to wrap to zero used to pass every check and come out as a session
+// grant.
+func TestAGrantTTLIsBoundedBeforeItCanOverflow(t *testing.T) {
+	s, vault := accessServer(t, &testBook{})
+	max := int(maxGrantTTL / time.Second)
+	grant := func(ttl string) int {
+		return post(t, s, "/api/grants/add", q("source", "1password", "host", "bedev",
+			"subject", "op://A/b/"+ttl, "action", "deny", "ttl", ttl)).Code
+	}
+	if code := grant(strconv.Itoa(max)); code != http.StatusOK {
+		t.Fatalf("ttl = a day exactly = %d, want 200", code)
+	}
+	for _, ttl := range []string{
+		strconv.Itoa(max + 1),
+		"36028797018963968", // × 1e9 wraps to exactly zero on 64 bits
+		"9223372036854775807",
+		"99999999999999999999", // does not parse as an int at all
+	} {
+		if code := grant(ttl); code != http.StatusBadRequest {
+			t.Errorf("ttl=%s = %d, want 400", ttl, code)
+		}
+	}
+	if got := vault.Grants(); len(got) != 1 {
+		t.Errorf("grants = %+v, want only the one-day refusal", got)
+	}
+	if got := vault.Grants(); len(got) == 1 && got[0].Expires.IsZero() {
+		t.Error("the one-day grant came out as a session grant")
 	}
 }

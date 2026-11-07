@@ -557,12 +557,15 @@ func (s *Server) handleAddGrant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "a grant has to cover something: subject is empty", http.StatusBadRequest)
 		return
 	}
+	// Bounded as seconds, before it becomes a Duration: multiplying first
+	// lets a large enough number wrap to zero, which is "this session" — the
+	// opposite of the refusal it should have been.
 	seconds, err := strconv.Atoi(q.Get("ttl"))
-	ttl := time.Duration(seconds) * time.Second
-	if err != nil || seconds < 0 || ttl > maxGrantTTL {
+	if err != nil || seconds < 0 || seconds > int(maxGrantTTL/time.Second) {
 		http.Error(w, "ttl is seconds, 0 for this session, at most a day — anything longer is a rule", http.StatusBadRequest)
 		return
 	}
+	ttl := time.Duration(seconds) * time.Second
 	if action == authz.ActionAllow && !needConfirm(w, r, "a new grant") {
 		return
 	}
