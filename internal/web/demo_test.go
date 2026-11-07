@@ -2,13 +2,17 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jclement/devtun/internal/approval"
 	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
+	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
 	"github.com/jclement/devtun/internal/tunnels"
@@ -116,13 +120,33 @@ func TestDemoBoard(t *testing.T) {
 			Status: tunnels.StatusActive, Scheme: tunnels.SchemeHTTPS, Mode: tunnels.ModeAuto, FirstSeen: now.Add(-5 * time.Minute), ActiveConns: 1},
 	)
 
+	// DEVTUN_WEB_DEMO_ASK=n puts n questions on the desk, oldest first, for
+	// trying the approval dialog — answering one shows the next.
+	var desk *approval.Desk
+	if n, _ := strconv.Atoi(os.Getenv("DEVTUN_WEB_DEMO_ASK")); n > 0 {
+		desk = approval.New(approval.Options{Publish: true})
+		for i := 0; i < n; i++ {
+			subject := fmt.Sprintf("op://Barreleye/Deploy/token-%d", i+1)
+			go func() {
+				_, _ = desk.Ask(context.Background(), prompt.Request{
+					Host: "bedev", Subject: subject, TTL: 5 * time.Minute,
+					Rows: []prompt.Row{{Label: "caller", Value: "deploy.sh"}},
+				})
+			}()
+			for len(desk.Waiting()) < i+1 {
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}
+
 	agentSvc := &namedVault{gatedVault: agent, id: "ssh-agent", title: "SSH agent", glyph: "⚿"}
 	s, err := New(Options{
 		Addr: addr, FixedAddr: true, Token: "demo", Host: "bedev", Version: "v0.1.22-demo",
-		Tunnels:  ports,
-		Services: []service.Service{vault, agentSvc},
-		Store:    &mapStore{values: map[string]string{"bedev/ssh-agent/unmatched": "deny"}},
-		Bus:      bus,
+		Tunnels:   ports,
+		Services:  []service.Service{vault, agentSvc},
+		Store:     &mapStore{values: map[string]string{"bedev/ssh-agent/unmatched": "deny"}},
+		Bus:       bus,
+		Approvals: desk,
 		Status: func() session.Status {
 			return session.Status{State: session.Connected, Since: now.Add(-14 * time.Minute)}
 		},

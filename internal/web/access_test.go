@@ -672,3 +672,38 @@ func TestABrowserDecisionReachesThePageWithItsSubject(t *testing.T) {
 		t.Errorf("event on the stream = %+v", view)
 	}
 }
+
+// An approval that appears under a moving pointer must not take the click aimed
+// at the board beneath it: a pointer cannot answer a question until that
+// question has been up for 800ms, and a replacement question starts again.
+// The keys are separate and immediate. The behaviour itself is exercised in a
+// real browser by the demo board (see the worker report); this pins the
+// wiring so a refactor cannot quietly drop it.
+func TestApprovalAnswersAreArmedPerQuestion(t *testing.T) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{
+		"const ASK_ARM_MS = 800;",
+		// armed afresh for every question drawn, inside renderAsk after the
+		// same-id early return
+		"askArmedAt = performance.now() + ASK_ARM_MS;",
+		// a pointer click (detail > 0) before arming, or one whose press began
+		// before arming, does nothing
+		"if (event.detail > 0 && (pressedEarly || !askArmed())) {",
+		// the keys answer directly, never through a click
+		"answerWithKey(buttons[n - 1]);",
+		"answerWithKey(buttons[buttons.length - 1]);",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the approval dialog is missing %q", want)
+		}
+	}
+	render := text[strings.Index(text, "function renderAsk("):]
+	render = render[:strings.Index(render, "\n}\n")]
+	if strings.Index(render, "if (askShown === ask.id) return;") > strings.Index(render, "askArmedAt = performance.now()") {
+		t.Error("the arming is reset on every poll, not once per question")
+	}
+}

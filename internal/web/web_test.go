@@ -1395,7 +1395,7 @@ func TestThePageHasNoUndeclaredNames(t *testing.T) {
 		"document": true, "window": true, "navigator": true, "location": true,
 		"console": true, "JSON": true, "Date": true, "Math": true, "Object": true,
 		"Array": true, "Number": true, "String": true, "Map": true, "Set": true,
-		"URL": true, "EventSource": true, "history": true, "localStorage": true, "sessionStorage": true, "AbortController": true, "Intl": true,
+		"URL": true, "EventSource": true, "history": true, "localStorage": true, "sessionStorage": true, "AbortController": true, "Intl": true, "performance": true,
 	}
 
 	// Any `name.method(` where `name` is not itself a property. The leading

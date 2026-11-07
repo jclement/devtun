@@ -214,6 +214,8 @@
     display: flex; gap: .6rem; align-items: baseline;
   }
   .ask .answers button .n { color: var(--muted); font-family: var(--mono); min-width: 1ch; }
+  /* Not yet answerable by a pointer: shown, readable, visibly not live. */
+  .ask .answers.arming button { opacity: .55; cursor: progress; }
   .ask .answers button:hover, .ask .answers button:focus-visible {
     border-color: var(--ok); color: var(--ok); outline: none;
   }
@@ -2029,13 +2031,33 @@ function renderAsk(waitingList) {
     body.append(el("p", "caveat", "these details come from the remote box and are not verified"));
   }
 
-  const answers = el("div", "answers");
+  // A question that appears under a moving pointer catches the click that was
+  // aimed at the board beneath it. So a pointer cannot answer until this
+  // question — this id; a replacement starts again — has been on screen for
+  // ASK_ARM_MS, and a press that began before then does not count when it is
+  // released after. The keys are separate and immediate, as in the terminal:
+  // a number is typed at the question, not at something under it.
+  const id = ask.id;
+  askArmedAt = performance.now() + ASK_ARM_MS;
+  const answers = el("div", "answers arming");
+  setTimeout(() => { if (askShown === id) answers.classList.remove("arming"); }, ASK_ARM_MS);
   (ask.options ?? []).forEach((option, i) => {
     const b = el("button");
     b.type = "button";
+    b.dataset.choice = String(option.choice);
     b.append(el("span", "n", String(i + 1)), document.createTextNode(option.label));
     if (!option.allows) b.className = "no";
-    b.onclick = () => answer(ask.id, option.choice);
+    let pressedEarly = false;
+    b.onpointerdown = () => { pressedEarly = !askArmed(); };
+    b.onclick = (event) => {
+      // detail is the click count: zero for Enter or Space on a focused
+      // button, which is the keyboard, and at least one for a pointer.
+      if (event.detail > 0 && (pressedEarly || !askArmed())) {
+        pressedEarly = false;
+        return;
+      }
+      answer(id, option.choice);
+    };
     answers.append(b);
   });
   body.append(answers);
@@ -2052,6 +2074,22 @@ function renderAsk(waitingList) {
 // askShown is the id currently drawn, so a poll does not rebuild the buttons
 // out from under a click.
 let askShown = null;
+
+// ASK_ARM_MS is how long a newly drawn question ignores the pointer — the
+// same 800ms the terminal's approvalArm uses.
+const ASK_ARM_MS = 800;
+let askArmedAt = 0;
+
+function askArmed() {
+  return performance.now() >= askArmedAt;
+}
+
+// answerWithKey answers from the keyboard, which is never held back by the
+// pointer's arming delay.
+function answerWithKey(b) {
+  if (!b || b.disabled || !askShown) return;
+  answer(askShown, Number(b.dataset.choice));
+}
 
 // alertSound is a short two-note ping, synthesised rather than fetched: the
 // page has to work with the network unplugged. Browsers refuse to make noise
@@ -2103,13 +2141,13 @@ document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       // The last option is always the most refusing one the menu offered.
       event.preventDefault();
-      buttons[buttons.length - 1].click();
+      answerWithKey(buttons[buttons.length - 1]);
       return;
     }
     const n = Number(event.key);
     if (Number.isInteger(n) && n >= 1 && n <= buttons.length) {
       event.preventDefault();
-      buttons[n - 1].click();
+      answerWithKey(buttons[n - 1]);
     }
     return;
   }
