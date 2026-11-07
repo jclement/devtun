@@ -145,6 +145,16 @@ this is 0.x, a minor bump may break something.
 
 ### Fixed — the interface
 
+- **Settings are written, classified and read the same way.** Choosing
+  *inherit* removes the key instead of storing the word; an option typed in
+  another case (`ASK`) is stored in its own spelling; the browser's `gate`
+  accepts only ask or auto. A literal `inherit` already in a file now means
+  inherit everywhere — for `unmatched`, `prompt` and `gate` — and a `gate`
+  value the browser does not recognise asks rather than opening unasked.
+- **A rule form that will write a grant, or a rule on another broker, is
+  classified as that.** Switching broker on an edit makes it a new rule, and
+  a lifetime other than *always* makes a new grant; an allow either way asks
+  first.
 - **Turning approvals back on, and turning the browser's gate off, ask
   first.** "Approvals appear" going from deny (nowhere to ask) to anywhere
   that can ask turns refusals into questions; "Ask before a site" going from

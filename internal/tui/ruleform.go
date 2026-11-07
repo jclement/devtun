@@ -55,13 +55,29 @@ func (fs fieldSet) subject(m *Model) string {
 }
 
 // cycleFormBroker steps the form's broker, unless it is locked to the
-// approval it came from.
+// approval it came from. On an in-place edit, switching broker makes it a new
+// rule: the rule being edited belongs to the other broker, and keeping its id
+// would let the form save something for one broker under the cover of an
+// edit to another.
 func (m *Model) cycleFormBroker(delta int) {
-	if m.form.answering != nil {
-		_ = m.showToast(toastMsg{text: "this rule is for the " + m.form.fields.source(m).title + " request waiting on it", bad: true})
+	f := m.form
+	if f.answering != nil {
+		_ = m.showToast(toastMsg{text: "this rule is for the " + f.fields.source(m).title + " request waiting on it", bad: true})
 		return
 	}
-	m.form.fields.cycleBroker(m, delta)
+	f.fields.cycleBroker(m, delta)
+	if f.editing != "" && f.fields.src != f.editSrc {
+		f.editing, f.original = "", authz.Rule{}
+		_ = m.showToast(toastMsg{text: "a different broker — this is now a new rule, not an edit"})
+	}
+}
+
+// isEdit reports whether saving will change the rule the form was opened on,
+// rather than add a rule or a grant: there is a rule being edited, the form
+// is still on its broker, and it still lasts always. commitForm and saveForm
+// both decide by this, so what is classified is what is written.
+func (f *formState) isEdit() bool {
+	return f.editing != "" && f.fields.src == f.editSrc && f.lasts == lastsAlways
 }
 
 // cycleBroker steps to the next broker, keeping what was typed where it still
@@ -296,6 +312,9 @@ type formState struct {
 	// edit. Empty makes a new one.
 	editing  string
 	original authz.Rule
+	// editSrc is the broker the edited rule belongs to. An edit is only an
+	// edit while the form is still on that broker and still writing a rule.
+	editSrc int
 	// answering is an approval the form was opened from. Saving a rule that
 	// covers its request answers it; cancelling goes back to it. The broker
 	// is locked to the request's while it is set: a rule for one broker must
@@ -335,7 +354,7 @@ func (m *Model) openForm(seed formSeed) tea.Cmd {
 		f.effect = authz.ActionAllow
 	}
 	if seed.editing != nil {
-		f.editing, f.original = seed.editing.ID, *seed.editing
+		f.editing, f.original, f.editSrc = seed.editing.ID, *seed.editing, seed.src
 		f.note.SetValue(seed.editing.Note)
 	}
 	// The cursor starts on the last field: widening op://Personal/Docker/PAT
@@ -439,8 +458,11 @@ func (m *Model) formBox() string {
 	}
 	src := f.fields.source(m)
 	title := "new rule"
-	if f.editing != "" {
+	switch {
+	case f.isEdit():
 		title = "change a rule"
+	case f.lasts != lastsAlways:
+		title = "new grant"
 	}
 	var b strings.Builder
 	b.WriteString(ui.Banner.Render(title) + ui.Muted.Render(" · "+src.title+" · for "+m.formHosts(f)) + "\n")
@@ -495,7 +517,7 @@ func (m *Model) formWrites(f *formState) string {
 	switch {
 	case f.lasts != lastsAlways:
 		return "a live grant — in memory, gone when devtun quits"
-	case f.editing != "":
+	case f.isEdit():
 		return "changes the rule in " + m.sourceWhere(f.original)
 	}
 	return "hosts/" + m.d.host + ".yaml · remembered: (devtun's rules, not yours)"
@@ -627,15 +649,19 @@ func (m *Model) saveForm() tea.Cmd {
 		}
 	}
 	save := func(mm *Model) tea.Cmd { return mm.commitForm(f, src, subject) }
-	matchChanged := f.editing != "" && f.original.Subject != subject
+	// Classify what commitForm will do, not what the form was opened for: a
+	// grant is a new grant even when the form began as an edit, and a rule
+	// on another broker is a new rule.
+	edit := f.isEdit()
+	matchChanged := edit && f.original.Subject != subject
 	switch {
-	case f.editing != "" && !matchChanged && f.original.Action == f.effect:
-		// Same rule, same pattern, same effect — a note changed. Nothing
-		// opens.
+	case edit && !matchChanged && f.original.Action == f.effect:
+		// Same rule, same broker, same pattern, same effect, still a rule —
+		// a note changed. Nothing opens.
 		return save(m)
 	case f.effect == authz.ActionDeny && !matchChanged:
-		// A new deny, or an allow turned into a deny over the same
-		// pattern: both only tighten.
+		// A new deny rule or refusal, or an allow turned into a deny over
+		// the same pattern: all only tighten.
 		return save(m)
 	case f.effect == authz.ActionDeny:
 		// An existing rule's match moved. For a deny that loosens whatever
@@ -670,11 +696,11 @@ func (m *Model) allowConfirm(f *formState, src accessSource, subject string, run
 	if strings.ContainsAny(subject, "*?[") {
 		body = append(body, ui.Muted.Render("That is "+itoa(n)+" thing"+plural(n)+" asked for this session, and anything else that fits."))
 	}
-	if f.editing != "" && f.original.Subject != subject {
+	if f.isEdit() && f.original.Subject != subject {
 		body = append(body, ui.Muted.Render("It replaces "+f.original.Subject))
 	}
 	title := "Allow this?"
-	if f.editing != "" {
+	if f.isEdit() {
 		title = "Widen this rule?"
 	}
 	return confirmState{title: title, body: body, yes: "allow it", no: "go back", danger: true, run: run}
@@ -698,7 +724,7 @@ func (m *Model) denyEditConfirm(f *formState, src accessSource, subject string, 
 // formHosts is who a rule from the form applies to: the edited rule's own
 // host pattern when it has one — the form never changes it — or this host.
 func (m *Model) formHosts(f *formState) string {
-	if f.editing == "" || f.original.Host == "" || f.original.Host == m.d.host {
+	if !f.isEdit() || f.original.Host == "" || f.original.Host == m.d.host {
 		return m.d.host
 	}
 	return hostScope(f.original.Host)
@@ -729,7 +755,7 @@ func (m *Model) commitForm(f *formState, src accessSource, subject string) tea.C
 			ttl = formGrantTTL
 		}
 		_, err = src.ctrl.AddGrant(authz.GrantSpec{Host: m.d.host, Subject: subject, Action: f.effect, TTL: ttl})
-	case f.editing != "":
+	case f.isEdit():
 		id := f.editing
 		if f.original.Subject != subject || f.original.Note != note {
 			var r authz.Rule

@@ -384,3 +384,93 @@ func TestConfigConfirmsPromptAndGateLoosening(t *testing.T) {
 		t.Error("gate auto → ask asked first or was not applied")
 	}
 }
+
+// --- R2: the save is classified by what it will actually write -------------
+
+// A browser allow for ** turned, by switching broker and lifetime, into a
+// 1Password grant for **: host-wide secret access. It must ask first, and it
+// must not be treated as an edit of the browser rule.
+func TestSwitchingBrokerAndLifetimeOnAnEditConfirmsTheNewGrant(t *testing.T) {
+	op := &stubSecrets{}
+	web := &stubSecrets{rules: []authz.Rule{{Host: "bedev", Subject: "**", Action: authz.ActionAllow, Source: authz.SourceRemembered}}}
+	bs := browser.Schema
+	web.schema = &bs
+	m := newTestModel(t, deps{secrets: []accessSource{
+		{id: "1password", title: "1Password", ctrl: op},
+		{id: "browser", title: "Browser", ctrl: web},
+	}})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	send(m, "3")
+	selectSubject(m, "**")
+	send(m, "w")
+	if !m.form.isEdit() {
+		t.Fatal("w on a remembered rule is not an edit")
+	}
+	m.form.focus = focusService
+	send(m, "left") // browser → 1password
+	if m.form.fields.source(m).id != "1password" {
+		t.Fatalf("the broker is %s", m.form.fields.source(m).id)
+	}
+	if m.form.editing != "" {
+		t.Error("switching broker kept the edit's id")
+	}
+	m.form.fields.values[0].SetValue("**")
+	m.form.lasts = lastsSession
+	send(m, "enter")
+	if m.confirm == nil {
+		t.Fatal("a new 1Password grant for ** was saved without a confirm")
+	}
+	if len(op.addedGrants) != 0 || len(web.updated) != 0 {
+		t.Fatalf("written before y: grants %+v, updates %+v", op.addedGrants, web.updated)
+	}
+	send(m, "y")
+	if len(op.addedGrants) != 1 || op.addedGrants[0].Subject != "**" || len(web.updated) != 0 {
+		t.Errorf("after y: grants %+v, browser updates %+v", op.addedGrants, web.updated)
+	}
+}
+
+// Same broker, but the lifetime turns the edit into a grant: that is a new
+// allow, and asks.
+func TestTurningAnEditIntoAGrantConfirms(t *testing.T) {
+	m, op := denyEditFixture(t)
+	selectSubject(m, "op://Work/Deploy/key") // the allow
+	send(m, "w")
+	m.form.lasts = lastsMinutes
+	send(m, "enter")
+	if m.confirm == nil {
+		t.Fatal("turning an allow rule's form into a 5m grant did not ask")
+	}
+	if len(op.addedGrants) != 0 || len(op.updated) != 0 {
+		t.Fatalf("written before y: grants %+v, updates %+v", op.addedGrants, op.updated)
+	}
+	if strings.Contains(m.confirm.title, "Widen this rule") {
+		t.Errorf("a new grant is described as widening the rule: %q", m.confirm.title)
+	}
+	send(m, "y")
+	if len(op.addedGrants) != 1 || op.addedGrants[0].TTL != formGrantTTL || len(op.updated) != 0 {
+		t.Errorf("after y: grants %+v, updates %+v", op.addedGrants, op.updated)
+	}
+}
+
+// The settings confirm says what this setting's change does, not a line that
+// is only true of some settings.
+func TestTheSettingsConfirmIsSpecificToTheSetting(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.SetSetting("bedev", "browser", "gate", "ask"); err != nil {
+		t.Fatal(err)
+	}
+	services := []service.Service{stubService{meta: service.Meta{ID: "browser", Title: "Browser", Glyph: "◱"}}}
+	m := newTestModel(t, deps{services: services, store: store})
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	send(m, "5")
+	for i, r := range m.cfgRows {
+		if r.setting != nil && r.setting.Key == "gate" {
+			m.setCursor(i)
+		}
+	}
+	send(m, "right")
+	text := strings.Join(m.confirm.body, "\n")
+	if !strings.Contains(text, "not consulted") || strings.Contains(text, "when none match") {
+		t.Errorf("the gate confirm should say rules are skipped too:\n%s", text)
+	}
+}
