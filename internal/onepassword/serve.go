@@ -365,7 +365,7 @@ func (l *link) requested(subject string) {
 func (l *link) allowed(subject string, why decision, elapsed time.Duration) {
 	l.event("allowed", event.Info,
 		fmt.Sprintf("gave %s %s (%s)", l.host, subject, why.reason),
-		append([]any{"subject", subject, "why", why.reason, "took", elapsed.Round(time.Millisecond)}, why.by.Fields()...)...)
+		append([]any{"host", l.host, "subject", subject, "why", why.reason, "took", elapsed.Round(time.Millisecond)}, why.by.Fields()...)...)
 }
 
 // cached records a request satisfied from memory. It is its own kind because
@@ -373,7 +373,7 @@ func (l *link) allowed(subject string, why decision, elapsed time.Duration) {
 // secret was fetched", and the record should not blur them.
 func (l *link) cached(subject string, why decision) {
 	l.event("cached", event.Info, fmt.Sprintf("gave %s %s from cache", l.host, subject),
-		append([]any{"subject", subject, "why", why.reason}, why.by.Fields()...)...)
+		append([]any{"host", l.host, "subject", subject, "why", why.reason}, why.by.Fields()...)...)
 }
 
 // denied records a refusal. Refusals are Info rather than Warn: denying is the
@@ -381,7 +381,7 @@ func (l *link) cached(subject string, why decision) {
 func (l *link) denied(subject string, why decision) {
 	l.event("denied", event.Info,
 		fmt.Sprintf("refused %s %s — %s", l.host, subject, why.reason),
-		append([]any{"subject", subject, "why", why.reason}, why.by.Fields()...)...)
+		append([]any{"host", l.host, "subject", subject, "why", why.reason}, why.by.Fields()...)...)
 }
 
 // failed records op, or the machinery around it, going wrong — which is neither
