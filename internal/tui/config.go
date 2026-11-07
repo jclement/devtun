@@ -150,8 +150,39 @@ func (m *Model) stepConfig(delta int) tea.Cmd {
 	return m.writeConfig(s, level, value)
 }
 
-// writeConfig applies one edit and says what happened to it.
+// writeConfig applies one edit and says what happened to it — after a confirm
+// when the settings catalogue says the edit loosens access. The catalogue
+// decides, not this tab, so the board and the terminal ask about the same
+// edits.
 func (m *Model) writeConfig(s *settings.Setting, level settings.Level, value string) tea.Cmd {
+	if why := settings.Loosening(s, level, value); why != "" {
+		shown := value
+		if shown == "" {
+			shown = "inherit"
+		}
+		where := "for " + m.d.host
+		if level == settings.LevelGlobal {
+			where = "for every host that does not set its own"
+		}
+		return m.ask(confirmState{
+			title: "Loosen " + s.Title + "?",
+			body: []string{
+				ui.Secret.Render(s.Title) + " → " + ui.Warn.Render(shown) + ui.Muted.Render("  ("+where+")"),
+				"",
+				why + ".",
+				ui.Muted.Render("Rules and grants are not touched; this is what happens when none match."),
+			},
+			yes:    "loosen it",
+			no:     "keep it",
+			danger: true,
+			run:    func(mm *Model) tea.Cmd { return mm.applyConfig(s, level, value) },
+		})
+	}
+	return m.applyConfig(s, level, value)
+}
+
+// applyConfig writes one edit with no questions asked.
+func (m *Model) applyConfig(s *settings.Setting, level settings.Level, value string) tea.Cmd {
 	result, err := settings.Apply(s, level, value, m.d.host)
 	if err != nil {
 		return m.showToast(toastMsg{text: firstLine(err.Error()), bad: true})

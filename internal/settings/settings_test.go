@@ -296,3 +296,69 @@ func TestTheUnmatchedSettingIsWhatTheBrokerReads(t *testing.T) {
 type stubPlain struct{ service.Service }
 
 func (stubPlain) Meta() service.Meta { return service.Meta{ID: "plain", Title: "plain"} }
+
+// An unmatched edit loosens when the effective policy goes from deny to ask —
+// directly, or by clearing a level so an ask is inherited. Tightening, and
+// edits that leave deny in force, do not.
+func TestLooseningClassifiesUnmatchedEdits(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		host, global  string
+		level         Level
+		value         string
+		wantLoosening bool
+	}{
+		{"host deny → ask", "deny", "", LevelHost, "ask", true},
+		{"host deny → inherit, global silent", "deny", "", LevelHost, "", true},
+		{"host deny → inherit spelled out", "deny", "", LevelHost, OptInherit, true},
+		{"host deny → inherit, global deny", "deny", "deny", LevelHost, "", false},
+		{"host ask → deny", "ask", "", LevelHost, "deny", false},
+		{"host silent → deny", "", "", LevelHost, "deny", false},
+		{"host ask over global deny → inherit", "ask", "deny", LevelHost, "", false},
+		{"global deny → ask", "", "deny", LevelGlobal, "ask", true},
+		{"global deny → inherit", "", "deny", LevelGlobal, "", true},
+		// This host keeps its own deny, but every other host inheriting the
+		// global deny would be loosened: still a loosening.
+		{"global deny → ask under a host deny", "deny", "deny", LevelGlobal, "ask", true},
+		{"global ask → deny", "", "ask", LevelGlobal, "deny", false},
+		// A value that is neither reads as deny, so replacing it with ask loosens.
+		{"host bad value → ask", "dney", "", LevelHost, "ask", true},
+		{"host ask → ask", "ask", "", LevelHost, "ask", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			store := newStore()
+			if c.host != "" {
+				_ = store.SetSetting("bedev", "ssh-agent", "unmatched", c.host)
+			}
+			if c.global != "" {
+				_ = store.SetSetting("", "ssh-agent", "unmatched", c.global)
+			}
+			d := deps(store)
+			d.Services = []service.Service{newGated("ssh-agent")}
+			got := Loosening(find(t, d, "unmatched.ssh-agent"), c.level, c.value)
+			if (got != "") != c.wantLoosening {
+				t.Errorf("Loosening = %q, want loosening %v", got, c.wantLoosening)
+			}
+		})
+	}
+}
+
+// Step is how a surface cycles a value; a step that loosens is classified the
+// same as typing the value would be.
+func TestAStepThatLoosensIsClassified(t *testing.T) {
+	store := newStore()
+	_ = store.SetSetting("bedev", "ssh-agent", "unmatched", "deny")
+	d := deps(store)
+	d.Services = []service.Service{newGated("ssh-agent")}
+	row := find(t, d, "unmatched.ssh-agent")
+	value, ok := Step(row, LevelHost, 1) // deny → inherit (the options wrap)
+	if !ok {
+		t.Fatal("unmatched does not step")
+	}
+	if Loosening(row, LevelHost, value) == "" {
+		t.Errorf("stepping deny → %q is not classified as loosening", value)
+	}
+	if Loosening(find(t, d, "prompt"), LevelHost, "all") != "" {
+		t.Error("a setting with no Loosens classified an edit")
+	}
+}

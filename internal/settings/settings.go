@@ -107,6 +107,22 @@ type Setting struct {
 	// than a refusal: the file may be perfectly right on the machine it is
 	// synced to next.
 	Unusable func() string
+	// Loosens reports what writing value at level would open up, or "" when
+	// it would not loosen anything. Nil for settings that cannot loosen
+	// access. It is the server-side answer to "does this edit need a
+	// confirm?", so every surface asks it rather than deciding for itself.
+	Loosens func(level Level, value string) string
+}
+
+// Loosening reports what writing value at level would open up, or "" when the
+// edit cannot loosen access — the question every surface asks before applying
+// a settings edit without a confirm. value is what the edit would write: an
+// option, a typed value, or "" / "inherit" to clear the level.
+func Loosening(s *Setting, level Level, value string) string {
+	if s == nil || s.Loosens == nil {
+		return ""
+	}
+	return s.Loosens(level, value)
 }
 
 // Writes reports whether the setting can be written at a level.
@@ -294,9 +310,52 @@ func (d Deps) policySettings() []*Setting {
 			}
 			return ""
 		}
+		title := meta.Title
+		row.Loosens = func(level Level, value string) string {
+			return unmatchedLoosens(row, level, value, title)
+		}
 		settings = append(settings, row)
 	}
 	return settings
+}
+
+// unmatchedLoosens is the Loosens of an unmatched row. The edit loosens when
+// the effective policy goes from deny to ask: an explicit ask, or clearing a
+// level so that what is inherited — the other level, or the default ask —
+// takes over. A host edit is worked out over both levels, because a host
+// clearing its deny loosens only if the global file does not also say deny. A
+// global edit is judged on the global file alone: it reaches every host that
+// does not decide for itself, so this host deciding for itself is no reason
+// not to ask.
+func unmatchedLoosens(row *Setting, level Level, value, title string) string {
+	effective := func(override bool) string {
+		for _, l := range row.Levels {
+			if level == LevelGlobal && l == LevelHost {
+				// A global edit reaches every host that does not decide
+				// for itself, not only this one — judge it on the global
+				// file alone, which is conservative for this host.
+				continue
+			}
+			v := row.Raw(l)
+			if override && l == level {
+				v = value
+			}
+			v = strings.ToLower(strings.TrimSpace(v))
+			if v == "" || v == OptInherit {
+				continue
+			}
+			if v != string(authz.ActionAsk) {
+				// Neither ask nor deny reads as deny: fail closed.
+				return string(authz.ActionDeny)
+			}
+			return v
+		}
+		return string(authz.ActionAsk)
+	}
+	if effective(false) == string(authz.ActionDeny) && effective(true) != string(authz.ActionDeny) {
+		return title + " requests that no rule or grant matches will be asked about instead of refused"
+	}
+	return ""
 }
 
 // ValidUnmatched refuses an unmatched value that is neither ask nor deny.
