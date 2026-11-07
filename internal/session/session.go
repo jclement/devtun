@@ -11,6 +11,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -196,9 +197,12 @@ func (s *Session) Status() Status {
 	return s.status
 }
 
-// RetryNow cuts short the wait before the next connection attempt, which is
-// what you press after opening a laptop lid: the backoff was measured against
-// an outage that has already ended.
+// RetryNow reconnects now. While waiting between attempts it cuts the wait
+// short, which is what you press after opening a laptop lid: the backoff was
+// measured against an outage that has already ended. While connected it drops
+// the connection and makes a fresh one — the reconnect the button promises,
+// for a setting that takes effect on the next connection or a link that is up
+// but no longer working.
 func (s *Session) RetryNow() {
 	select {
 	case s.retry <- struct{}{}:
@@ -255,6 +259,10 @@ func (s *Session) Run(ctx context.Context) error {
 
 		attempt = 0
 		started := time.Now()
+		// A press that arrived while this connection was being made has been
+		// answered by making it; left queued, it would tear down the
+		// connection it just asked for.
+		s.drainRetry()
 		s.report(Status{State: Connected, Since: started})
 		s.announce(reconnected, time.Since(lastDrop))
 
@@ -264,6 +272,14 @@ func (s *Session) Run(ctx context.Context) error {
 
 		if ctx.Err() != nil {
 			break
+		}
+		if errors.Is(err, errReconnectRequested) {
+			s.events.Emit(event.Event{
+				Kind: "reconnecting", Class: event.Lifecycle, Level: event.Info,
+				Text: "reconnecting to " + s.opts.Connector.Label() + ", as asked",
+			})
+			delay = minReconnectDelay
+			continue
 		}
 		if !s.opts.Reconnect {
 			return err
@@ -304,6 +320,19 @@ func detailOr(err error, fallback string) string {
 		return err.Error()
 	}
 	return fallback
+}
+
+// errReconnectRequested ends a live connection because RetryNow asked for a
+// fresh one. It is not a failure: Run reconnects at once, without a backoff and
+// without reporting the connection as lost.
+var errReconnectRequested = errors.New("reconnect requested")
+
+// drainRetry discards a queued RetryNow.
+func (s *Session) drainRetry() {
+	select {
+	case <-s.retry:
+	default:
+	}
 }
 
 // wait pauses before the next attempt, returning false if the session is

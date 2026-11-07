@@ -147,6 +147,8 @@ func (s *Session) serveOnce(ctx context.Context, conn Conn) (err error) {
 			return nil
 		}
 		return err
+	case <-s.retry:
+		return errReconnectRequested
 	case <-ctx.Done():
 		return nil
 	}

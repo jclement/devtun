@@ -579,3 +579,36 @@ func TestChatterOnTheRemoteIsNotAMissingSocket(t *testing.T) {
 		t.Errorf("a chatty login shell was read as a missing socket: %v", missing)
 	}
 }
+
+// TestRetryNowReconnectsALiveSession is the "reconnect only shortened the
+// backoff" bug. Pressed while connected, RetryNow used to queue a signal that
+// nothing read until the link dropped for some other reason. It must tear the
+// live connection down and make a fresh one, at once, without reporting a
+// lost connection.
+func TestRetryNowReconnectsALiveSession(t *testing.T) {
+	svc := &countingService{id: "tunnels", supported: true}
+	s, connector, bus := testSession(t, svc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Run(ctx) }()
+
+	waitFor(t, func() bool { return svc.attaches.Load() == 1 && s.Status().State == Connected })
+	s.RetryNow()
+
+	waitFor(t, func() bool { return svc.attaches.Load() == 2 })
+	if connector.count() != 2 {
+		t.Errorf("want a second connection, got %d", connector.count())
+	}
+	for _, e := range bus.History() {
+		if e.Kind == "disconnected" {
+			t.Errorf("a requested reconnect was reported as a lost connection: %q", e.Text)
+		}
+	}
+
+	// And it settles: one press is one reconnect, not a loop.
+	time.Sleep(100 * time.Millisecond)
+	if n := connector.count(); n != 2 {
+		t.Errorf("one press made %d connections", n)
+	}
+}
