@@ -657,21 +657,155 @@ func TestAFileBrokenWhileRunningIsReportedAndNotOverwritten(t *testing.T) {
 	}
 }
 
-// A devtun killed mid-write leaves its lock file behind; the next one must not
-// wait on it forever.
-func TestAnAbandonedLockIsBroken(t *testing.T) {
+// A lock held by a live writer must keep excluding others however old the
+// lock file looks. The earlier lock treated any lock older than ten seconds as
+// abandoned, so a writer paused that long had its lock stolen and then wrote
+// its stale document over the thief's deny.
+func TestALiveLockExcludesOtherWritersHoweverOld(t *testing.T) {
 	dir := t.TempDir()
+	release, err := lockDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	lock := filepath.Join(dir, ".devtun.lock")
-	writeFile(t, lock, "12345\n")
-	old := time.Now().Add(-time.Minute)
+	old := time.Now().Add(-time.Hour)
 	if err := os.Chtimes(lock, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := Open(dir).SetSetting("", "", KeyPrompt, "tui"); err != nil {
-		t.Fatalf("a stale lock blocked the write: %v", err)
+
+	done := make(chan error, 1)
+	go func() { done <- Open(dir).SetSetting("", "", KeyPrompt, "tui") }()
+	select {
+	case err := <-done:
+		t.Fatalf("a write went ahead while another writer held the lock (err=%v)", err)
+	case <-time.After(150 * time.Millisecond):
 	}
-	if _, err := os.Stat(lock); !os.IsNotExist(err) {
-		t.Error("the lock was not released after the write")
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("the write failed once the lock was free: %v", err)
+	}
+}
+
+// A writer that cannot get the lock in time gives up rather than writing.
+func TestAWriterThatCannotGetTheLockGivesUp(t *testing.T) {
+	dir := t.TempDir()
+	saved := lockWait
+	lockWait = 50 * time.Millisecond
+	t.Cleanup(func() { lockWait = saved })
+	release, err := lockDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := Open(dir).SetSetting("", "", KeyPrompt, "tui"); err == nil {
+		t.Fatal("a write succeeded without the lock")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.yaml")); !os.IsNotExist(err) {
+		t.Error("the file was written anyway")
+	}
+}
+
+// A person saving the file between devtun's read and its write must not be
+// overwritten. The edit callback is the barrier: it runs after the read and
+// before the write, which is exactly where an editor's save would land.
+func TestAHandEditDuringATransactionIsKept(t *testing.T) {
+	dir := t.TempDir()
+	store := Open(dir)
+	if err := store.For("bedev", "1password").Set("unmatched", "ask"); err != nil {
+		t.Fatal(err)
+	}
+	path := store.HostPath("bedev")
+
+	var once bool
+	err := store.For("bedev", "tunnels").EditNode("ports", func(*yaml.Node) (*yaml.Node, error) {
+		if !once {
+			once = true
+			edited := strings.Replace(readFile(t, path), "unmatched: ask", "unmatched: deny # tightened by hand", 1)
+			writeFile(t, path, edited)
+		}
+		n, err := toNode(map[int]portEntry{3000: {Label: "web"}})
+		return &n, err
+	})
+	if err != nil {
+		t.Fatalf("EditNode: %v", err)
+	}
+	after := readFile(t, path)
+	if !strings.Contains(after, "unmatched: deny") || !strings.Contains(after, "web") {
+		t.Errorf("want the hand edit and devtun's change both:\n%s", after)
+	}
+}
+
+// A file that changes on every attempt is a conflict, not a stale write.
+func TestAFileThatKeepsChangingIsAConflict(t *testing.T) {
+	dir := t.TempDir()
+	store := Open(dir)
+	if err := store.For("bedev", "1password").Set("unmatched", "ask"); err != nil {
+		t.Fatal(err)
+	}
+	path := store.HostPath("bedev")
+	n := 0
+	err := store.For("bedev", "tunnels").EditNode("ports", func(*yaml.Node) (*yaml.Node, error) {
+		n++
+		writeFile(t, path, "1password:\n  unmatched: deny\n# edit "+strings.Repeat("x", n)+"\n")
+		return scalarNode("x"), nil
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("want ErrConflict, got %v", err)
+	}
+	if strings.Contains(readFile(t, path), "tunnels") {
+		t.Error("devtun's change was written over a file that kept changing")
+	}
+}
+
+// Ambiguous YAML must not be read as whichever half a tree walk happens to
+// see. Each of these, read naively, drops a deny.
+func TestAmbiguousYAMLIsRefusedNotGuessed(t *testing.T) {
+	cases := map[string]string{
+		"duplicate section": "1password:\n  rules: [{subject: '**', action: deny}]\n1password:\n  rules: [{subject: '**', action: allow}]\n",
+		"duplicate key":     "1password:\n  rules: [{subject: '**', action: deny}]\n  rules: [{subject: '**', action: allow}]\n",
+		"alias":             "policy: &p\n  rules: [{subject: '**', action: deny}]\n1password: *p\n",
+		"merge key":         "policy: &p\n  rules: [{subject: '**', action: deny}]\n1password:\n  <<: *p\n",
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			store := Open(dir)
+			writeFile(t, store.HostPath("bedev"), content)
+			if store.HostErr("bedev") == nil {
+				t.Error("the file was accepted")
+			}
+			if err := store.For("bedev", "1password").Err(); err == nil {
+				t.Error("the section did not report its file")
+			}
+			if err := store.For("bedev", "tunnels").Set("ports", map[int]portEntry{}); !errors.Is(err, ErrUnreadable) {
+				t.Errorf("a write was not refused: %v", err)
+			}
+			if got := readFile(t, store.HostPath("bedev")); got != content {
+				t.Errorf("the file was rewritten:\n%s", got)
+			}
+		})
+	}
+}
+
+// A service section that is there but is not a map is unreadable policy, not
+// absent policy — and an edit must not replace it.
+func TestASectionOfTheWrongShapeIsAnError(t *testing.T) {
+	store := Open(t.TempDir())
+	writeFile(t, store.HostPath("bedev"), "1password: wrong\n")
+	var rules []map[string]string
+	if _, err := store.For("bedev", "1password").GetLocal("rules", &rules); err == nil {
+		t.Error("GetLocal read a scalar section as empty")
+	}
+	if _, err := store.For("bedev", "1password").Get("rules", &rules); err == nil {
+		t.Error("Get read a scalar section as empty")
+	}
+	if err := store.For("bedev", "1password").Set("rules", []string{}); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("an edit replaced a scalar section: %v", err)
+	}
+	// A blank section is null and means nothing is set.
+	writeFile(t, store.HostPath("bedev"), "1password:\n")
+	if _, err := store.For("bedev", "1password").GetLocal("rules", &rules); err != nil {
+		t.Errorf("a blank section should read as empty: %v", err)
 	}
 }
 

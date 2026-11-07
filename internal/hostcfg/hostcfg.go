@@ -16,6 +16,8 @@
 package hostcfg
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -400,24 +402,79 @@ func (s *Store) fail(f *file, at stamp, err error) error {
 
 // readDoc reads and parses one file. A missing file is an empty document.
 func readDoc(path string) (*yaml.Node, error) {
+	doc, _, err := readRaw(path)
+	return doc, err
+}
+
+// readRaw is readDoc that also returns the bytes it parsed — nil for a file
+// that does not exist — so a transaction can tell whether the file changed
+// underneath it before it writes.
+func readRaw(path string) (*yaml.Node, []byte, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return emptyDoc(), nil
+		return emptyDoc(), nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, data, fmt.Errorf("%s: %w", path, err)
 	}
 	if doc.Kind == 0 {
-		return emptyDoc(), nil // an empty file, or one that is only comments
+		return emptyDoc(), data, nil // an empty file, or one that is only comments
 	}
 	if root := docRoot(&doc); root.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("%s: expected a map of settings at the top level", path)
+		return nil, data, fmt.Errorf("%s: expected a map of settings at the top level", path)
 	}
-	return &doc, nil
+	if err := validateNode(docRoot(&doc)); err != nil {
+		return nil, data, fmt.Errorf("%s: %w", path, err)
+	}
+	return &doc, data, nil
+}
+
+// validateNode refuses the YAML this package cannot read unambiguously.
+//
+// Parsing into a node tree skips the checks decoding into a Go value would
+// make, and walking the tree by hand skips YAML's own resolution. Both gaps
+// failed open. A file with `1password:` twice — easy to produce by appending a
+// section to a file that already had one — read only the second, so a deny in
+// the first silently stopped applying. An alias (`1password: *p`) or a merge
+// key (`<<: *p`) read as nothing at all, so a deny reached through one was
+// never seen. Rather than resolve aliases while keeping them editable, which
+// is hard to get right, both are refused as unsupported: the file is reported,
+// every request through the policy it carries is refused, and nothing is
+// written over it. Anchors on their own are harmless and allowed.
+func validateNode(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.AliasNode:
+		return fmt.Errorf("line %d: aliases (*%s) are not supported here; write the value out", node.Line, node.Value)
+	case yaml.MappingNode:
+		seen := make(map[string]int, len(node.Content)/2)
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key.Kind != yaml.ScalarNode {
+				return fmt.Errorf("line %d: a key must be a plain name", key.Line)
+			}
+			if key.Tag == "!!merge" || key.Value == "<<" && key.Style == 0 {
+				return fmt.Errorf("line %d: merge keys (<<) are not supported here; write the keys out", key.Line)
+			}
+			if first, dup := seen[key.Value]; dup {
+				return fmt.Errorf("line %d: %q appears twice (first on line %d); only one can be meant", key.Line, key.Value, first)
+			}
+			seen[key.Value] = key.Line
+			if err := validateNode(node.Content[i+1]); err != nil {
+				return err
+			}
+		}
+	case yaml.SequenceNode, yaml.DocumentNode:
+		for _, child := range node.Content {
+			if err := validateNode(child); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // hostPath is where a host's file lives. The label is an ssh_config alias and
@@ -626,7 +683,29 @@ func (s *Store) fileFor(label string) *file {
 // lookup finds section.key in one file, nil when it is not there. The caller
 // holds s.mu.
 func (s *Store) lookup(label, section, key string) *yaml.Node {
-	return getPath(docRoot(s.fileFor(label).doc), section, key)
+	node, _ := s.lookupChecked(label, section, key)
+	return node
+}
+
+// lookupChecked is lookup that refuses a section of the wrong shape. A service
+// section that is present but is not a map — `1password: wrong` — is not "no
+// rules"; it is a policy nobody can read, and reading it as absent fails open.
+// An empty section (`1password:` with nothing after it) is null and reads as
+// absent, which is what somebody leaving it blank means. The caller holds s.mu.
+func (s *Store) lookupChecked(label, section, key string) (*yaml.Node, error) {
+	root := docRoot(s.fileFor(label).doc)
+	sec := getPath(root, section)
+	if err := sectionShape(sec, section); err != nil {
+		return nil, err
+	}
+	return getPath(sec, key), nil
+}
+
+func sectionShape(sec *yaml.Node, name string) error {
+	if sec == nil || sec.Kind == yaml.MappingNode || sec.Kind == yaml.ScalarNode && sec.Tag == "!!null" {
+		return nil
+	}
+	return fmt.Errorf("%s: expected a map of settings, found %q", name, scalarOf(*sec))
 }
 
 // scalarOf renders a stored document as the single line a settings screen can
@@ -691,7 +770,7 @@ func (c *Section) GetLocal(key string, v any) (bool, error) {
 	if c.label == "" {
 		return false, nil
 	}
-	return c.decode(c.store.lookup(c.label, c.service, key), key, "for "+c.label, v)
+	return c.read(c.label, key, "for "+c.label, v)
 }
 
 // GetGlobal reads only the global file's section, whichever view this is. It is
@@ -701,7 +780,17 @@ func (c *Section) GetLocal(key string, v any) (bool, error) {
 func (c *Section) GetGlobal(key string, v any) (bool, error) {
 	c.store.mu.Lock()
 	defer c.store.mu.Unlock()
-	return c.decode(c.store.lookup("", c.service, key), key, "from the global config", v)
+	return c.read("", key, "from the global config", v)
+}
+
+// read decodes one level's value, refusing a section of the wrong shape. The
+// caller holds the store's lock.
+func (c *Section) read(label, key, where string, v any) (bool, error) {
+	node, err := c.store.lookupChecked(label, c.service, key)
+	if err != nil {
+		return false, fmt.Errorf("reading %s.%s %s: %w", c.service, key, where, err)
+	}
+	return c.decode(node, key, where, v)
 }
 
 // Get decodes the document stored under key into v, reporting whether one was
@@ -711,11 +800,15 @@ func (c *Section) Get(key string, v any) (bool, error) {
 	defer c.store.mu.Unlock()
 
 	if c.label != "" {
-		if node := c.store.lookup(c.label, c.service, key); node != nil {
+		node, err := c.store.lookupChecked(c.label, c.service, key)
+		if err != nil {
+			return false, fmt.Errorf("reading %s.%s for %s: %w", c.service, key, c.label, err)
+		}
+		if node != nil {
 			return c.decode(node, key, "for "+c.label, v)
 		}
 	}
-	return c.decode(c.store.lookup("", c.service, key), key, "from the global config", v)
+	return c.read("", key, "from the global config", v)
 }
 
 func (c *Section) decode(node *yaml.Node, key, where string, v any) (bool, error) {
@@ -779,6 +872,11 @@ func (c *Section) EditNode(key string, edit func(current *yaml.Node) (*yaml.Node
 	c.store.mu.Lock()
 	defer c.store.mu.Unlock()
 	return c.store.transact(c.store.fileFor(c.label), func(root *yaml.Node) error {
+		// A section of the wrong shape is refused, not replaced: replacing it
+		// would write over whatever policy somebody meant it to hold.
+		if err := sectionShape(getPath(root, c.service), c.service); err != nil {
+			return fmt.Errorf("%w: %w", ErrUnreadable, err)
+		}
 		current := getPath(root, c.service, key)
 		if current != nil {
 			copied := *current
@@ -814,28 +912,83 @@ func (s *Store) transact(f *file, change func(root *yaml.Node) error) error {
 	}
 	defer unlock()
 
+	// The lock serialises devtun processes; an editor does not take it. So a
+	// person can save the file between our read and our write, and writing our
+	// document then would erase what they saved. The file is checked again
+	// immediately before the rename, and if it changed the whole transaction
+	// is run again against the new contents. A few attempts, then a conflict
+	// error rather than a write we know is stale.
+	for attempt := 0; ; attempt++ {
+		done, err := s.attempt(f, change)
+		if err != nil || done {
+			return err
+		}
+		if attempt+1 >= transactAttempts {
+			return fmt.Errorf("%w: %s kept changing while devtun was writing it", ErrConflict, f.path)
+		}
+	}
+}
+
+// transactAttempts bounds how often a transaction is retried because the file
+// changed underneath it.
+const transactAttempts = 4
+
+// ErrConflict is a write abandoned because the file kept changing under it.
+// Nothing was written; the change can be made again.
+var ErrConflict = errors.New("the file changed while devtun was writing it, so it was not changed")
+
+// attempt is one read-change-check-write. It reports done=false, with no error
+// and nothing written, when the file changed between the read and the write.
+// The caller holds s.mu and the directory lock.
+func (s *Store) attempt(f *file, change func(root *yaml.Node) error) (bool, error) {
 	// The file as it is now, not as we last saw it. That is the whole fix.
-	doc, err := readDoc(f.path)
+	doc, raw, err := readRaw(f.path)
 	if err != nil {
 		_ = s.fail(f, stamp{}, err)
-		return fmt.Errorf("%w: %w", ErrUnreadable, err)
+		return false, fmt.Errorf("%w: %w", ErrUnreadable, err)
 	}
+	before := fingerprint(f.path, raw)
 	if err := change(docRoot(doc)); err != nil {
-		return err
+		return false, err
 	}
 	if doc.HeadComment == "" && len(doc.Content) == 1 && doc.Content[0].HeadComment == "" {
 		doc.HeadComment = s.header(f)
 	}
-	if err := writeDoc(f.path, doc); err != nil {
-		return err
+	if err := writeDoc(f.path, doc, func() bool {
+		_, now, err := readRaw(f.path)
+		if err != nil && now == nil {
+			return false
+		}
+		return fingerprint(f.path, now) == before
+	}); err != nil {
+		if errors.Is(err, errChanged) {
+			return false, nil
+		}
+		return false, err
 	}
 	f.doc, f.err = doc, nil
 	if info, err := os.Stat(f.path); err == nil {
 		f.stamp = stampOf(info)
 	}
 	s.revision++
-	return nil
+	return true, nil
 }
+
+// fingerprint identifies one version of a file: whether it exists, its size
+// and modification time, and a hash of its bytes. The stamp alone could miss
+// an edit of the same length within one tick of a coarse clock; the hash
+// alone would not notice a file deleted and recreated identical.
+func fingerprint(path string, raw []byte) string {
+	sum := sha256.Sum256(raw)
+	at := "absent"
+	if info, err := os.Stat(path); err == nil {
+		at = fmt.Sprintf("%d/%d", info.Size(), info.ModTime().UnixNano())
+	}
+	return at + "/" + hex.EncodeToString(sum[:])
+}
+
+// errChanged is writeDoc's "the file moved under me; nothing written".
+var errChanged = errors.New("changed underneath")
 
 // header is the comment a file devtun creates starts with.
 func (s *Store) header(f *file) string {
@@ -850,47 +1003,51 @@ func (s *Store) header(f *file) string {
 // reaches disk before it returns, so there is never anything left to save.
 func (s *Store) Save() error { return nil }
 
-// lockDir takes the directory's lock file, so two devtun processes — two
-// sessions for different hosts share the global file — apply their
-// transactions one after the other rather than each writing back a file that
-// is missing the other's change.
+// lockDir takes the directory's lock, so two devtun processes — two sessions
+// for different hosts share the global file — apply their transactions one
+// after the other rather than each writing back a file that is missing the
+// other's change.
 //
-// It is a lock file created exclusively rather than flock, because devtun runs
-// on Windows too and an exclusive create means the same thing everywhere. A
-// process killed while holding it leaves the file behind, so one older than
-// lockStale is taken to be abandoned: every holder keeps it for the length of
-// one small write, and a write that has taken ten seconds is not still going.
+// It is an advisory lock the operating system holds for us — flock on unix,
+// LockFileEx on Windows — on a lock file that is never deleted. That matters
+// because the operating system releases it when the holder exits, however it
+// exits. An earlier version created the file exclusively and treated one older
+// than ten seconds as abandoned; a writer paused for longer than that (a
+// suspended laptop, a slow disk) then had its lock taken by a second writer,
+// and resumed to write its old document over the second one's deny. Age says
+// nothing about whether a holder is alive. The kernel knows.
 func lockDir(dir string) (func(), error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating %s: %w", dir, err)
 	}
 	path := filepath.Join(dir, ".devtun.lock")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("opening %s: %w", path, err)
+	}
 	deadline := time.Now().Add(lockWait)
 	for {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+		ok, err := tryLock(f)
+		if err != nil {
 			_ = f.Close()
-			return func() { _ = os.Remove(path) }, nil
+			return nil, fmt.Errorf("locking %s: %w", path, err)
 		}
-		if !errors.Is(err, fs.ErrExist) {
-			return nil, fmt.Errorf("locking %s: %w", dir, err)
-		}
-		if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) > lockStale {
-			_ = os.Remove(path)
-			continue
+		if ok {
+			// Closing the descriptor releases the lock; unlocking first is
+			// belt and braces for platforms that hold it until then anyway.
+			return func() { unlock(f); _ = f.Close() }, nil
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("another devtun has held %s for %s; not writing over it", path, lockWait)
+			_ = f.Close()
+			return nil, fmt.Errorf("another devtun has held %s for %s; not writing", path, lockWait)
 		}
 		time.Sleep(15 * time.Millisecond)
 	}
 }
 
-const (
-	lockWait  = 5 * time.Second
-	lockStale = 10 * time.Second
-)
+// lockWait bounds how long a write waits for another process's transaction.
+// A variable so a test can shorten it.
+var lockWait = 5 * time.Second
 
 // emptyDoc is a document holding an empty map: what a missing file reads as.
 func emptyDoc() *yaml.Node {
@@ -1016,7 +1173,13 @@ func toNode(v any) (yaml.Node, error) {
 // writeDoc writes atomically: a temporary file in the same directory, then a
 // rename. A settings file half-written because a laptop lid closed is worse
 // than one that is out of date.
-func writeDoc(path string, doc *yaml.Node) error {
+//
+// unchanged, when given, is asked immediately before the rename whether the
+// file is still the version the caller read; if not, nothing is written and
+// errChanged is returned. Between that check and the rename there remains a
+// window of a few system calls in which an editor's save would still be
+// replaced — see DESIGN §7c.
+func writeDoc(path string, doc *yaml.Node, unchanged func() bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
 	}
@@ -1043,6 +1206,9 @@ func writeDoc(path string, doc *yaml.Node) error {
 	// 0600 because a host file can carry policy that names vaults and hosts.
 	if err := os.Chmod(name, 0o600); err != nil {
 		return fmt.Errorf("setting permissions on %s: %w", path, err)
+	}
+	if unchanged != nil && !unchanged() {
+		return errChanged
 	}
 	if err := os.Rename(name, path); err != nil {
 		return fmt.Errorf("replacing %s: %w", path, err)
