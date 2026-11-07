@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jclement/devtun/internal/authz"
 	"io"
 	"net"
 	"strings"
@@ -91,17 +92,17 @@ func (s *Service) handleExec(ctx context.Context, l *link, request opRequest) *o
 		return refuse("no command given")
 	}
 	if err := s.currentGuard().Check(request.Argv); err != nil {
-		l.denied("op "+strings.Join(request.Argv, " "), err.Error())
+		l.denied("op "+strings.Join(request.Argv, " "), decision{reason: err.Error()})
 		return &opResponse{Exit: ExitDenied, Error: err.Error()}
 	}
 
 	subject := opref.Subject(request.Argv)
 	l.requested(subject)
 
-	allowed, reason, until := s.authorize(ctx, l, subject, request.Argv)
+	allowed, why, until := s.authorize(ctx, l, subject, request.Argv)
 	if !allowed {
-		l.denied(subject, reason)
-		return &opResponse{Exit: ExitDenied, Error: "denied by devtun: " + reason}
+		l.denied(subject, why)
+		return &opResponse{Exit: ExitDenied, Error: "denied by devtun: " + why.reason}
 	}
 
 	account := s.accountFor(subject)
@@ -111,19 +112,19 @@ func (s *Service) handleExec(ctx context.Context, l *link, request opRequest) *o
 	// instead of it, so a lapsed grant can never be satisfied from memory.
 	if key, ok := cacheKey(account, request.Argv); ok {
 		if cached, hit := s.cache.Get(key); hit {
-			l.cached(subject, reason)
+			l.cached(subject, why)
 			return &opResponse{Stdout: cached}
 		}
 		result, err := s.run(ctx, l, account, subject, request.Argv, request.Stdin)
 		if err != nil || result.Exit != 0 {
-			return s.respond(l, result, err, subject, reason, started)
+			return s.respond(l, result, err, subject, why, started)
 		}
 		s.cache.Put(key, result.Stdout, until)
-		return s.respond(l, result, nil, subject, reason, started)
+		return s.respond(l, result, nil, subject, why, started)
 	}
 
 	result, err := s.run(ctx, l, account, subject, request.Argv, request.Stdin)
-	return s.respond(l, result, err, subject, reason, started)
+	return s.respond(l, result, err, subject, why, started)
 }
 
 // run invokes op, keeping the error handling in one place.
@@ -140,11 +141,11 @@ func (s *Service) run(ctx context.Context, l *link, account, subject string, arg
 	return result, err
 }
 
-func (s *Service) respond(l *link, result opcli.Result, err error, subject, reason string, started time.Time) *opResponse {
+func (s *Service) respond(l *link, result opcli.Result, err error, subject string, why decision, started time.Time) *opResponse {
 	if err != nil {
 		return &opResponse{Exit: ExitProxyError, Error: err.Error()}
 	}
-	l.allowed(subject, reason, time.Since(started))
+	l.allowed(subject, why, time.Since(started))
 	return &opResponse{Exit: result.Exit, Stdout: result.Stdout, Stderr: result.Stderr}
 }
 
@@ -193,10 +194,10 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 		l.requested(subject)
 
 		argv := []string{"read", subject}
-		allowed, reason, until := s.authorize(ctx, l, subject, argv)
+		allowed, why, until := s.authorize(ctx, l, subject, argv)
 		if !allowed {
-			l.denied(subject, reason)
-			return &opResponse{Exit: ExitDenied, Error: fmt.Sprintf("denied by devtun: %s (%s)", subject, reason)}
+			l.denied(subject, why)
+			return &opResponse{Exit: ExitDenied, Error: fmt.Sprintf("denied by devtun: %s (%s)", subject, why.reason)}
 		}
 
 		account := s.accountFor(subject)
@@ -204,7 +205,7 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 
 		key, _ := cacheKey(account, argv)
 		if cached, hit := s.cache.Get(key); hit {
-			l.cached(subject, reason)
+			l.cached(subject, why)
 			secrets[raw] = trimSecret(cached)
 			continue
 		}
@@ -222,7 +223,7 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 			return &opResponse{Exit: ExitProxyError, Error: fmt.Sprintf("reading %s: %s", subject, message)}
 		}
 		s.cache.Put(key, result.Stdout, until)
-		l.allowed(subject, reason, time.Since(started))
+		l.allowed(subject, why, time.Since(started))
 		secrets[raw] = trimSecret(result.Stdout)
 	}
 	return &opResponse{Secrets: secrets}
@@ -236,7 +237,7 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 // Never the caller — that is the remote box describing itself, and a process
 // that wants a secret it should not have would describe itself however it had
 // to.
-func (s *Service) authorize(ctx context.Context, l *link, subject string, argv []string) (allowed bool, reason string, until time.Time) {
+func (s *Service) authorize(ctx context.Context, l *link, subject string, argv []string) (allowed bool, why decision, until time.Time) {
 	asked := s.gate.Authorize(ctx, prompt.Request{
 		Host:    l.host,
 		Subject: subject,
@@ -253,7 +254,14 @@ func (s *Service) authorize(ctx context.Context, l *link, subject string, argv [
 	} else if asked.Note != "" {
 		l.event("saved", event.Info, asked.Note)
 	}
-	return asked.Allowed, asked.Reason, asked.Until
+	return asked.Allowed, decision{reason: asked.Reason, by: asked.By}, asked.Until
+}
+
+// decision is why a request went the way it did: the sentence for a person, and
+// what decided, for the record.
+type decision struct {
+	reason string
+	by     authz.Decider
 }
 
 // trimSecret drops the newline `op read` prints after a value. Callers are
@@ -297,24 +305,26 @@ func (l *link) requested(subject string) {
 }
 
 // allowed records a granted request and how long it took.
-func (l *link) allowed(subject, reason string, elapsed time.Duration) {
+func (l *link) allowed(subject string, why decision, elapsed time.Duration) {
 	l.event("allowed", event.Info,
-		fmt.Sprintf("gave %s %s (%s)", l.host, subject, reason),
-		"why", reason, "took", elapsed.Round(time.Millisecond))
+		fmt.Sprintf("gave %s %s (%s)", l.host, subject, why.reason),
+		append([]any{"why", why.reason, "took", elapsed.Round(time.Millisecond)}, why.by.Fields()...)...)
 }
 
 // cached records a request satisfied from memory. It is its own kind because
 // "this secret did not leave the vault again" is a different fact from "this
 // secret was fetched", and the record should not blur them.
-func (l *link) cached(subject, reason string) {
-	l.event("cached", event.Info, fmt.Sprintf("gave %s %s from cache", l.host, subject), "why", reason)
+func (l *link) cached(subject string, why decision) {
+	l.event("cached", event.Info, fmt.Sprintf("gave %s %s from cache", l.host, subject),
+		append([]any{"why", why.reason}, why.by.Fields()...)...)
 }
 
 // denied records a refusal. Refusals are Info rather than Warn: denying is the
 // system working, not failing.
-func (l *link) denied(subject, reason string) {
+func (l *link) denied(subject string, why decision) {
 	l.event("denied", event.Info,
-		fmt.Sprintf("refused %s %s — %s", l.host, subject, reason), "why", reason)
+		fmt.Sprintf("refused %s %s — %s", l.host, subject, why.reason),
+		append([]any{"why", why.reason}, why.by.Fields()...)...)
 }
 
 // failed records op, or the machinery around it, going wrong — which is neither

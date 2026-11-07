@@ -115,6 +115,9 @@ type Options struct {
 
 // Service is the browser-bridge capability.
 type Service struct {
+	// Surface is the rules and grants, for the Access tab and the board.
+	authz.Surface
+
 	opts Options
 	gate *authz.Gate
 
@@ -136,15 +139,18 @@ func New(opts Options) *Service {
 	if opts.Bind == "" {
 		opts.Bind = "127.0.0.1"
 	}
+	gate := authz.NewGate(authz.Config{
+		DefaultTTL:    opts.DefaultTTL,
+		PromptTimeout: opts.PromptTimeout,
+		Rules:         opts.Rules,
+		Schema:        Schema,
+	}, opts.Prompter)
 	return &Service{
-		opts: opts,
-		gate: authz.NewGate(authz.Config{
-			DefaultTTL:    opts.DefaultTTL,
-			PromptTimeout: opts.PromptTimeout,
-			Rules:         opts.Rules,
-		}, opts.Prompter),
-		events: event.Discard,
-		ask:    askDefault(opts.Ask),
+		Surface: gate.Surface(),
+		opts:    opts,
+		gate:    gate,
+		events:  event.Discard,
+		ask:     askDefault(opts.Ask),
 	}
 }
 
@@ -164,17 +170,18 @@ func (s *Service) SetPrompter(p prompt.Prompter) { s.gate.SetPrompter(p) }
 // somebody meant.
 func (s *Service) CanAsk() bool { return s.gate.CanAsk() }
 
-// The rules surface the interface's Access tab drives. The browser never sees
-// a secret, so it has nothing cached to purge and reports one number.
-func (s *Service) Rules() []authz.Rule       { return s.gate.Rules() }
-func (s *Service) GlobalRules() []authz.Rule { return s.gate.GlobalRules() }
-func (s *Service) Revoke(index int) error    { return s.gate.Revoke(index) }
-func (s *Service) Deny(index int) error      { return s.gate.Deny(index) }
-func (s *Service) Grants() []authz.Grant     { return s.gate.Grants() }
-func (s *Service) Forget() int               { return s.gate.ForgetGrants() }
+// Forget drops every live allow grant. The browser never sees a secret, so it
+// has nothing cached to purge and reports one number. Refusals survive it.
+func (s *Service) Forget() int { return s.gate.ForgetGrants() }
 
-func (s *Service) RevokeGrant(host, subject string) bool {
-	return s.gate.RevokeGrant(host, subject)
+// Schema is what a browser subject is: a site.
+var Schema = authz.Schema{
+	Noun: "site",
+	Fields: []authz.Field{{
+		Name: "site", Label: "site",
+		Help: "the host a URL opens, e.g. github.com or localhost:3000 · * for any one name",
+	}},
+	PathLike: true,
 }
 
 // sink returns where to report, which is whichever host is attached now.
@@ -267,7 +274,7 @@ func (s *Service) HandleConn(ctx context.Context, conn net.Conn, caller service.
 	// seconds waiting for a tunnel it is never going to open, and the question
 	// is about the site as it was asked for rather than the rewritten address —
 	// "bedev wants to open github.com" is a sentence somebody can answer.
-	err := s.approve(ctx, label, request.URL, caller, events)
+	by, err := s.approve(ctx, label, request.URL, caller, events)
 
 	var target string
 	if err == nil {
@@ -288,13 +295,13 @@ func (s *Service) HandleConn(ctx context.Context, conn net.Conn, caller service.
 		events.Emit(event.Event{
 			Kind: "refused", Class: event.Network, Level: event.Warn,
 			Text:   fmt.Sprintf("did not open %s for %s: %v", shown, callerName(caller), err),
-			Fields: []any{"url", shown, "caller", caller.Program},
+			Fields: append([]any{"url", shown, "caller", caller.Program}, by.Fields()...),
 		})
 	default:
 		events.Emit(event.Event{
 			Kind: "opened", Class: event.Network, Level: event.Info,
 			Text:   fmt.Sprintf("opened %s for %s on %s", target, callerName(caller), label),
-			Fields: []any{"url", target, "requested", shown, "caller", caller.Program},
+			Fields: append([]any{"url", target, "requested", shown, "caller", caller.Program}, by.Fields()...),
 		})
 	}
 
@@ -314,17 +321,17 @@ func (s *Service) HandleConn(ctx context.Context, conn net.Conn, caller service.
 // — that the way to make it stop is to keep saying yes.
 func (s *Service) approve(
 	ctx context.Context, label, raw string, caller service.Caller, events event.Sink,
-) error {
+) (authz.Decider, error) {
 	s.mu.Lock()
 	ask := s.ask
 	s.mu.Unlock()
 	if !ask {
-		return nil
+		return authz.Decider{}, nil
 	}
 
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return fmt.Errorf("not a URL: %q", raw)
+		return authz.Decider{}, fmt.Errorf("not a URL: %q", raw)
 	}
 	subject := siteOf(parsed)
 
@@ -351,9 +358,9 @@ func (s *Service) approve(
 		})
 	}
 	if !asked.Allowed {
-		return fmt.Errorf("refused: %s", asked.Reason)
+		return asked.By, fmt.Errorf("refused: %s", asked.Reason)
 	}
-	return nil
+	return asked.By, nil
 }
 
 // siteOf names what is being decided.

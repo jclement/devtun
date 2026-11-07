@@ -96,6 +96,9 @@ type Options struct {
 // policy: reconnecting does not re-ask for a secret you approved a minute ago,
 // and a session grant lasts as long as devtun does.
 type Service struct {
+	// Surface is the rules and grants, for the Access tab and the board.
+	authz.Surface
+
 	opts  Options
 	gate  *authz.Gate
 	guard *opguard.Guard
@@ -109,13 +112,16 @@ type Service struct {
 // New builds the service. It touches nothing — no vault, no file, no network —
 // so it is safe to construct for a host that turns out not to support it.
 func New(opts Options) *Service {
+	gate := authz.NewGate(authz.Config{
+		DefaultTTL:    opts.DefaultTTL,
+		PromptTimeout: opts.PromptTimeout,
+		Rules:         opts.Rules,
+		Schema:        Schema,
+	}, opts.Prompter)
 	return &Service{
-		opts: opts,
-		gate: authz.NewGate(authz.Config{
-			DefaultTTL:    opts.DefaultTTL,
-			PromptTimeout: opts.PromptTimeout,
-			Rules:         opts.Rules,
-		}, opts.Prompter),
+		Surface: gate.Surface(),
+		opts:    opts,
+		gate:    gate,
 		guard: opguard.NewGuard(opguard.GuardConfig{
 			AllowCommands:    opts.AllowCommands,
 			AllowAllCommands: opts.AllowAllCommands,
@@ -257,35 +263,22 @@ func (s *Service) currentGuard() *opguard.Guard {
 // Forget drops every live grant and everything cached under one. It is the
 // "lock it back up" action, and the two have to happen together: a cached value
 // whose authorisation has been withdrawn is exactly what must not be served.
+//
+// Refusals survive it ("no, and stop asking" stays answered); the Access tab
+// drops those with ForgetRefusals, deliberately.
 func (s *Service) Forget() (grants, cached int) {
 	return s.gate.ForgetGrants(), s.cache.Purge()
 }
 
-// Rules exposes the rules devtun wrote for this host, for a caller that lists
-// or revokes them.
-func (s *Service) Rules() []authz.Rule { return s.gate.Rules() }
-
-// Revoke removes the host rule at index, as numbered by Rules.
-func (s *Service) Revoke(index int) error { return s.gate.Revoke(index) }
-
-// Deny turns the host rule at index into a refusal. It only tightens: see
-// authz.Store.Deny.
-func (s *Service) Deny(index int) error { return s.gate.Deny(index) }
-
-// GlobalRules are the rules from the top-level config: visible so a person can
-// see everything that is deciding, and not removable here because devtun did
-// not write them.
-func (s *Service) GlobalRules() []authz.Rule { return s.gate.GlobalRules() }
-
-// Grants lists the allowances a prompt created and that have not yet lapsed —
-// the access currently open in the user's name, as opposed to the rules on
-// disk. Forget() drops all of them at once; this is what makes it possible to
-// see one and drop just that one.
-func (s *Service) Grants() []authz.Grant { return s.gate.Grants() }
-
-// RevokeGrant drops a single live grant, reporting whether it was there.
-func (s *Service) RevokeGrant(host, subject string) bool {
-	return s.gate.RevokeGrant(host, subject)
+// Schema is what a 1Password subject is: one reference.
+var Schema = authz.Schema{
+	Noun: "secret",
+	Fields: []authz.Field{{
+		Name:  "reference",
+		Label: "reference",
+		Help:  "op://vault/item/field, or an op command line · * is one segment, ** is everything below",
+	}},
+	PathLike: true,
 }
 
 // opRunner resolves the 1Password CLI once and keeps it. Probe runs on every

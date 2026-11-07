@@ -862,7 +862,7 @@ func TestAlwaysWritesARuleToTheHostConfig(t *testing.T) {
 	}
 
 	var stored []authz.Rule
-	if _, err := h.host.config.Get(rulesKey, &stored); err != nil {
+	if _, err := h.host.config.Get("remembered", &stored); err != nil {
 		t.Fatalf("reading back the rules: %v", err)
 	}
 	if len(stored) != 1 || stored[0].Subject != "op://V/I/F" || stored[0].Action != authz.ActionAllow {
@@ -1036,7 +1036,7 @@ func TestAnAnswerThatRacesTheDeadlineIsRefused(t *testing.T) {
 	if allowed {
 		t.Fatal("an answer arriving after the deadline was treated as an approval")
 	}
-	if !strings.Contains(reason, "no answer within") {
+	if !strings.Contains(reason.reason, "no answer within") || reason.by.Kind != authz.ByTimeout {
 		t.Errorf("the refusal should say it timed out, got %q", reason)
 	}
 }

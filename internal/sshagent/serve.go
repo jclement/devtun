@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jclement/devtun/internal/authz"
 	"io"
 	"net"
 	"path"
@@ -131,7 +132,7 @@ func disconnected(ctx context.Context, err error) bool {
 // built from the key and the destination. Nothing the connection said about
 // itself takes part — an agent connection carries no provenance at all, and
 // what little the protocol offers would be the remote box describing itself.
-func (s *Service) authorize(ctx context.Context, l *link, subject string, dest destination) (allowed bool, reason string) {
+func (s *Service) authorize(ctx context.Context, l *link, subject string, dest destination) (allowed bool, reason decision) {
 	asked := s.gate.Authorize(ctx, prompt.Request{
 		Host:    l.host,
 		Subject: subject,
@@ -156,8 +157,18 @@ func (s *Service) authorize(ctx context.Context, l *link, subject string, dest d
 	} else if asked.Note != "" {
 		l.event("saved", event.Info, asked.Note)
 	}
-	return asked.Allowed, asked.Reason
+	return asked.Allowed, decision{reason: asked.Reason, by: asked.By}
 }
+
+// decision is why a signature went the way it did: the sentence for a person,
+// and what decided, for the record. It prints as the sentence, so it reads
+// naturally wherever a reason used to be a string.
+type decision struct {
+	reason string
+	by     authz.Decider
+}
+
+func (d decision) String() string { return d.reason }
 
 // link is one connection's surroundings: the authenticated host it arrived
 // from, and where its events go. The host label is what every decision is
@@ -192,18 +203,18 @@ func (l *link) requested(subject string, dest destination) {
 }
 
 // signed records a signature that was made, and how long the agent took.
-func (l *link) signed(subject, reason string, elapsed time.Duration) {
+func (l *link) signed(subject string, reason decision, elapsed time.Duration) {
 	l.event("signed", event.Info,
 		fmt.Sprintf("signed for %s: %s (%s)", l.host, subject, reason),
-		"why", reason, "took", elapsed.Round(time.Millisecond))
+		append([]any{"why", reason.reason, "took", elapsed.Round(time.Millisecond)}, reason.by.Fields()...)...)
 }
 
 // denied records a refused signature. Refusals are Info rather than Warn:
 // denying is the system working, not failing.
-func (l *link) denied(subject, reason string) {
+func (l *link) denied(subject string, reason decision) {
 	l.event("denied", event.Info,
 		fmt.Sprintf("refused %s a signature with %s — %s", l.host, subject, reason),
-		"why", reason)
+		append([]any{"why", reason.reason}, reason.by.Fields()...)...)
 }
 
 // listed records the remote box learning which keys are loaded. It is not an

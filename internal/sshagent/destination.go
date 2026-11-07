@@ -88,11 +88,15 @@ func (d destination) rows() []prompt.Row {
 // one of your keys cover all of them.
 //
 // It is matched against globs in the user's config, so it is a stable string
-// and not a rendering: `* → github.com` allows any key into GitHub, and
-// `ssh-ed25519 SHA256:… → **` allows one key anywhere.
+// and not a rendering. Matching is field by field (see Schema): `* → github.com`
+// allows any key into GitHub, and `ssh-ed25519 SHA256:… → *` allows one key
+// anywhere.
 func subjectFor(key ssh.PublicKey, dest destination) string {
-	return fmt.Sprintf("%s %s → %s", key.Type(), ssh.FingerprintSHA256(key), dest)
+	return fmt.Sprintf("%s %s%s%s", key.Type(), ssh.FingerprintSHA256(key), subjectSeparator, dest)
 }
+
+// subjectSeparator divides a subject's key from its destination.
+const subjectSeparator = " → "
 
 // sessionBind is the payload of a session-bind@openssh.com request: the
 // destination's host key, the session identifier, that host key's signature

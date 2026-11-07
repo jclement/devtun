@@ -86,6 +86,9 @@ type Options struct {
 // does not re-ask for a key you approved a minute ago, and a session grant
 // lasts as long as devtun does.
 type Service struct {
+	// Surface is the rules and grants, for the Access tab and the board.
+	authz.Surface
+
 	opts  Options
 	gate  *authz.Gate
 	names *hostNames
@@ -97,14 +100,17 @@ type Service struct {
 // New builds the service. It touches nothing — no agent, no file, no socket —
 // so it is safe to construct for a host that turns out not to support it.
 func New(opts Options) *Service {
+	gate := authz.NewGate(authz.Config{
+		DefaultTTL:    opts.DefaultTTL,
+		PromptTimeout: opts.PromptTimeout,
+		Rules:         opts.Rules,
+		Schema:        Schema,
+	}, opts.Prompter)
 	return &Service{
-		opts: opts,
-		gate: authz.NewGate(authz.Config{
-			DefaultTTL:    opts.DefaultTTL,
-			PromptTimeout: opts.PromptTimeout,
-			Rules:         opts.Rules,
-		}, opts.Prompter),
-		names: newHostNames(opts.KnownHosts),
+		Surface: gate.Surface(),
+		opts:    opts,
+		gate:    gate,
+		names:   newHostNames(opts.KnownHosts),
 	}
 }
 
@@ -202,32 +208,29 @@ func (s *Service) Attach(_ context.Context, h service.Host) (service.Instance, e
 	return &instance{}, nil
 }
 
-// Forget drops every live grant, which is the "lock it back up" action.
+// Forget drops every live allow grant, which is the "lock it back up" action.
+// Refusals survive it.
 func (s *Service) Forget() int { return s.gate.ForgetGrants() }
 
-// Rules exposes the rules devtun wrote for this host, for a caller that lists
-// or revokes them.
-func (s *Service) Rules() []authz.Rule { return s.gate.Rules() }
-
-// Revoke removes the host rule at index, as numbered by Rules.
-func (s *Service) Revoke(index int) error { return s.gate.Revoke(index) }
-
-// Deny turns the host rule at index into a refusal. It only tightens: see
-// authz.Store.Deny.
-func (s *Service) Deny(index int) error { return s.gate.Deny(index) }
-
-// GlobalRules are the rules from the top-level config: visible so a person can
-// see everything that is deciding, and not removable here because devtun did
-// not write them.
-func (s *Service) GlobalRules() []authz.Rule { return s.gate.GlobalRules() }
-
-// Grants lists the allowances a prompt created and that have not yet lapsed —
-// which keys may currently sign, for where, without asking again.
-func (s *Service) Grants() []authz.Grant { return s.gate.Grants() }
-
-// RevokeGrant drops a single live grant, reporting whether it was there.
-func (s *Service) RevokeGrant(host, subject string) bool {
-	return s.gate.RevokeGrant(host, subject)
+// Schema is what an agent subject is: a key, and where it is signing in to.
+//
+// They are two fields, matched one at a time, and `*` within a field matches
+// anything — slashes included. A fingerprint is base64 and about half of them
+// contain a `/`; matched as one path-like string, `* → github.com` silently
+// failed for every one of those keys.
+var Schema = authz.Schema{
+	Noun: "signature",
+	Fields: []authz.Field{
+		{
+			Name: "key", Label: "key",
+			Help: "key type and SHA256 fingerprint, e.g. ssh-ed25519 SHA256:… · * or ** for any key",
+		},
+		{
+			Name: "destination", Label: "destination",
+			Help: "the host being signed in to, as known_hosts names it · * for anywhere",
+		},
+	},
+	Separator: subjectSeparator,
 }
 
 // authSock is the local agent to forward.
