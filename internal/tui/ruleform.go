@@ -54,6 +54,16 @@ func (fs fieldSet) subject(m *Model) string {
 	return fs.source(m).ctrl.Schema().Join(vals)
 }
 
+// cycleFormBroker steps the form's broker, unless it is locked to the
+// approval it came from.
+func (m *Model) cycleFormBroker(delta int) {
+	if m.form.answering != nil {
+		_ = m.showToast(toastMsg{text: "this rule is for the " + m.form.fields.source(m).title + " request waiting on it", bad: true})
+		return
+	}
+	m.form.fields.cycleBroker(m, delta)
+}
+
 // cycleBroker steps to the next broker, keeping what was typed where it still
 // makes sense.
 func (fs *fieldSet) cycleBroker(m *Model, delta int) {
@@ -287,8 +297,14 @@ type formState struct {
 	editing  string
 	original authz.Rule
 	// answering is an approval the form was opened from. Saving a rule that
-	// covers its request answers it; cancelling goes back to it.
+	// covers its request answers it; cancelling goes back to it. The broker
+	// is locked to the request's while it is set: a rule for one broker must
+	// never answer another's question.
 	answering *approvalState
+	// orphaned says the approval the form came from has gone — answered on
+	// another surface, or timed out — so saving writes the rule and answers
+	// nothing.
+	orphaned bool
 }
 
 // formSeed is what a form starts with.
@@ -427,7 +443,14 @@ func (m *Model) formBox() string {
 		title = "change a rule"
 	}
 	var b strings.Builder
-	b.WriteString(ui.Banner.Render(title) + ui.Muted.Render(" · "+src.title+" · for "+m.d.host) + "\n\n")
+	b.WriteString(ui.Banner.Render(title) + ui.Muted.Render(" · "+src.title+" · for "+m.formHosts(f)) + "\n")
+	switch {
+	case f.answering != nil:
+		b.WriteString(ui.Muted.Render("for the request waiting on it — a rule that covers it answers it; esc goes back") + "\n")
+	case f.orphaned:
+		b.WriteString(ui.Warn.Render("the request this came from has gone (answered elsewhere, or timed out) — saving only writes the rule") + "\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(m.renderFields(f.fields, f.focus))
 	b.WriteString(strings.Repeat(" ", 14) + chip("ctrl+t", "widen: exact → * → **", false) + "\n")
 
@@ -556,9 +579,9 @@ func (m *Model) handleFormKey(msg tea.KeyPressMsg) tea.Cmd {
 	case f.focus == focusService:
 		switch msg.String() {
 		case "left", "h":
-			f.fields.cycleBroker(m, -1)
+			m.cycleFormBroker(-1)
 		case "right", "l", "space":
-			f.fields.cycleBroker(m, 1)
+			m.cycleFormBroker(1)
 		}
 	case f.focus == f.focusEffect():
 		switch msg.String() {
@@ -604,12 +627,22 @@ func (m *Model) saveForm() tea.Cmd {
 		}
 	}
 	save := func(mm *Model) tea.Cmd { return mm.commitForm(f, src, subject) }
-	if f.effect == authz.ActionDeny {
+	matchChanged := f.editing != "" && f.original.Subject != subject
+	switch {
+	case f.editing != "" && !matchChanged && f.original.Action == f.effect:
+		// Same rule, same pattern, same effect — a note changed. Nothing
+		// opens.
 		return save(m)
-	}
-	if f.editing != "" && f.original.Action == authz.ActionAllow && f.original.Subject == subject {
-		// Same allow, same pattern — a note changed. Nothing opens.
+	case f.effect == authz.ActionDeny && !matchChanged:
+		// A new deny, or an allow turned into a deny over the same
+		// pattern: both only tighten.
 		return save(m)
+	case f.effect == authz.ActionDeny:
+		// An existing rule's match moved. For a deny that loosens whatever
+		// the old pattern refused and the new one does not — narrowing or
+		// moving a refusal is a loosening, however much it looks like an
+		// edit to a deny.
+		return m.ask(m.denyEditConfirm(f, src, subject, save))
 	}
 	return m.ask(m.allowConfirm(f, src, subject, save))
 }
@@ -632,7 +665,7 @@ func (m *Model) allowConfirm(f *formState, src accessSource, subject string, run
 		ui.OK.Render("✓") + " " + ui.Muted.Render(ui.ShortService(src.id)) + " " + ui.Secret.Render(subject),
 		"  " + ui.Muted.Render(lasts),
 		"",
-		m.d.host + " gets what this matches without being asked.",
+		capitalize(m.formHosts(f)) + " " + gets(m.formHosts(f)) + " what this matches without being asked.",
 	}
 	if strings.ContainsAny(subject, "*?[") {
 		body = append(body, ui.Muted.Render("That is "+itoa(n)+" thing"+plural(n)+" asked for this session, and anything else that fits."))
@@ -645,6 +678,44 @@ func (m *Model) allowConfirm(f *formState, src accessSource, subject string, run
 		title = "Widen this rule?"
 	}
 	return confirmState{title: title, body: body, yes: "allow it", no: "go back", danger: true, run: run}
+}
+
+// denyEditConfirm is the question before changing what an existing deny
+// matches.
+func (m *Model) denyEditConfirm(f *formState, src accessSource, subject string, run func(*Model) tea.Cmd) confirmState {
+	body := []string{
+		ui.Error.Render("✕") + " " + ui.Muted.Render(ui.ShortService(src.id)) + " " + ui.Secret.Render(f.original.Subject),
+		"  " + ui.Muted.Render("becomes ") + ui.Secret.Render(subject),
+		"  " + ui.Muted.Render(m.sourceWhere(f.original)+" · applies to "+m.formHosts(f)),
+		"",
+		"Whatever the old pattern refused and the new one does not stops being",
+		"refused here: another rule decides it — an allow lets it through without",
+		"asking, or it is asked about, or refused if nothing matches and unmatched is deny.",
+	}
+	return confirmState{title: "Change what this deny refuses?", body: body, yes: "change it", no: "go back", danger: true, run: run}
+}
+
+// formHosts is who a rule from the form applies to: the edited rule's own
+// host pattern when it has one — the form never changes it — or this host.
+func (m *Model) formHosts(f *formState) string {
+	if f.editing == "" || f.original.Host == "" || f.original.Host == m.d.host {
+		return m.d.host
+	}
+	return hostScope(f.original.Host)
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+func gets(who string) string {
+	if strings.HasPrefix(who, "hosts ") || who == "all hosts" {
+		return "get"
+	}
+	return "gets"
 }
 
 // commitForm performs the write.
@@ -690,7 +761,9 @@ func (m *Model) commitForm(f *formState, src accessSource, subject string) tea.C
 	// it, that request gets the matching answer; otherwise it is back on
 	// screen, still waiting.
 	if a := f.answering; a != nil {
-		if covers(src.ctrl.Schema(), f.effect, subject, a.request.Subject) {
+		sameBroker := a.request.Service == src.id
+		sameHost := a.request.Host == m.d.host
+		if sameBroker && sameHost && covers(src.ctrl.Schema(), f.effect, subject, a.request.Subject) {
 			m.approval = a
 			choice := prompt.ChoiceAllowOnce
 			if f.effect == authz.ActionDeny {
@@ -710,26 +783,29 @@ func (m *Model) commitForm(f *formState, src accessSource, subject string) tea.C
 // waiting while the form is open.
 func (m *Model) widenFromApproval() tea.Cmd {
 	a := m.approval
-	src := m.sourceForRequest(a.request)
+	src, ok := m.sourceForRequest(a.request)
+	if !ok {
+		return m.showToast(toastMsg{text: "this request does not say which broker asked — answer it, then write the rule on Access", bad: true})
+	}
 	m.approval = nil
 	return m.openForm(formSeed{src: src, subject: a.request.Subject, effect: authz.ActionAllow, answering: a})
 }
 
-// sourceForRequest picks the broker a prompt request came from. The request
-// does not name it; a subject with a multi-field schema's separator in it
-// belongs to that broker, and anything else to the first single-field one.
-func (m *Model) sourceForRequest(r prompt.Request) int {
-	for i, src := range m.d.secrets {
-		if sep := src.ctrl.Schema().Separator; sep != "" && strings.Contains(r.Subject, sep) {
-			return i
-		}
+// sourceForRequest is the broker a prompt request came from, by the service
+// id the broker put on it. There is no guessing: two brokers have
+// single-field subjects, and a guess that picked 1Password for a browser
+// request would write the wrong broker's rule and answer the wrong question.
+// A request with no service id gets no form.
+func (m *Model) sourceForRequest(r prompt.Request) (int, bool) {
+	if r.Service == "" {
+		return 0, false
 	}
 	for i, src := range m.d.secrets {
-		if src.ctrl.Schema().Separator == "" {
-			return i
+		if src.id == r.Service {
+			return i, true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // covers is whether a rule with this effect and pattern applies to a subject,

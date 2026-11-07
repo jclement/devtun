@@ -916,7 +916,7 @@ func (m *Model) modalKeys() ([][2]string, bool) {
 	switch {
 	case m.approval != nil:
 		keys := [][2]string{{"1-9", "choose"}, {"enter", "choose"}}
-		if len(m.d.secrets) > 0 {
+		if _, ok := m.sourceForRequest(m.approval.request); ok {
 			keys = append(keys, [2]string{"w", "broader rule…"})
 		}
 		return append(keys, [2]string{"esc", "deny"}), true

@@ -163,6 +163,14 @@ func (m *Model) openApproval(msg approvalMsg) tea.Cmd {
 		msg.reply <- prompt.ChoiceDeny
 		return nil
 	}
+	// One question at a time is the prompter's promise, so a new one while
+	// an approval is parked in the rule form means that one is over — its
+	// cancellation is on its way. Detach it now rather than let the form
+	// bring a dead question back later.
+	if m.form != nil && m.form.answering != nil {
+		m.form.answering = nil
+		m.form.orphaned = true
+	}
 	// A request is worth interrupting whatever else is open for.
 	m.showHelp, m.showDetail, m.protocolPrompt, m.confirm, m.menu = false, false, false, nil, nil
 	m.closePalette()
@@ -191,6 +199,15 @@ type bellMsg struct{}
 func (m *Model) dismissApproval(reply chan<- prompt.Choice) {
 	if m.approval != nil && m.approval.reply == reply {
 		m.approval = nil
+	}
+	// An approval handed to the rule form is parked there, not on screen, and
+	// it is just as gone: answered on another surface, or out of time. Detach
+	// it so it can neither come back on esc nor be answered by a save. The
+	// form stays — what was typed is still a rule worth writing — and says the
+	// request has gone.
+	if m.form != nil && m.form.answering != nil && m.form.answering.reply == reply {
+		m.form.answering = nil
+		m.form.orphaned = true
 	}
 }
 
@@ -227,7 +244,7 @@ func (m *Model) handleApprovalKey(msg tea.KeyPressMsg) tea.Cmd {
 		// Every way of dismissing this means the same thing.
 		return m.answer(prompt.ChoiceDeny)
 	case "w":
-		if len(m.d.secrets) > 0 {
+		if _, ok := m.sourceForRequest(a.request); ok {
 			return m.widenFromApproval()
 		}
 	}
@@ -294,7 +311,11 @@ func (m *Model) approvalBox() string {
 		}
 		b.WriteString("  " + style.Render(label) + "\n")
 	}
-	b.WriteString("\n" + ui.Muted.Render("1-9, ↑↓ or click · enter choose · w write a broader rule… · esc deny"))
+	hint := "1-9, ↑↓ or click · enter choose · esc deny"
+	if _, ok := m.sourceForRequest(a.request); ok {
+		hint = "1-9, ↑↓ or click · enter choose · w write a broader rule… · esc deny"
+	}
+	b.WriteString("\n" + ui.Muted.Render(hint))
 	if ctx := m.approvalContext(a); ctx != "" {
 		b.WriteString("\n" + ui.Muted.Render(ctx))
 	}
@@ -316,7 +337,11 @@ func (m *Model) approvalContext(a *approvalState) string {
 	if len(m.d.secrets) == 0 {
 		return ""
 	}
-	src := m.d.secrets[m.sourceForRequest(a.request)]
+	i, ok := m.sourceForRequest(a.request)
+	if !ok {
+		return ""
+	}
+	src := m.d.secrets[i]
 	allows := 0
 	for _, r := range src.ctrl.Rules() {
 		if r.Action == authz.ActionAllow && r.Source != authz.SourceGlobal {

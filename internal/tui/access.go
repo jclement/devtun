@@ -759,26 +759,74 @@ func (m *Model) revokeSelected() tea.Cmd {
 // loosenConfirm is the question before removing a refusal.
 func (m *Model) loosenConfirm(row accessRow) confirmState {
 	title, what := "Remove a refusal?", "deny rule · "+m.sourceWhere(row.rule)
+	var who string
 	if row.isGrant {
 		title, what = "Stop refusing?", "\"No, and stop asking\" · this session"
+		who = row.grant.Host
+	} else {
+		// The rule's own host pattern, not this session's host: a rule in
+		// the global file, or one written for "dev-*", reaches further.
+		who = hostScope(row.rule.Host)
+		if row.rule.Host == m.d.host {
+			who = m.d.host
+		}
+		what += " · applies to " + who
 	}
 	if !row.isGrant && !row.rule.Added.IsZero() {
 		what += " · added " + ago(m.d.now().Sub(row.rule.Added))
 	}
+	body := []string{
+		ui.Error.Render("✕") + " " + ui.Muted.Render(row.svc()) + " " + ui.Secret.Render(row.subject()),
+		"  " + ui.Muted.Render(what),
+		"",
+	}
+	body = append(body, m.afterRemoval(row, who)...)
 	return confirmState{
-		title: title,
-		body: []string{
-			ui.Error.Render("✕") + " " + ui.Muted.Render(row.svc()) + " " + ui.Secret.Render(row.subject()),
-			"  " + ui.Muted.Render(what),
-			"",
-			m.d.host + " will be asked about it again, and a Yes will hand it over.",
-			ui.Muted.Render("Any other deny that matches still refuses it."),
-		},
+		title:  title,
+		body:   body,
 		yes:    "remove it",
 		no:     "keep refusing",
 		danger: true,
 		run:    func(mm *Model) tea.Cmd { return mm.doRevoke(row) },
 	}
+}
+
+// afterRemoval says what a request this refusal covers would get once it is
+// gone, from the store's own explanation with this refusal left out — rather
+// than promising a prompt that an allow underneath, or an unmatched deny,
+// would never show. The subject is the refusal's own pattern, so for a
+// wildcard it describes the representative request, and says so.
+func (m *Model) afterRemoval(row accessRow, who string) []string {
+	ex := row.source.ctrl.Explain(m.d.host, row.subject())
+	var next *authz.Matched
+	for i := range ex.Matches {
+		mt := ex.Matches[i]
+		if (mt.Rule != nil && !row.isGrant && mt.Rule.ID == row.rule.ID) ||
+			(mt.Grant != nil && row.isGrant && mt.Grant.ID == row.grant.ID) {
+			continue
+		}
+		// Evaluation order: the first remaining match decides.
+		next = &mt
+		break
+	}
+	var out []string
+	switch {
+	case next != nil && denyMatch(*next):
+		out = append(out, "It stays refused — another deny matches it:", "    "+m.matchLine(row.source, *next))
+	case next != nil:
+		out = append(out, capitalize(who)+" "+gets(who)+" it without being asked — an allow matches it:", "    "+m.matchLine(row.source, *next))
+	default:
+		word, _ := m.unmatchedWord(row.source)
+		if word == "ask" {
+			out = append(out, capitalize(who)+" will be asked about it again, and a Yes will hand it over.")
+		} else {
+			out = append(out, "Nothing else matches, and this broker refuses what nothing matches ("+word+") —", "so it stays refused unless a rule allows it later.")
+		}
+	}
+	if strings.ContainsAny(row.subject(), "*?[") {
+		out = append(out, ui.Muted.Render("For a pattern this is the likely outcome, not the only one: other requests it covers may meet other rules."))
+	}
+	return out
 }
 
 // doRevoke removes a row through whichever door it lives behind: a grant is

@@ -171,14 +171,14 @@ func TestCaptureScreens(t *testing.T) {
 
 		m = fresh()
 		reply := make(chan prompt.Choice, 1)
-		req := prompt.Request{Host: "bedev", Subject: "op://Shared/Dev/token", TTL: 5 * time.Minute,
+		req := prompt.Request{Service: "1password", Host: "bedev", Subject: "op://Shared/Dev/token", TTL: 5 * time.Minute,
 			Rows: []prompt.Row{{Label: "command", Value: "op read op://Shared/Dev/token"}}}
 		m.Update(approvalMsg{request: req, options: prompt.MenuFor(req), reply: reply})
 		save("approval-op", m, "an approval: host-wide options name the noun; w and the context line (mockup H)")
 		send(m, "w")
 		save("approval-w-form", m, "w in the approval: the form on the request; the request keeps waiting")
 		send(m, "esc")
-		sreq := prompt.Request{Host: "bedev", Subject: captureKey + " → gitlab.com", Noun: "key", Scope: "gitlab.com", TTL: 5 * time.Minute}
+		sreq := prompt.Request{Service: "ssh-agent", Host: "bedev", Subject: captureKey + " → gitlab.com", Noun: "key", Scope: "gitlab.com", TTL: 5 * time.Minute}
 		m.answer(prompt.ChoiceDeny)
 		m.Update(approvalMsg{request: sreq, options: prompt.MenuFor(sreq), reply: make(chan prompt.Choice, 1)})
 		save("approval-ssh", m, "an ssh approval: \"any signature from bedev\"")

@@ -319,7 +319,7 @@ func TestWidenFromTheApprovalAnswersWhatTheRuleCovers(t *testing.T) {
 	reply := make(chan prompt.Choice, 1)
 	ask := func() {
 		m.Update(approvalMsg{
-			request: prompt.Request{Host: "bedev", Subject: "op://Shared/Dev/token"},
+			request: prompt.Request{Service: "1password", Host: "bedev", Subject: "op://Shared/Dev/token"},
 			options: prompt.MenuFor(prompt.Request{Host: "bedev", Subject: "op://Shared/Dev/token", TTL: time.Minute}),
 			reply:   reply,
 		})

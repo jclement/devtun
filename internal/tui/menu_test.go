@@ -141,7 +141,9 @@ func TestRevokingADenyAsksFirst(t *testing.T) {
 	if m.confirm == nil {
 		t.Fatal("r on a deny rule did not ask")
 	}
-	if !strings.Contains(plainView(m), "asked about it again") {
+	// No allow underneath and no prompt surface in this fixture, so the
+	// honest consequence is that it stays refused.
+	if !strings.Contains(plainView(m), "stays refused") {
 		t.Errorf("the confirm does not say what happens next:\n%s", plainView(m))
 	}
 	send(m, "enter")
