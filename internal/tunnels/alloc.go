@@ -97,6 +97,18 @@ func (a *Allocator) Allocate(remotePort, preferred int) (net.Listener, bool, err
 	return a.record(remotePort, ln), true, nil
 }
 
+// Claim opens a listener on exactly port for remotePort, or fails: unlike
+// Allocate it never falls back to another port. It is for a caller that will
+// act on the number it asked for, where any other port would be a wrong
+// answer rather than a workaround.
+func (a *Allocator) Claim(remotePort, port int) (net.Listener, error) {
+	ln, err := a.listen("tcp", net.JoinHostPort(a.bind, strconv.Itoa(port)))
+	if err != nil {
+		return nil, &ConflictError{Port: port, Err: err}
+	}
+	return a.record(remotePort, ln), nil
+}
+
 // record remembers the assignment so a later reconnect can reuse it.
 func (a *Allocator) record(remotePort int, ln net.Listener) net.Listener {
 	a.mu.Lock()

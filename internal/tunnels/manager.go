@@ -618,8 +618,52 @@ func (m *Manager) SetLocalPort(remotePort, local int) error {
 // flow's callback has to arrive on the exact port the remote baked into its
 // redirect URI, but the throwaway high port it picked this once should not be
 // pinned for that host forever.
+//
+// It succeeds only with exactly that port, and a failure changes nothing. The
+// caller is about to open localhost:<local> on the strength of a nil error, so
+// a "success" that quietly landed somewhere else would point the browser at
+// whatever unrelated workstation service holds that port — an OAuth callback,
+// query string and all — while also moving the tunnel that was working. So the
+// exact port is claimed first, with the existing tunnel still up, and only then
+// is the tunnel moved onto it.
 func (m *Manager) TryLocalPort(remotePort, local int) error {
-	return m.setLocalPort(remotePort, local, false)
+	if local <= 0 || local > 65535 {
+		return fmt.Errorf("local port %d is out of range", local)
+	}
+
+	m.mu.Lock()
+	e, ok := m.entries[remotePort]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("remote port %d is not listed", remotePort)
+	}
+	if e.fwd == nil || m.dialer == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("remote port %d is not being forwarded", remotePort)
+	}
+	if m.stateLocked(e).LocalPort == local {
+		m.mu.Unlock()
+		return nil
+	}
+	ln, err := m.alloc.Claim(remotePort, local)
+	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
+
+	e.pinnedLocal = local
+	events := []event.Event{m.closeLocked(e, "relocating")}
+	now := m.now()
+	e.err = ""
+	port := e.svc.Port
+	e.fwd = newForwarder(ln, m.dialer, e.svc.DialAddr(), local != remotePort, now, func(scheme Scheme) {
+		m.observeScheme(port, scheme)
+	})
+	events = append(events, openedEvent(now, m.stateLocked(e)))
+	m.mu.Unlock()
+
+	m.emit(events)
+	return nil
 }
 
 func (m *Manager) setLocalPort(remotePort, local int, remember bool) error {

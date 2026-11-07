@@ -425,7 +425,9 @@ func (s *Service) localize(ctx context.Context, raw string) (string, error) {
 
 	local := state.LocalPort
 	// A redirect target that has moved port is a broken login flow, so take
-	// the matching number back when nothing else holds it.
+	// the matching number back when nothing else holds it. TryLocalPort
+	// succeeds only with exactly that port and changes nothing when it fails,
+	// so a nil error is what makes it safe to point the browser at it.
 	if state.Remapped {
 		if err := s.opts.Tunnels.TryLocalPort(remotePort, remotePort); err == nil {
 			local = remotePort

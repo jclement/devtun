@@ -1006,3 +1006,48 @@ func TestAHostsOwnHideListHidesARange(t *testing.T) {
 		t.Errorf("`on` did not beat the host's hide list, %d still hidden", got)
 	}
 }
+
+// TestTryLocalPortIsExactOrNothing is the browser-reclaim bug. A remapped
+// tunnel asked back onto its own number while something else holds that number
+// used to report success after quietly landing on a fresh ephemeral port — so
+// the browser opened localhost:<remote>, the unrelated service there, and the
+// working tunnel moved as well. It must fail, and leave the tunnel where it
+// was.
+func TestTryLocalPortIsExactOrNothing(t *testing.T) {
+	m, _, _ := newTestManager(t, DefaultPolicy())
+
+	remote := occupy(t)
+	m.Sync(snapshotOf(remote))
+	before := stateFor(t, m, remote)
+	if !before.Remapped || before.LocalPort == remote || before.LocalPort == 0 {
+		t.Fatalf("setup: want a remapped tunnel, got %+v", before)
+	}
+
+	if err := m.TryLocalPort(remote, remote); err == nil {
+		t.Fatal("TryLocalPort reported success for a port something else holds")
+	}
+	after := stateFor(t, m, remote)
+	if after.LocalPort != before.LocalPort {
+		t.Errorf("a failed try moved the tunnel from %d to %d", before.LocalPort, after.LocalPort)
+	}
+	if got := roundTrip(t, after.LocalPort, "hi"); got != "HI" {
+		t.Errorf("the tunnel stopped working after a failed try: %q", got)
+	}
+}
+
+// TestTryLocalPortMovesOntoAFreePort is the case the browser wants to work.
+func TestTryLocalPortMovesOntoAFreePort(t *testing.T) {
+	m, _, _ := newTestManager(t, DefaultPolicy())
+
+	remote, wanted := freePort(t), freePort(t)
+	m.Sync(snapshotOf(remote))
+	if err := m.TryLocalPort(remote, wanted); err != nil {
+		t.Fatalf("TryLocalPort: %v", err)
+	}
+	if st := stateFor(t, m, remote); st.LocalPort != wanted {
+		t.Errorf("local port = %d, want %d", st.LocalPort, wanted)
+	}
+	if got := roundTrip(t, wanted, "hi"); got != "HI" {
+		t.Errorf("round trip = %q", got)
+	}
+}
