@@ -43,7 +43,14 @@ this is 0.x, a minor bump may break something.
 ### Fixed
 
 - **The board removed a deny in one click.** Every change that loosens access
-  now asks first, and the server refuses it unconfirmed.
+  now asks first, and the server refuses it unconfirmed — on Config too, for
+  *unmatched*, *prompt* and the browser's *gate*, however the value is set.
+- **The board's approval answers took a click aimed at the page beneath.** A
+  pointer cannot answer a question until it has been up 800ms; the keys can.
+- **Browser decisions now name the site they were about**, as asked for, so
+  *explain* and *write a rule from this request* work for them.
+- **A grant TTL large enough to overflow** became a session grant; it is now
+  refused.
 - **Editing a config file while devtun runs no longer loses the edit.** devtun
   wrote back the copy of the host file it read at startup, whole, on its next
   change — so naming a port or answering *Always* erased a rule typed in a

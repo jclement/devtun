@@ -585,7 +585,13 @@ function authorised(init = {}) {
 
 async function api(path, method = "GET") {
   const response = await fetch(path, authorised({ method }));
-  if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
+  if (!response.ok) {
+    const failure = new Error((await response.text()).trim() || response.statusText);
+    // The status rides along: 428 is not a failure but devtun asking for the
+    // confirm a loosening change needs, with the sentence to show in it.
+    failure.status = response.status;
+    throw failure;
+  }
   return response.headers.get("content-type")?.includes("json") ? response.json() : null;
 }
 
@@ -601,6 +607,22 @@ async function act(path, done) {
     if (result?.text) toast(result.text, Boolean(result.warn));
     else if (done) toast(done, false);
   } catch (err) {
+    // A setting that would let more through — approvals turned back on, the
+    // browser no longer asking, "when nothing matches" back to ask — is
+    // refused until it is confirmed. The sentence is devtun's, worked out over
+    // both config files; the page only shows it.
+    if (err.status === 428 && path.startsWith("/api/config/")) {
+      confirmLoosen({
+        title: "Loosen this setting?",
+        consequence: err.message,
+        yes: "change it", no: "keep it as it is",
+        run: () => act(path + "&confirm=1", done),
+        // The control already shows the value that was not written; reading
+        // the settings back puts it where it really is.
+        cancel: refreshConfig,
+      });
+      return null;
+    }
     toast(err.message);
   }
   refresh();
@@ -1600,10 +1622,18 @@ function openModal(box, keys) {
   (box.querySelector("[autofocus]") || box.querySelector("input, select, button"))?.focus();
 }
 
+// modalDismissed runs when a dialog is closed without its action — the "no"
+// button, esc, or a click outside it — so a control that already moved can
+// be put back.
+let modalDismissed = null;
+
 function closeModal() {
   $("modal").hidden = true;
   $("modal").replaceChildren();
   modalKeys = null;
+  const dismissed = modalDismissed;
+  modalDismissed = null;
+  dismissed?.();
 }
 
 $("modal").addEventListener("click", (event) => { if (event.target === $("modal")) closeModal(); });
@@ -1631,7 +1661,7 @@ function confirmLoosen(c) {
   const no = button(c.no, closeModal, "", "esc");
   no.append(el("kbd", "", "n"));
   no.setAttribute("autofocus", "");
-  const yes = button(c.yes, () => { closeModal(); c.run(); }, "loosen");
+  const yes = button(c.yes, () => { modalDismissed = null; closeModal(); c.run(); }, "loosen");
   yes.append(el("kbd", "", "y"));
   buttons.append(no, yes);
   body.append(buttons);
@@ -1641,6 +1671,7 @@ function confirmLoosen(c) {
     if (event.key === "n") { event.preventDefault(); no.click(); return true; }
     return false;
   });
+  modalDismissed = c.cancel || null;
 }
 
 // The rule form: new, and edit. A rule, or — if "lasts" is a time — a live

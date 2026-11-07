@@ -159,6 +159,19 @@ func (s *Server) handleSetting(w http.ResponseWriter, r *http.Request) {
 		value = stepped
 	}
 
+	// Asked of the catalogue, never decided here: a setting that can loosen
+	// access — when nothing matches, where approvals appear, the browser's
+	// gate — says what this exact write would open up, worked out over both
+	// levels and whatever is inherited. Asked after a step has been resolved,
+	// so `step=` and `value=` and clearing a level are one question. The
+	// page shows the sentence in its confirm and sends confirm=1; anything
+	// that skips the dialog is refused, which is the same promise the Access
+	// endpoints make.
+	if why := settings.Loosening(setting, level, value); why != "" && r.URL.Query().Get(confirmParam) != "1" {
+		http.Error(w, why, http.StatusPreconditionRequired)
+		return
+	}
+
 	result, err := settings.Apply(setting, level, value, s.opts.Host)
 	if err != nil {
 		http.Error(w, firstLine(err.Error()), http.StatusBadRequest)
