@@ -18,6 +18,23 @@ func freePort(t *testing.T) int {
 	return LocalPort(ln)
 }
 
+// excludeFromWindow narrows a policy's port window so that it leaves out the
+// port it is given, whatever that port turned out to be.
+//
+// Tests used to set MinPort = 65000 on the theory that nothing ephemeral could
+// clear it. macOS now hands out ephemeral ports in the 65xxx range, so a freshly
+// allocated port landed inside the "excluded" window and the test asserted the
+// opposite of what it meant. The window is built around the port actually
+// allocated instead: everything above it, or — for the one port with nothing
+// above — everything below.
+func excludeFromWindow(p *Policy, port int) {
+	if port < 65535 {
+		p.MinPort, p.MaxPort = port+1, 65535
+		return
+	}
+	p.MinPort, p.MaxPort = 1024, port-1
+}
+
 // occupy binds a port for the duration of the test and returns it.
 func occupy(t *testing.T) int {
 	t.Helper()

@@ -301,11 +301,11 @@ func TestGlobalHideListAppliesWithoutBeingWrittenBack(t *testing.T) {
 
 // "On" is how you say "I know it is below the floor, forward it anyway".
 func TestModeOnBeatsAFilter(t *testing.T) {
+	port := freePort(t)
 	p := DefaultPolicy()
-	p.MinPort = 65000
+	excludeFromWindow(&p, port)
 	m, _, _ := newTestManager(t, p)
 
-	port := freePort(t)
 	m.Sync(snapshotOf(port))
 	if len(m.States()) != 0 {
 		t.Fatalf("expected the out-of-window port to be filtered out: %+v", m.States())

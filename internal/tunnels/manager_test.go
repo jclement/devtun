@@ -421,17 +421,17 @@ func TestManagerSetLabelIsRemembered(t *testing.T) {
 }
 
 func TestManagerSetPolicyReevaluatesEverything(t *testing.T) {
+	port := freePort(t)
 	p := DefaultPolicy()
-	p.MinPort = 65000 // nothing an ephemeral port can clear
+	excludeFromWindow(&p, port)
 	m, dialer, _ := newTestManager(t, p)
 
-	port := freePort(t)
 	m.Sync(snapshotOf(port))
 	if st := len(m.States()); st != 0 {
 		t.Fatalf("expected the out-of-window service to be filtered out, got %d rows", st)
 	}
 
-	p.MinPort = 1024
+	p.MinPort, p.MaxPort = 1024, 65535
 	m.SetPolicy(p)
 
 	if st := stateFor(t, m, port); st.Status != StatusActive {
