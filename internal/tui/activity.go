@@ -162,6 +162,5 @@ func (m *Model) activityDetailBox() string {
 		}
 		b.WriteString(row(key, fmt.Sprint(e.Fields[j+1])))
 	}
-	b.WriteString("\n" + ui.Muted.Render("esc to close"))
-	return m.boxOf(strings.TrimRight(b.String(), "\n"))
+	return m.detailFrame(b.String())
 }

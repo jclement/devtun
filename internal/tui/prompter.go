@@ -85,6 +85,21 @@ type approvalState struct {
 	// answered by a human who may be in another window, and a question that
 	// silently becomes a refusal is worse than one that says it is about to.
 	deadline time.Time
+	// opened is when the modal appeared. A click cannot answer it until it
+	// has been up for approvalArm.
+	opened time.Time
+}
+
+// approvalButtons makes each answer a whole-line click target.
+func (m *Model) approvalButtons() []button {
+	if m.approval == nil {
+		return nil
+	}
+	out := make([]button, 0, len(m.approval.options))
+	for i, item := range m.approval.options {
+		out = append(out, button{needle: fmt.Sprintf("%d  %s", i+1, item.Label), id: strconv.Itoa(i), wide: true})
+	}
+	return out
 }
 
 // Ask puts the request to the human and waits for an answer.
@@ -148,11 +163,13 @@ func (m *Model) openApproval(msg approvalMsg) tea.Cmd {
 		return nil
 	}
 	// A request is worth interrupting whatever else is open for.
-	m.showHelp, m.showDetail, m.protocolPrompt, m.confirming = false, false, false, false
+	m.showHelp, m.showDetail, m.protocolPrompt, m.confirm, m.menu = false, false, false, nil, nil
+	m.closePalette()
 	m.closeEditor()
 	m.approval = &approvalState{
 		request: msg.request, options: msg.options, reply: msg.reply,
 		deadline: msg.deadline,
+		opened:   m.d.now(),
 		// Where the cursor starts is the service's call: a one-off secret wants
 		// the narrowest option under the cursor, an agent signing for a `git
 		// push` wants the session one, or the menu costs a keystroke per
@@ -272,7 +289,7 @@ func (m *Model) approvalBox() string {
 		}
 		b.WriteString("  " + style.Render(label) + "\n")
 	}
-	b.WriteString("\n" + ui.Muted.Render("1-9 or ↑↓ · enter approve · esc deny"))
+	b.WriteString("\n" + ui.Muted.Render("1-9, ↑↓ or click · enter choose · esc deny"))
 	if left := time.Until(a.deadline).Round(time.Second); !a.deadline.IsZero() && left > 0 {
 		b.WriteString(ui.Muted.Render(fmt.Sprintf("  ·  refuses itself in %s", left)))
 	}

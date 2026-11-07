@@ -249,8 +249,14 @@ func TestSecretsTabListsRulesAndRevokesTheSelectedOne(t *testing.T) {
 	}
 
 	send(m, "down")
-	send(m, "down") // the second rule
+	send(m, "down") // the second rule, a deny
 	send(m, "r")
+	// Removing a deny loosens, so it asks first — and nothing is removed
+	// until the answer is yes.
+	if m.confirm == nil || len(secrets.revoked) != 0 {
+		t.Fatalf("r on a deny did not ask first: confirm=%v revoked=%v", m.confirm != nil, secrets.revoked)
+	}
+	send(m, "y")
 	if len(secrets.revoked) != 1 || secrets.revoked[0] != 1 {
 		t.Errorf("revoked %v, want the rule at index 1", secrets.revoked)
 	}
@@ -663,14 +669,14 @@ func TestQuittingAsksFirstAndCtrlCDoesNot(t *testing.T) {
 	m := newTestModel(t, deps{tunnels: newStub(row(3000, 3000, "node"))})
 
 	send(m, "esc")
-	if !m.confirming {
+	if m.confirm == nil {
 		t.Fatal("esc did not ask")
 	}
 	if !strings.Contains(plainView(m), "quit?") {
 		t.Errorf("the confirmation is not on screen:\n%s", plainView(m))
 	}
 	send(m, "n")
-	if m.confirming || m.quit {
+	if m.confirm != nil || m.quit {
 		t.Error("answering no did not put things back")
 	}
 
@@ -821,7 +827,7 @@ func TestSecretsTabListsLiveGrantsFirst(t *testing.T) {
 	}
 	// A host-wide grant is a different kind of thing and must not read like a
 	// grant for one secret.
-	if !strings.Contains(view, "anything from bedev") {
+	if !strings.Contains(view, "any secret from bedev") {
 		t.Errorf("a host-wide grant should say so:\n%s", view)
 	}
 	if !strings.Contains(view, "this session") {
@@ -875,7 +881,7 @@ func TestSecretsTabShowsGlobalRulesButWillNotRevokeThem(t *testing.T) {
 	if !strings.Contains(view, "op://Private/**") {
 		t.Errorf("a global rule is not listed:\n%s", view)
 	}
-	if !strings.Contains(view, "from your config") {
+	if !strings.Contains(view, "ALL HOSTS — your config.yaml") {
 		t.Errorf("a global rule should say where it came from:\n%s", view)
 	}
 
@@ -891,7 +897,7 @@ func TestSecretsTabShowsGlobalRulesButWillNotRevokeThem(t *testing.T) {
 	// fits the footer depends on the terminal width and, before this was
 	// fixed, on how long the machine's home directory happened to be — which
 	// is not what this test is about.
-	if !m.hasToast || !strings.Contains(m.toast.text, "config file") {
+	if !m.hasToast || !strings.Contains(m.toast.text, "config.yaml") {
 		t.Errorf("the refusal should say where to edit it instead, got %q", m.toast.text)
 	}
 }
@@ -906,7 +912,7 @@ func TestLiveRefusalReadsAsARefusal(t *testing.T) {
 	send(m, "3")
 
 	view := plainView(m)
-	if !strings.Contains(view, "refuse") {
+	if !strings.Contains(view, "stop-ask") {
 		t.Errorf("a deny grant should read as a refusal:\n%s", view)
 	}
 	if strings.Contains(view, "grant  ") {
@@ -991,7 +997,7 @@ func TestDenyRefusesWhatItCannotTighten(t *testing.T) {
 	if len(secrets.denied) != 0 {
 		t.Errorf("D rewrote a rule from the config file")
 	}
-	if !strings.Contains(plainView(m), "edit it there") {
+	if !strings.Contains(m.toast.text, "edit it in your config.yaml") {
 		t.Errorf("nothing said why:\n%s", plainView(m))
 	}
 }

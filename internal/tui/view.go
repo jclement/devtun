@@ -102,8 +102,10 @@ func (m *Model) frame() string {
 		view = overlayCenter(view, m.paletteBox(), m.width, m.height)
 	case m.setup != nil:
 		view = overlayCenter(view, m.setupBox(), m.width, m.height)
-	case m.confirming:
+	case m.confirm != nil:
 		view = overlayCenter(view, m.confirmBox(), m.width, m.height)
+	case m.menu != nil:
+		view = overlayCenter(view, m.menuBox(), m.width, m.height)
 	case m.showHelp:
 		view = overlayCenter(view, m.helpBox(), m.width, m.height)
 	case m.showDetail:
@@ -140,7 +142,10 @@ func (m *Model) baseView() string {
 	b.WriteByte('\n')
 	b.WriteString(m.boxLine(m.tabBar()))
 	b.WriteByte('\n')
-	b.WriteString(m.separator(""))
+	// The rule under the tabs says what the tab shows. Five tabs with
+	// one-word names do not explain themselves, and this line costs nothing:
+	// it was a bare rule before.
+	b.WriteString(m.separator(m.tabBlurb()))
 	b.WriteByte('\n')
 	b.WriteString(m.body())
 	b.WriteByte('\n')
@@ -191,11 +196,27 @@ func (m *Model) bodyHeight() int {
 
 // listTop is the first terminal row occupied by a selectable row.
 func (m *Model) listTop() int {
-	if m.tab == tabTunnels {
+	switch m.tab {
+	case tabTunnels:
 		// The summary strip and the column header sit above the data.
 		return rowBody + 2
+	case tabAccess:
+		// The column header.
+		if len(m.d.secrets) > 0 {
+			return rowBody + 1
+		}
 	}
 	return rowBody
+}
+
+// listBelow is how many body lines sit under the list: the Access tab's
+// "nothing matches" line, which stays put while the list scrolls because it
+// is the rule that applies to everything the list does not cover.
+func (m *Model) listBelow() int {
+	if m.tab == tabAccess && len(m.d.secrets) > 0 {
+		return 1
+	}
+	return 0
 }
 
 // tickerHeight is how many lines the activity pane gets.
@@ -248,7 +269,7 @@ func (m *Model) chrome() int {
 
 // listHeight is how many rows of the active tab's list fit on screen.
 func (m *Model) listHeight() int {
-	h := m.bodyHeight() - (m.listTop() - rowBody)
+	h := m.bodyHeight() - (m.listTop() - rowBody) - m.listBelow()
 	if h < 1 {
 		return 1
 	}
@@ -443,8 +464,65 @@ func (m *Model) statusLine() string {
 	if hidden > 0 {
 		parts = append(parts, ui.Muted.Render(fmt.Sprintf("%d hidden", hidden)))
 	}
-	parts = append(parts, ui.Muted.Render(FormatUptime(m.uptime())))
-	return strings.Join(parts, ui.Muted.Render(" · "))
+	uptime := ui.Muted.Render(FormatUptime(m.uptime()))
+
+	// What is being brokered goes before the uptime, and is the first thing
+	// to go when the frame is narrow: the connection, the LAN warning and the
+	// counts are the header's job, and the Services tab has the brokers too.
+	if b := m.brokering(); b != "" {
+		with := strings.Join(append(append([]string{}, parts...), b, uptime), ui.Muted.Render(" · "))
+		if 4+ansi.StringWidth(m.d.host)+10+ansi.StringWidth(with)+2 <= m.width {
+			return with
+		}
+	}
+	return strings.Join(append(parts, uptime), ui.Muted.Render(" · "))
+}
+
+// brokering names what devtun is brokering for this host, in the log's short
+// names: lit when running, dim when enabled but not (yet) up.
+func (m *Model) brokering() string {
+	var names []string
+	add := func(id string) {
+		style := ui.Muted
+		if m.svcState[id].running {
+			style = ui.Secret
+		}
+		names = append(names, style.Render(ui.ShortService(id)))
+	}
+	if len(m.d.services) > 0 {
+		for _, svc := range m.d.services {
+			meta := svc.Meta()
+			if meta.ID == "tunnels" || !m.serviceEnabled(meta) {
+				continue
+			}
+			add(meta.ID)
+		}
+	} else {
+		for _, src := range m.d.secrets {
+			add(src.id)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return ui.Muted.Render("brokering ") + strings.Join(names, " ")
+}
+
+// tabBlurb is the one line under the tab bar saying what this tab shows.
+func (m *Model) tabBlurb() string {
+	switch m.tab {
+	case tabTunnels:
+		return "ports listening on " + m.d.host + ", and where each reaches you here"
+	case tabActivity:
+		return "everything this session did, newest at the bottom · enter on a line for the whole of it"
+	case tabAccess:
+		return "what " + m.d.host + " may use in your name, and what decides it"
+	case tabServices:
+		return "what devtun brokers for " + m.d.host + ", and whether each is running"
+	case tabConfig:
+		return "devtun's settings, and which file each value came from"
+	}
+	return ""
 }
 
 // uptime is how long the current connection has been up, falling back to how
@@ -510,6 +588,13 @@ func (m *Model) viewChip() string {
 		if m.logFilter != "" {
 			parts = append(parts, ui.ClassStyle(m.logFilter).Render(string(m.logFilter)))
 		}
+	}
+	if m.mouseOff {
+		// Said where the scroll position is, because it explains why clicks
+		// have stopped doing anything.
+		parts = append(parts, ui.Warn.Render("mouse off · m"))
+	}
+	switch m.tab {
 	case tabConfig:
 		// Which file the next edit lands in, always on screen while the tab is.
 		// The wider-reaching target is the louder one: an edit meant for one
@@ -550,36 +635,37 @@ func (m *Model) editorLabel() string {
 		ui.Muted.Render("   "+hint)
 }
 
-// keyBar renders the clickable key hints for the active tab, dropping whole
+// keyBar renders the clickable actions valid right now, dropping whole
 // entries that do not fit rather than truncating one mid-word.
+//
+// It is built from the same catalogue as the palette and the row menu, and it
+// only lists what would work: with a global rule selected on Access there is
+// no `r revoke` in it, because pressing r there would only produce a toast
+// saying no. A key bar that advertises refusals is a cheat-sheet, not a guide.
 func (m *Model) keyBar() string {
-	// Deliberately short. Everything else is one keystroke away behind ?, and
-	// a key bar nobody can read is not a key bar.
-	keys := [][2]string{{"↑↓", "move"}}
-	switch m.tab {
-	case tabActivity:
-		keys = append(keys, [2]string{"f", "filter"}, [2]string{"/", "search"})
-	case tabAccess:
-		keys = append(keys, [2]string{"r", "revoke"}, [2]string{"D", "deny"}, [2]string{"y", "copy ref"})
-	case tabServices:
-		keys = append(keys, [2]string{"e", "enable"})
-	case tabConfig:
-		keys = append(keys, [2]string{"←→", "change"}, [2]string{"g", "where"}, [2]string{"enter", "edit"})
-	default:
-		keys = append(keys, [2]string{"x", "hide"}, [2]string{"n", "name"},
-			[2]string{"b", "browser"}, [2]string{"enter", "detail"})
+	var keys [][2]string
+	if m.hasSelection() {
+		for _, a := range m.rowActions() {
+			if a.short != "" && a.reason(m) == "" {
+				keys = append(keys, [2]string{displayKey(a.key), a.short})
+			}
+		}
+	} else if m.rowCount() > 0 {
+		keys = append(keys, [2]string{"↑↓", "select"})
 	}
-	// Not on the Config tab, where `c` is where you already are.
-	if m.tab != tabConfig {
-		keys = append(keys, [2]string{"c", "config"})
+	// What the tab can do with nothing selected.
+	for _, a := range m.actions() {
+		if a.tab == m.tab && !a.row && a.short != "" && (a.when == nil || a.when(m)) && a.reason(m) == "" {
+			keys = append(keys, [2]string{a.key, a.short})
+		}
 	}
-	// And only when there is a board. A key bar advertising something that is
-	// not running is worse than one that is a hint shorter.
-	if m.d.webURL != "" {
-		keys = append(keys, [2]string{"w", "web"})
+	if m.hasSelection() {
+		// Every action, the unavailable ones too, with reasons.
+		keys = append(keys, [2]string{".", "more"})
 	}
 	// `:` before `?`: it is the shorter path to the same knowledge, and the one
-	// somebody arriving from any other modern tool will already try.
+	// somebody arriving from any other modern tool will already try. These
+	// three are the last to go when the bar is narrow.
 	keys = append(keys, [2]string{":", "commands"}, [2]string{"?", "help"}, [2]string{"esc", "quit"})
 
 	// Reserve room for the right-hand chip plus the border decorations.
@@ -594,14 +680,13 @@ func (m *Model) keyBar() string {
 	// lost `? help` and `esc quit` first — leaving somebody who has just
 	// started devtun for the first time with no way on screen to learn either
 	// the keyboard or how to get out. Those two are the last to go.
-	keep := len(keys)
-	for keep > 2 {
-		if barWidth(keys[:keep]) <= budget {
-			break
-		}
-		// Remove the last hint before `?`/`esc`, which live at the end.
-		keys = append(keys[:keep-3], keys[keep-2:]...)
-		keep--
+	// The `:` commands entry outlives every contextual one: it is where all
+	// of them can still be found once they no longer fit.
+	for len(keys) > 3 && barWidth(keys) > budget {
+		keys = append(keys[:len(keys)-4], keys[len(keys)-3:]...)
+	}
+	if barWidth(keys) > budget && len(keys) == 3 {
+		keys = keys[1:]
 	}
 
 	sep := ui.Muted.Render(" · ")

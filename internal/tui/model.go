@@ -217,8 +217,15 @@ type Model struct {
 	// protocolPrompt asks http or https before opening a port we cannot
 	// classify.
 	protocolPrompt bool
-	confirming     bool
-	approval       *approvalState
+	// confirm is a question waiting on y or n: quitting, or anything that
+	// would loosen access or throw state away.
+	confirm  *confirmState
+	approval *approvalState
+	// menu is the action menu for the selected row.
+	menu *menuState
+	// detailScroll is how far a detail box taller than the window has been
+	// scrolled.
+	detailScroll int
 	setup          *setupState
 
 	status session.Status
@@ -230,12 +237,12 @@ type Model struct {
 	toastID  int
 	hasToast bool
 
-	lastClickPort int
-	lastClickAt   time.Time
 	// footerZones and tabZones map clickable spans, recorded as they render so
-	// a click always hits what is actually on screen.
-	footerZones []zone
-	tabZones    []zone
+	// a click always hits what is actually on screen. commandsZone is the
+	// "☰ commands" chip at the end of the tab bar.
+	footerZones  []zone
+	tabZones     []zone
+	commandsZone zone
 
 	dissolving *dissolve
 
@@ -306,14 +313,13 @@ func (m *Model) Err() error { return m.fatal }
 func (m *Model) editing() bool { return m.editor != editorNone }
 
 // overlayOpen reports whether a modal layer is covering the body.
-// overlayOpen reports whether a modal layer is covering the body.
 //
 // offline() belongs here and was missing, which made the "connection lost" box
 // the one overlay you could act straight through: a click still moved the
 // table's cursor and `x` still hid a port, behind a box that said the
 // connection was gone.
 func (m *Model) overlayOpen() bool {
-	return m.approval != nil || m.setup != nil || m.confirming || m.showHelp ||
+	return m.approval != nil || m.setup != nil || m.confirm != nil || m.menu != nil || m.showHelp ||
 		m.showDetail || m.protocolPrompt || m.editing() || m.offline() || m.cmd.open
 }
 
@@ -470,13 +476,16 @@ func (m *Model) rowCount() int {
 	}
 }
 
-// selectable reports whether a row can hold the cursor. Only the Config tab has
-// rows that cannot: its section headings are structure, not settings.
+// selectable reports whether a row can hold the cursor. Section headings — on
+// the Config and Access tabs — are structure, not things to act on.
 func (m *Model) selectable(i int) bool {
-	if m.tab != tabConfig {
-		return true
+	switch m.tab {
+	case tabConfig:
+		return i >= 0 && i < len(m.cfgRows) && m.cfgRows[i].setting != nil
+	case tabAccess:
+		return i >= 0 && i < len(m.accessRows) && m.accessRows[i].heading == ""
 	}
-	return i >= 0 && i < len(m.cfgRows) && m.cfgRows[i].setting != nil
+	return true
 }
 
 // nextSelectable walks from i in the direction of travel to the first row that
@@ -644,8 +653,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if m.setup != nil {
 		return m.handleSetupKey(msg)
 	}
-	if m.confirming {
+	if m.confirm != nil {
 		return m.handleConfirmKey(msg)
+	}
+	if m.menu != nil {
+		return m.handleMenuKey(msg)
 	}
 	// Before the editor, which the palette borrows for its own input line.
 	if m.cmd.open {
@@ -674,7 +686,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		case "esc", "enter", "d", "q":
 			m.showDetail = false
 			return nil
+		case "pgup", "ctrl+u":
+			m.detailScroll -= m.height / 2
+			return nil
+		case "pgdown", "ctrl+d":
+			m.detailScroll += m.height / 2
+			return nil
 		}
+		// Everything else falls through: ↑↓ walk the rows with the detail
+		// following, and an action's key runs it from here as it would
+		// from the list.
 	}
 	// The Config tab is the one that claims keys *before* the global handler:
 	// it needs ← and → to change a value, and `g` to arm which file an edit
@@ -710,8 +731,7 @@ func (m *Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return tea.Quit, true
 
 	case "q", "esc":
-		m.confirming = true
-		return nil, true
+		return m.confirmQuit(), true
 
 	// Left and right walk the tabs, which is what a hand reaches for before it
 	// finds tab/shift+tab. The places that need them for something of their
@@ -738,11 +758,11 @@ func (m *Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.move(m.listHeight())
 		return nil, true
 	case "home", "g":
-		m.setCursor(0)
+		m.setCursor(m.nextSelectable(0, 1))
 		m.clampCursor()
 		return nil, true
 	case "end", "G":
-		m.setCursor(m.rowCount() - 1)
+		m.setCursor(m.nextSelectable(m.rowCount()-1, -1))
 		m.clampCursor()
 		return nil, true
 
@@ -765,13 +785,22 @@ func (m *Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	case "R":
 		return m.reconnect(), true
 	case "m":
-		m.mouseOff = !m.mouseOff
-		if m.mouseOff {
-			return m.showToast(toastMsg{text: "mouse off — the terminal can select text again; m to switch back"}), true
-		}
-		return m.showToast(toastMsg{text: "mouse on — rows and tabs are clickable"}), true
+		return m.toggleMouse(), true
+	case ".":
+		return m.openMenu(), true
 	}
 	return nil, false
+}
+
+// toggleMouse hands the mouse to the terminal, so a drag selects text again,
+// or takes it back. While it is off the bottom border says so: clicks that
+// silently do nothing look like a broken interface.
+func (m *Model) toggleMouse() tea.Cmd {
+	m.mouseOff = !m.mouseOff
+	if m.mouseOff {
+		return m.showToast(toastMsg{text: "mouse off — drag to select text; m to switch back"})
+	}
+	return m.showToast(toastMsg{text: "mouse on — rows, tabs and buttons are clickable"})
 }
 
 // openWeb opens the browser board and puts its URL on the clipboard.
@@ -800,19 +829,8 @@ func (m *Model) selectTab(t tab) tea.Cmd {
 	}
 	m.tab = t
 	m.showDetail = false
+	m.menu = nil
 	m.clampCursor()
-	return nil
-}
-
-func (m *Model) handleConfirmKey(msg tea.KeyPressMsg) tea.Cmd {
-	switch msg.String() {
-	case "y", "Y", "enter":
-		m.confirming = false
-		return m.beginQuit()
-	case "n", "N", "esc", "q", "ctrl+c":
-		m.confirming = false
-		return nil
-	}
 	return nil
 }
 
@@ -899,72 +917,63 @@ func (m *Model) beginQuit() tea.Cmd {
 
 // --- mouse -----------------------------------------------------------------
 
-// doubleClickWindow is how close two clicks must be to count as a double click.
-const doubleClickWindow = 450 * time.Millisecond
+// approvalArm is how long an approval must have been on screen before a click
+// can answer it. The modal appears unannounced, often under a pointer that was
+// on its way to click something else; a click that lands on "Yes" in the
+// first instant was aimed at whatever was there before.
+const approvalArm = 800 * time.Millisecond
 
-// handleWheel scrolls the list regardless of where the pointer is.
+// handleWheel scrolls whatever is in front: an open list overlay moves its
+// cursor, a tall detail box scrolls, and otherwise the tab's list moves.
 func (m *Model) handleWheel(e tea.Mouse) tea.Cmd {
-	if m.dissolving != nil || m.overlayOpen() {
+	if m.dissolving != nil {
 		return nil
 	}
+	delta := 0
 	switch e.Button {
 	case tea.MouseWheelUp:
-		m.move(-1)
+		delta = -1
 	case tea.MouseWheelDown:
-		m.move(1)
+		delta = 1
+	default:
+		return nil
+	}
+	switch {
+	case m.cmd.open:
+		m.movePalette(delta)
+	case m.menu != nil:
+		m.menu.cursor = min(max(m.menu.cursor+delta, 0), len(m.menu.items)-1)
+	case m.showDetail && m.approval == nil && m.confirm == nil:
+		m.detailScroll += 3 * delta
+	case m.overlayOpen():
+	default:
+		m.move(delta)
 	}
 	return nil
 }
 
-// handleClick routes a left click over the whole interface: the tab bar
-// switches tab, the column headers sort, the key bar runs its action, a row
-// selects, the M and VIA cells cycle, a double click opens, and an open
-// overlay swallows the click.
+// handleClick routes a click over the whole interface. Overlays come first —
+// whatever is in front takes the click. Then the tab bar switches tab (and its
+// "☰ commands" chip opens the palette), the key bar runs its action, and a
+// row is selected; clicking the row that is already selected opens it, and a
+// right click opens its action menu.
 func (m *Model) handleClick(e tea.Mouse) tea.Cmd {
-	if m.dissolving != nil || e.Button != tea.MouseLeft {
+	if m.dissolving != nil {
 		return nil
 	}
-
-	// A request waiting on an answer is not something to click past — and
-	// neither is a lost connection, which used to be the one box you could
-	// reach through: a click behind it still moved the cursor, and `x` still
-	// hid a port, while the box said the link was gone.
-	if m.approval != nil || m.setup != nil || m.offline() {
+	right := e.Button == tea.MouseRight
+	if e.Button != tea.MouseLeft && !right {
 		return nil
 	}
-	if m.protocolPrompt {
-		if scheme, ok := m.protocolChoiceAt(e.X, e.Y); ok {
-			return m.chooseProtocol(scheme)
-		}
-		m.protocolPrompt = false
-		return nil
-	}
-	// A click anywhere dismisses a detail or help overlay, the way clicking
-	// outside a popover does everywhere else.
-	if m.showDetail || m.showHelp {
-		m.showDetail, m.showHelp = false, false
-		return nil
-	}
-	// The quit confirmation is deliberately modal: it must be answered.
-	if m.confirming {
-		return nil
-	}
-	// A click outside an open editor commits it rather than silently editing
-	// something else.
-	if m.editing() {
-		switch m.editor {
-		case editorLocalPort:
-			return m.applyLocalPort()
-		case editorPortLabel:
-			return m.applyLabel()
-		case editorConfigValue:
-			return m.applyConfigValue()
-		}
-		m.closeEditor()
-		return nil
+	if cmd, handled := m.clickOverlay(e.X, e.Y, right); handled {
+		return cmd
 	}
 
 	if e.Y == rowTabs {
+		if m.commandsZone.contains(e.X) {
+			m.openPalette()
+			return nil
+		}
 		if t, ok := m.tabAt(e.X); ok {
 			return m.selectTab(t)
 		}
@@ -983,15 +992,157 @@ func (m *Model) handleClick(e tea.Mouse) tea.Cmd {
 	}
 
 	if m.tab == tabTunnels {
-		return m.handleTunnelsClick(e)
+		return m.handleTunnelsClick(e, right)
 	}
-	// A click on a Config section heading selects nothing: it is a label, and
+	// A click on a section heading selects nothing: it is a label, and
 	// moving the cursor onto it would arm keys that have nothing to act on.
-	if i := m.rowAt(e.Y); i >= 0 && m.selectable(i) {
-		m.setCursor(i)
-		m.clampCursor()
+	i := m.rowAt(e.Y)
+	if i < 0 || !m.selectable(i) {
+		return nil
+	}
+	return m.clickRow(i, right)
+}
+
+// clickRow is what a click on a list row does, on every tab alike: select it;
+// a second click — a double click, or a click on the row already selected —
+// opens it; a right click opens its menu.
+func (m *Model) clickRow(i int, right bool) tea.Cmd {
+	was := m.cursor() == i
+	m.setCursor(i)
+	m.clampCursor()
+	switch {
+	case right:
+		return m.openMenu()
+	case was:
+		return m.openRow()
 	}
 	return nil
+}
+
+// openRow opens the selected row: its detail, on the tabs that have one, and
+// its action menu on the ones that do not.
+func (m *Model) openRow() tea.Cmd {
+	switch m.tab {
+	case tabTunnels, tabActivity, tabAccess:
+		m.detailScroll = 0
+		m.showDetail = true
+		return nil
+	}
+	return m.openMenu()
+}
+
+// clickOverlay gives a click to the overlay in front, reporting whether there
+// was one. The order is frame()'s, so the box that takes a click is the box
+// that is drawn on top.
+func (m *Model) clickOverlay(x, y int, right bool) (tea.Cmd, bool) {
+	switch {
+	case m.approval != nil:
+		// A request waiting on an answer is not something to click past. Its
+		// answers are clickable — but only once the box has been up long
+		// enough to have been seen, and never with the right button.
+		if right || m.d.now().Sub(m.approval.opened) < approvalArm {
+			return nil, true
+		}
+		if id, ok := m.hitButton(m.approvalBox(), m.approvalButtons(), x, y); ok {
+			n, _ := strconv.Atoi(id)
+			return m.answer(m.approval.options[n].Choice), true
+		}
+		return nil, true
+
+	case m.cmd.open:
+		box := m.paletteBox()
+		if id, ok := m.hitButton(box, m.paletteButtons(), x, y); ok {
+			n, _ := strconv.Atoi(id)
+			return m.runPaletteAction(m.cmd.matches[n]), true
+		}
+		if !m.insideBox(box, x, y) {
+			m.closePalette()
+		}
+		return nil, true
+
+	case m.setup != nil:
+		if id, ok := m.hitButton(m.setupBox(), []button{{needle: "y add it", id: "y"}, {needle: "n leave it alone", id: "n"}}, x, y); ok {
+			return m.handleSetupKey(keyPress(id)), true
+		}
+		return nil, true
+
+	case m.confirm != nil:
+		// Deliberately modal: a click outside does not count as either answer.
+		if id, ok := m.hitButton(m.confirmBox(), m.confirmButtons(), x, y); ok {
+			return m.handleConfirmKey(keyPress(id)), true
+		}
+		return nil, true
+
+	case m.menu != nil:
+		box := m.menuBox()
+		if id, ok := m.hitButton(box, actionButtons(m.menu.items), x, y); ok {
+			for _, it := range m.menu.items {
+				if it.key == id {
+					return m.runMenuItem(it), true
+				}
+			}
+		}
+		// A click outside closes it, the way clicking off a menu does
+		// everywhere else.
+		if !m.insideBox(box, x, y) {
+			m.menu = nil
+		}
+		return nil, true
+
+	case m.showHelp:
+		m.showHelp = false
+		return nil, true
+
+	case m.showDetail:
+		box := m.detailBox()
+		acts := m.detailActions()
+		if id, ok := m.hitButton(box, actionButtons(acts), x, y); ok {
+			for _, it := range acts {
+				if it.key == id {
+					if why := it.reason(m); why != "" {
+						return m.showToast(toastMsg{text: why, bad: true}), true
+					}
+					m.showDetail = false
+					return it.run(m), true
+				}
+			}
+		}
+		if !m.insideBox(box, x, y) {
+			m.showDetail = false
+		}
+		return nil, true
+
+	case m.protocolPrompt:
+		if scheme, ok := m.protocolChoiceAt(x, y); ok {
+			return m.chooseProtocol(scheme), true
+		}
+		m.protocolPrompt = false
+		return nil, true
+
+	case m.offline():
+		// The lost-connection box used to be the one overlay you could click
+		// through: a click behind it still moved the cursor. Its own button
+		// works; nothing behind it does.
+		if _, ok := m.hitButton(m.reconnectBox(), []button{{needle: "r try now", id: "r"}}, x, y); ok {
+			return m.reconnect(), true
+		}
+		return nil, true
+
+	case m.editing():
+		// A click outside an open editor commits it rather than silently
+		// editing something else.
+		switch m.editor {
+		case editorLocalPort:
+			return m.applyLocalPort(), true
+		case editorPortLabel:
+			return m.applyLabel(), true
+		case editorConfigValue:
+			return m.applyConfigValue(), true
+		}
+		m.closeEditor()
+		return nil, true
+	}
+	return nil, false
 }
 
 // rowAt maps a terminal row to a list index, or -1 if it is not a data row.
@@ -1016,8 +1167,7 @@ func (m *Model) runAction(id string) tea.Cmd {
 	case "↑↓", "←→":
 		return nil
 	case "esc":
-		m.confirming = true
-		return nil
+		return m.confirmQuit()
 	case "enter":
 		// enter is "open the detail" on the tabs that have one and "change
 		// this setting" on the Config tab, exactly as the key is.
@@ -1046,10 +1196,15 @@ func (m *Model) toggleDetail() tea.Cmd {
 		if m.cursor() < 0 || m.cursor() >= len(m.logRows) {
 			return m.needSelection()
 		}
+	case tabAccess:
+		if _, ok := m.selectedAccess(); !ok {
+			return m.needSelection()
+		}
 	default:
 		return nil
 	}
 	m.showDetail = !m.showDetail
+	m.detailScroll = 0
 	return nil
 }
 

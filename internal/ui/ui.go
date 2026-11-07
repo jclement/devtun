@@ -55,6 +55,13 @@ var (
 	Selected lipgloss.Style
 	// Danger is the LAN-EXPOSED banner and anything else that should stop you.
 	Danger lipgloss.Style
+	// Button is a clickable control inside an overlay. It is drawn as a filled
+	// chip so it reads as something to press rather than as one more line of
+	// prose — the mouse is only useful if you can see where to aim it.
+	Button lipgloss.Style
+	// DangerButton is the control that loosens access or throws something
+	// away. It is red for the same reason Danger is.
+	DangerButton lipgloss.Style
 )
 
 // Raw palette colours, for callers that need a colour rather than a style —
@@ -111,6 +118,8 @@ func NoColor() {
 	Header = lipgloss.NewStyle()
 	Selected = lipgloss.NewStyle()
 	Danger = lipgloss.NewStyle()
+	Button = lipgloss.NewStyle()
+	DangerButton = lipgloss.NewStyle()
 }
 
 func apply(dark bool) {
@@ -140,6 +149,8 @@ func apply(dark bool) {
 	Header = lipgloss.NewStyle().Bold(true).Foreground(ColorMuted)
 	Selected = lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
 	Danger = lipgloss.NewStyle().Bold(true).Foreground(ColorError)
+	Button = lipgloss.NewStyle().Bold(true).Reverse(true).Foreground(ColorAccent)
+	DangerButton = lipgloss.NewStyle().Bold(true).Reverse(true).Foreground(ColorError)
 	Panel = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(ColorAccent).Padding(0, 1)
 	// SecretPanel frames the approval prompt. It is violet because violet
 	// means "vault" everywhere else here, and an approval that looks like

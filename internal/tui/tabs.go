@@ -73,6 +73,16 @@ func (m *Model) tabBar() string {
 		m.tabZones = append(m.tabZones, zone{x0: x, x1: x + ansi.StringWidth(label), id: itoa(int(i))})
 		x += ansi.StringWidth(label)
 	}
+
+	// The global menu, at the far end of the bar: the palette, for anyone who
+	// would rather point than type `:`. Dropped when the tabs leave no room.
+	const commands = " ☰ commands "
+	m.commandsZone = zone{}
+	if w := ansi.StringWidth(commands); x-1+w+1 <= m.inner() {
+		gap := m.inner() - (x - 1) - w
+		b.WriteString(strings.Repeat(" ", gap) + ui.Button.Render(commands))
+		m.commandsZone = zone{x0: 1 + m.inner() - w, x1: 1 + m.inner(), id: ":"}
+	}
 	return b.String()
 }
 

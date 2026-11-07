@@ -679,11 +679,20 @@ func (m *Model) tableRowAt(y int) int {
 	return rowOf[i]
 }
 
-// handleTunnelsClick handles the parts of the table that are controls rather
-// than readouts.
-func (m *Model) handleTunnelsClick(e tea.Mouse) tea.Cmd {
+// handleTunnelsClick handles the table: the column headers sort, the M and
+// VIA cells are controls, and everything else behaves like a row on any other
+// tab — select, a second click opens the detail, a right click the menu.
+//
+// A double click used to open the browser. It opens the detail now, the same
+// as on every other tab, and the detail's first action is the browser: one
+// rule for every list is worth the extra click, and a click that sometimes
+// opens a window and sometimes a box is one nobody trusts.
+func (m *Model) handleTunnelsClick(e tea.Mouse, right bool) tea.Cmd {
 	// Clicking a column header sorts by it, and clicking it again reverses.
 	if e.Y == m.listTop()-1 {
+		if right {
+			return nil
+		}
 		if c, ok := m.columnAt(e.X); ok && c.sortable {
 			if m.sortKey == c.sort {
 				m.reverse = !m.reverse
@@ -701,31 +710,17 @@ func (m *Model) handleTunnelsClick(e tea.Mouse) tea.Cmd {
 	if idx < 0 {
 		return nil
 	}
-	m.setCursor(idx)
-	m.clampCursor()
 
 	// The M and VIA cells are controls, not just readouts.
-	if c, ok := m.columnAt(e.X); ok {
-		switch {
-		case c.mode:
-			m.lastClickPort = 0
+	if c, ok := m.columnAt(e.X); ok && !right && (c.mode || c.scheme) {
+		m.setCursor(idx)
+		m.clampCursor()
+		if c.mode {
 			return m.cycleMode()
-		case c.scheme:
-			m.lastClickPort = 0
-			return m.cycleScheme()
 		}
+		return m.cycleScheme()
 	}
-
-	now := m.d.now()
-	port := m.selectedPort()
-	isDouble := port == m.lastClickPort && now.Sub(m.lastClickAt) < doubleClickWindow
-	m.lastClickPort, m.lastClickAt = port, now
-
-	if !isDouble {
-		return nil
-	}
-	m.lastClickPort = 0 // a third click starts a new pair
-	return m.openSelected()
+	return m.clickRow(idx, right)
 }
 
 // --- actions ---------------------------------------------------------------
@@ -1030,8 +1025,7 @@ func (m *Model) tunnelDetailBox() string {
 	if s.Err != "" {
 		b.WriteString(row("error", ui.Error.Render(s.Err)))
 	}
-	b.WriteString("\n" + ui.Muted.Render("esc to close"))
-	return m.boxOf(strings.TrimRight(b.String(), "\n"))
+	return m.detailFrame(b.String())
 }
 
 // reconnectBox is the waiting screen shown while the link is down.

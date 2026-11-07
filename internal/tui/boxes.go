@@ -15,17 +15,45 @@ func (m *Model) detailBox() string {
 		return m.activityDetailBox()
 	case tabTunnels:
 		return m.tunnelDetailBox()
+	case tabAccess:
+		return m.accessDetailBox()
 	default:
 		return ""
 	}
 }
 
-func (m *Model) confirmBox() string {
-	body := ui.Banner.Render("Close everything and quit?") + "\n\n" +
-		ui.Muted.Render("Local ports are released and every live grant is dropped.") + "\n\n" +
-		ui.Banner.Render("y") + ui.Muted.Render(" yes") + ui.Muted.Render("   ·   ") +
-		ui.Banner.Render("n") + ui.Muted.Render(" keep running")
-	return m.boxOf(body)
+// detailActions is what a detail box offers: the row's actions, less the one
+// that opened the box.
+func (m *Model) detailActions() []action {
+	var out []action
+	for _, a := range m.rowActions() {
+		if a.key != "enter" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// detailFrame finishes a detail box: the row's actions, each with its key and
+// clickable, the unavailable ones dimmed with the reason — then how to close
+// it. Too tall for the window, it scrolls rather than losing its bottom, which
+// is where all of that lives.
+func (m *Model) detailFrame(body string) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(body, "\n") + "\n")
+	if acts := m.detailActions(); len(acts) > 0 {
+		b.WriteString("\n" + ui.Muted.Render("press the key, or click") + "\n")
+		b.WriteString(m.actionList(acts, -1))
+	}
+	hint := "esc close · ↑↓ next row"
+	if !m.mouseOff {
+		// The detail is where the text worth copying is — a URL, a whole
+		// reference — and the mouse being ours is what stops a drag from
+		// selecting it. Say how to get it back, here, where it is wanted.
+		hint += " · m frees the mouse to select text"
+	}
+	b.WriteString("\n" + ui.Muted.Render(hint))
+	return m.boxOf(m.scrollBody(b.String(), &m.detailScroll))
 }
 
 // helpBox lists the whole keyboard surface, grouped by what it acts on.
@@ -88,6 +116,7 @@ func (m *Model) helpSections() []struct {
 			{"g / G", "first / last"},
 			{"/", "search this tab"},
 			{":", "the command palette — every action, by name"},
+			{".", "the selected row's actions, and why any can't run"},
 			{"c", "the Config tab"},
 			{"w", "open the web board here, and copy its URL"},
 			{"m", "mouse off — lets the terminal select and copy text"},
@@ -114,10 +143,12 @@ func (m *Model) helpSections() []struct {
 			{"y", "copy the line"},
 		}},
 		{"access — rules and live grants", [][2]string{
-			{"r", "revoke the selected rule or grant"},
+			{"enter", "the rule or grant in full, and what can be done"},
+			{"r", "revoke — asks first if it removes a refusal"},
 			{"D", "rewrite the selected allow rule as a deny"},
-			{"y", "copy the op:// reference — never the secret"},
-			{"F", "forget every live grant and cached value"},
+			{"y", "copy the reference — never the secret"},
+			{"F", "forget live grants — asks first if refusals go too"},
+			{"", "a deny always beats an allow, wherever written"},
 		}},
 		{"services", [][2]string{
 			{"e", "on or off for this host, from the next connection"},
@@ -128,10 +159,14 @@ func (m *Model) helpSections() []struct {
 			{"g", "aim edits at this host or at every host"},
 		}},
 		{"mouse", [][2]string{
-			{"click", "select a row, or a tab, or a key bar action"},
-			{"double click", "open in browser"},
+			{"click", "a row, a tab, a key bar action, a button"},
+			{"click again", "open the row (a double click does too)"},
+			{"right click", "the row's action menu"},
+			{"wheel", "scroll a list, a menu or a tall box"},
+			{"☰ commands", "every action, from the tab bar"},
 			{"click M / VIA", "cycle mode / protocol"},
 			{"click header", "sort by that column"},
+			{"m", "give the mouse back to select text"},
 		}},
 	}
 
