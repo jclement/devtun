@@ -611,7 +611,7 @@ function renderGrants(state) {
     revoke.textContent = "revoke";
     revoke.title = "take this back now rather than waiting for it to lapse";
     revoke.onclick = () => act(`/api/grants/revoke?source=${encodeURIComponent(grant.source)}` +
-      `&host=${encodeURIComponent(grant.host)}&subject=${encodeURIComponent(grant.subject)}`);
+      `&id=${encodeURIComponent(grant.id)}`);
     actions.append(revoke);
     tr.append(actions);
     body.append(tr);
@@ -648,7 +648,7 @@ function renderRules(state) {
       revoke.className = "danger";
       revoke.textContent = "revoke";
       revoke.title = "forget this rule — the next request asks again";
-      revoke.onclick = () => act(`/api/rules/revoke?source=${encodeURIComponent(rule.source)}&index=${rule.index}`);
+      revoke.onclick = () => act(`/api/rules/revoke?source=${encodeURIComponent(rule.source)}&id=${encodeURIComponent(rule.id)}`);
       actions.append(revoke);
 
       // Deny only appears on an allow, and only ever tightens. "I clicked
@@ -661,7 +661,7 @@ function renderRules(state) {
         deny.className = "danger";
         deny.textContent = "deny";
         deny.title = "rewrite this into a refusal — the next request is refused, without asking";
-        deny.onclick = () => act(`/api/rules/deny?source=${encodeURIComponent(rule.source)}&index=${rule.index}`);
+        deny.onclick = () => act(`/api/rules/deny?source=${encodeURIComponent(rule.source)}&id=${encodeURIComponent(rule.id)}`);
         actions.append(deny);
       }
     }

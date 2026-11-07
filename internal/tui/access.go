@@ -15,11 +15,10 @@ import (
 // live grant somebody clicked through, and the tab shows both — a grant is the
 // more consequential of the two and the shorter-lived, so it is listed first.
 type accessRow struct {
+	// rule carries its own stable ID, which is what `r` and `D` act on —
+	// never its position, which another surface can shift between this
+	// screen's render and the keypress.
 	rule authz.Rule
-	// index is the rule's position in the broker's own list, which is what
-	// Revoke takes. Filtering the view must not change what `r` revokes, so the
-	// index travels with the row rather than being its position on screen.
-	index int
 	// grant is set instead of rule for a live allowance.
 	grant   *authz.Grant
 	isGrant bool
@@ -63,23 +62,21 @@ func (m *Model) reloadAccess() {
 			rows = append(rows, accessRow{grant: &grant, isGrant: true, source: src})
 		}
 	}
-	for _, src := range m.d.secrets {
-		for i, r := range src.ctrl.Rules() {
-			if !matches(src.title + " " + r.Host + " " + r.Subject + " " + r.Note) {
-				continue
+	// The host's rules, then the global ones last: they are the least likely
+	// to be what you came to change — but present, because a tab that shows
+	// only half of what is deciding will send somebody hunting for a rule that
+	// is right there.
+	for _, global := range []bool{false, true} {
+		for _, src := range m.d.secrets {
+			for _, r := range src.ctrl.Rules() {
+				if (r.Source == authz.SourceGlobal) != global {
+					continue
+				}
+				if !matches(src.title + " " + r.Host + " " + r.Subject + " " + r.Note) {
+					continue
+				}
+				rows = append(rows, accessRow{rule: r, source: src, global: global})
 			}
-			rows = append(rows, accessRow{rule: r, index: i, source: src})
-		}
-	}
-	// The global rules last, because they are the least likely to be what you
-	// came to change — but present, because a tab that shows only half of what
-	// is deciding will send somebody hunting for a rule that is right there.
-	for _, src := range m.d.secrets {
-		for _, r := range src.ctrl.GlobalRules() {
-			if !matches(src.title + " " + r.Host + " " + r.Subject + " " + r.Note) {
-				continue
-			}
-			rows = append(rows, accessRow{rule: r, source: src, global: true})
 		}
 	}
 	m.accessRows = rows
@@ -198,8 +195,8 @@ func (m *Model) revokeSelected() tea.Cmd {
 	row := m.accessRows[i]
 
 	// A grant and a rule are revoked through different doors: one lives in
-	// memory and is addressed by what it covers, the other is a line in a file
-	// addressed by position. `r` should not make the user care which.
+	// memory, the other is a line in a file. `r` should not make the user care
+	// which.
 	if row.global {
 		return m.showToast(toastMsg{
 			text: "that rule came from your config file — edit it there",
@@ -207,7 +204,7 @@ func (m *Model) revokeSelected() tea.Cmd {
 		})
 	}
 	if row.isGrant {
-		if !row.source.ctrl.RevokeGrant(row.grant.Host, row.grant.Subject) {
+		if !row.source.ctrl.RevokeGrant(row.grant.ID) {
 			return m.showToast(toastMsg{text: "that grant has already lapsed", bad: true})
 		}
 		m.reloadAccess()
@@ -215,7 +212,7 @@ func (m *Model) revokeSelected() tea.Cmd {
 		return m.showToast(toastMsg{text: "revoked the grant for " + row.grant.Subject})
 	}
 
-	if err := row.source.ctrl.Revoke(row.index); err != nil {
+	if err := row.source.ctrl.RemoveRule(row.rule.ID); err != nil {
 		return m.showToast(toastMsg{text: err.Error(), bad: true})
 	}
 	m.reloadAccess()
@@ -254,7 +251,7 @@ func (m *Model) denySelected() tea.Cmd {
 		return m.showToast(toastMsg{text: "already a deny"})
 	}
 
-	if err := row.source.ctrl.Deny(row.index); err != nil {
+	if _, err := row.source.ctrl.SetRuleAction(row.rule.ID, authz.ActionDeny); err != nil {
 		return m.showToast(toastMsg{text: err.Error(), bad: true})
 	}
 	m.reloadAccess()

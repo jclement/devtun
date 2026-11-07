@@ -189,36 +189,137 @@ type stubSecrets struct {
 	revoked   []int
 	revokedBy []string
 	denied    []int
+	nextID    int
 }
 
-func (s *stubSecrets) Rules() []authz.Rule { return s.rules }
+// ids gives every rule and grant an ID the first time it is listed, the way
+// the real store derives one, so a test can build its fixtures without them.
+func (s *stubSecrets) ids() {
+	for i := range s.rules {
+		if s.rules[i].ID == "" {
+			s.nextID++
+			s.rules[i].ID = "r" + itoa(s.nextID)
+		}
+		if s.rules[i].Source == "" {
+			s.rules[i].Source = authz.SourceRemembered
+		}
+	}
+	for i := range s.global {
+		if s.global[i].ID == "" {
+			s.nextID++
+			s.global[i].ID = "r" + itoa(s.nextID)
+		}
+		s.global[i].Source = authz.SourceGlobal
+	}
+	for i := range s.live {
+		if s.live[i].ID == "" {
+			s.nextID++
+			s.live[i].ID = "g" + itoa(s.nextID)
+		}
+	}
+}
 
-func (s *stubSecrets) Revoke(i int) error {
+func (s *stubSecrets) Rules() []authz.Rule {
+	s.ids()
+	return append(append([]authz.Rule(nil), s.global...), s.rules...)
+}
+
+func (s *stubSecrets) Rule(id string) (authz.Rule, bool) {
+	for _, r := range s.Rules() {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return authz.Rule{}, false
+}
+
+func (s *stubSecrets) index(id string) (int, error) {
+	s.ids()
+	for _, r := range s.global {
+		if r.ID == id {
+			return -1, authz.ErrReadOnly
+		}
+	}
+	for i, r := range s.rules {
+		if r.ID == id {
+			return i, nil
+		}
+	}
+	return -1, authz.ErrNotFound
+}
+
+func (s *stubSecrets) RemoveRule(id string) error {
+	i, err := s.index(id)
+	if err != nil {
+		return err
+	}
 	s.revoked = append(s.revoked, i)
 	s.rules = append(s.rules[:i], s.rules[i+1:]...)
 	return nil
 }
 
-func (s *stubSecrets) Deny(i int) error {
-	s.denied = append(s.denied, i)
-	s.rules[i].Action = authz.ActionDeny
-	return nil
+func (s *stubSecrets) SetRuleAction(id string, a authz.Action) (authz.Rule, error) {
+	i, err := s.index(id)
+	if err != nil {
+		return authz.Rule{}, err
+	}
+	if a == authz.ActionDeny {
+		s.denied = append(s.denied, i)
+	}
+	s.rules[i].Action = a
+	return s.rules[i], nil
 }
 
-func (s *stubSecrets) GlobalRules() []authz.Rule { return s.global }
+func (s *stubSecrets) AddRule(r authz.Rule) (authz.Rule, error) {
+	s.rules = append(s.rules, r)
+	s.ids()
+	return s.rules[len(s.rules)-1], nil
+}
 
-func (s *stubSecrets) Grants() []authz.Grant { return s.live }
+func (s *stubSecrets) UpdateRule(id string, e authz.RuleEdit) (authz.Rule, error) {
+	i, err := s.index(id)
+	if err != nil {
+		return authz.Rule{}, err
+	}
+	if e.Subject != nil {
+		s.rules[i].Subject = *e.Subject
+	}
+	return s.rules[i], nil
+}
 
-func (s *stubSecrets) RevokeGrant(host, subject string) bool {
+func (s *stubSecrets) Grants() []authz.Grant {
+	s.ids()
+	return s.live
+}
+
+func (s *stubSecrets) RevokeGrant(id string) bool {
 	for i, g := range s.live {
-		if g.Host == host && g.Subject == subject {
+		if g.ID == id {
 			s.live = append(s.live[:i], s.live[i+1:]...)
-			s.revokedBy = append(s.revokedBy, host+" "+subject)
+			s.revokedBy = append(s.revokedBy, g.Host+" "+g.Subject)
 			return true
 		}
 	}
 	return false
 }
+
+func (s *stubSecrets) AddGrant(spec authz.GrantSpec) (authz.Grant, error) {
+	g := authz.Grant{Host: spec.Host, Subject: spec.Subject, Action: spec.Action}
+	s.live = append(s.live, g)
+	s.ids()
+	return s.live[len(s.live)-1], nil
+}
+
+func (s *stubSecrets) ForgetGrants() int   { return 0 }
+func (s *stubSecrets) ForgetRefusals() int { return 0 }
+
+func (s *stubSecrets) Explain(string, string) authz.Explanation { return authz.Explanation{} }
+func (s *stubSecrets) Unmatched() authz.UnmatchedPolicy {
+	return authz.UnmatchedPolicy{Action: authz.ActionAsk, Level: "default"}
+}
+func (s *stubSecrets) Schema() authz.Schema { return authz.DefaultSchema }
+func (s *stubSecrets) PolicyErr() error     { return nil }
+func (s *stubSecrets) Revision() uint64     { return 0 }
 
 func (s *stubSecrets) Forget() (int, int) {
 	s.forgot = true

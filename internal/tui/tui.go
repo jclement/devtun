@@ -329,12 +329,7 @@ func secretSources(services []service.Service) []accessSource {
 // cachelessCtrl is the same surface minus the two-number Forget: a broker that
 // never sees a secret has nothing to cache and nothing to purge.
 type cachelessCtrl interface {
-	Rules() []authz.Rule
-	GlobalRules() []authz.Rule
-	Revoke(index int) error
-	Deny(index int) error
-	Grants() []authz.Grant
-	RevokeGrant(host, subject string) bool
+	authz.Policy
 	Forget() int
 }
 

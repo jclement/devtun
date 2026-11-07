@@ -108,12 +108,7 @@ type Tunnels interface {
 
 // Broker is the slice of a gated service whose rules this page lists.
 type Broker interface {
-	Rules() []authz.Rule
-	GlobalRules() []authz.Rule
-	Revoke(index int) error
-	Deny(index int) error
-	Grants() []authz.Grant
-	RevokeGrant(host, subject string) bool
+	authz.Policy
 }
 
 // Forgetter is a broker that can drop everything it is holding open: the live
@@ -519,8 +514,14 @@ type serviceView struct {
 }
 
 type ruleView struct {
-	Source  string `json:"source"`
-	Index   int    `json:"index"`
+	// Source is the broker's id, which is what the action routes take.
+	Source string `json:"source"`
+	// ID names the rule itself, stably: a revoke from the terminal between
+	// this page's render and a click cannot redirect the click to another
+	// rule, which it could when rules were addressed by position.
+	ID string `json:"id"`
+	// Origin is which list the rule is in: global, host or remembered.
+	Origin  string `json:"origin"`
 	Host    string `json:"host"`
 	Subject string `json:"subject"`
 	Action  string `json:"action"`
@@ -530,6 +531,7 @@ type ruleView struct {
 
 type grantView struct {
 	Source   string `json:"source"`
+	ID       string `json:"id"`
 	Host     string `json:"host"`
 	Subject  string `json:"subject"`
 	Action   string `json:"action"`
@@ -577,21 +579,15 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	payload.Gated = len(brokers) > 0
 	for _, gated := range brokers {
 		id, broker := gated.id, gated.broker
-		for i, rule := range broker.Rules() {
+		for _, rule := range broker.Rules() {
 			payload.Rules = append(payload.Rules, ruleView{
-				Source: id, Index: i, Host: rule.Host, Subject: rule.Subject,
-				Action: string(rule.Action), Note: rule.Note,
-			})
-		}
-		for _, rule := range broker.GlobalRules() {
-			payload.Rules = append(payload.Rules, ruleView{
-				Source: id, Index: -1, Host: rule.Host, Subject: rule.Subject,
-				Action: string(rule.Action), Note: rule.Note, Global: true,
+				Source: id, ID: rule.ID, Origin: string(rule.Source), Host: rule.Host, Subject: rule.Subject,
+				Action: string(rule.Action), Note: rule.Note, Global: rule.Source == authz.SourceGlobal,
 			})
 		}
 		for _, grant := range broker.Grants() {
 			view := grantView{
-				Source: id, Host: grant.Host, Subject: grant.Subject,
+				Source: id, ID: grant.ID, Host: grant.Host, Subject: grant.Subject,
 				Action: string(grant.Action), HostWide: grant.HostWide,
 			}
 			if !grant.Expires.IsZero() {
@@ -870,60 +866,56 @@ func (s *Server) handleShowHidden(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"showHidden": prefs.ShowHidden})
 }
 
-// handleRevokeRule takes back a rule devtun wrote.
+// handleRevokeRule removes a host or remembered rule.
 //
-// Only devtun's own: a global rule came out of a file the user hand-wrote, and
+// Not a global one: that came out of a file the user keeps for every host, and
 // a web page quietly editing it would be a worse surprise than saying no. The
-// index is the broker's own, which is why the page sends back what it was given
-// rather than a position on screen.
+// rule is named by its ID, which means the same rule however the list has
+// moved since the page rendered it.
 func (s *Server) handleRevokeRule(w http.ResponseWriter, r *http.Request) {
 	broker, ok := s.brokerParam(w, r)
 	if !ok {
 		return
 	}
-	index, err := strconv.Atoi(r.URL.Query().Get("index"))
-	if err != nil || index < 0 {
-		http.Error(w, "index must be a rule devtun wrote", http.StatusBadRequest)
-		return
-	}
-	if err := broker.Revoke(index); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+	if err := broker.RemoveRule(r.URL.Query().Get("id")); err != nil {
+		ruleError(w, err)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-// handleDenyRule rewrites a rule devtun wrote into a refusal.
+// handleDenyRule rewrites a rule into a refusal.
 //
 // It only tightens, which is what makes it safe to offer from a page. "I
 // clicked always and I should not have, and I do not want to be asked again
 // either" is the change people make in a hurry; the opposite one — a deny
 // becoming an allow on whichever row a click lands on — is the accident that
-// deny-beats-allow exists to prevent, and it stays a deliberate edit of the
-// file.
+// deny-beats-allow exists to prevent, and this route does not offer it.
 //
-// The interface refuses three things here and so does this. A rule from the
-// config file is not devtun's to rewrite, and arrives with the index (-1) the
-// page was given for it. A grant is not a rule at all: it has no index, so it
-// cannot be named here even by hand, and revoking is the whole of what can be
-// done to one. And a rule that already denies is left as it is and reported as
-// done, because it is — that is a no-op, not a refusal.
+// A global rule is refused (ErrReadOnly), and a rule that already denies is
+// left as it is and reported as done, because it is.
 func (s *Server) handleDenyRule(w http.ResponseWriter, r *http.Request) {
 	broker, ok := s.brokerParam(w, r)
 	if !ok {
 		return
 	}
-	index, err := strconv.Atoi(r.URL.Query().Get("index"))
-	if err != nil || index < 0 {
-		http.Error(w, "index must be a rule devtun wrote — a rule from your config file is edited there",
-			http.StatusBadRequest)
-		return
-	}
-	if err := broker.Deny(index); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+	if _, err := broker.SetRuleAction(r.URL.Query().Get("id"), authz.ActionDeny); err != nil {
+		ruleError(w, err)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// ruleError maps the store's typed errors onto statuses a page can act on.
+func ruleError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, authz.ErrReadOnly):
+		http.Error(w, "that rule is in your config file — edit it there", http.StatusForbidden)
+	case errors.Is(err, authz.ErrNotFound):
+		http.Error(w, "that rule has changed since this page loaded — reload", http.StatusConflict)
+	default:
+		http.Error(w, err.Error(), http.StatusConflict)
+	}
 }
 
 func (s *Server) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
@@ -931,9 +923,7 @@ func (s *Server) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	host := r.URL.Query().Get("host")
-	subject := r.URL.Query().Get("subject")
-	if !broker.RevokeGrant(host, subject) {
+	if !broker.RevokeGrant(r.URL.Query().Get("id")) {
 		http.Error(w, "that grant has already lapsed", http.StatusConflict)
 		return
 	}

@@ -95,13 +95,54 @@ func (b *fakeBroker) Meta() service.Meta {
 	return service.Meta{ID: "1password", Title: "1Password", Glyph: "❖", Short: "the vault"}
 }
 
-func (b *fakeBroker) Rules() []authz.Rule       { return b.rules }
-func (b *fakeBroker) GlobalRules() []authz.Rule { return b.global }
-func (b *fakeBroker) Grants() []authz.Grant     { return b.grants }
+// Rules lists the global rules then the host's, IDs derived from position —
+// enough for a fake that never actually removes anything.
+func (b *fakeBroker) Rules() []authz.Rule {
+	var out []authz.Rule
+	for i, r := range b.global {
+		r.ID, r.Source = "g"+strconv.Itoa(i), authz.SourceGlobal
+		out = append(out, r)
+	}
+	for i, r := range b.rules {
+		r.ID, r.Source = "h"+strconv.Itoa(i), authz.SourceRemembered
+		out = append(out, r)
+	}
+	return out
+}
 
-func (b *fakeBroker) Deny(index int) error {
-	b.denied = append(b.denied, index)
-	return nil
+func (b *fakeBroker) Grants() []authz.Grant {
+	out := append([]authz.Grant(nil), b.grants...)
+	for i := range out {
+		if out[i].ID == "" {
+			out[i].ID = "gr" + strconv.Itoa(i)
+		}
+	}
+	return out
+}
+
+// index resolves an ID to a host rule, refusing global ones the way the real
+// store does.
+func (b *fakeBroker) index(id string) (int, error) {
+	for _, r := range b.Rules() {
+		if r.ID != id {
+			continue
+		}
+		if r.Source == authz.SourceGlobal {
+			return -1, authz.ErrReadOnly
+		}
+		i, _ := strconv.Atoi(strings.TrimPrefix(id, "h"))
+		return i, nil
+	}
+	return -1, authz.ErrNotFound
+}
+
+func (b *fakeBroker) SetRuleAction(id string, a authz.Action) (authz.Rule, error) {
+	i, err := b.index(id)
+	if err != nil {
+		return authz.Rule{}, err
+	}
+	b.denied = append(b.denied, i)
+	return b.rules[i], nil
 }
 
 func (b *fakeBroker) Forget() (grants, cached int) {
@@ -109,15 +150,47 @@ func (b *fakeBroker) Forget() (grants, cached int) {
 	return b.forgets[0], b.forgets[1]
 }
 
-func (b *fakeBroker) Revoke(index int) error {
-	b.revoked = append(b.revoked, index)
+func (b *fakeBroker) RemoveRule(id string) error {
+	i, err := b.index(id)
+	if err != nil {
+		return err
+	}
+	b.revoked = append(b.revoked, i)
 	return nil
 }
 
-func (b *fakeBroker) RevokeGrant(host, subject string) bool {
-	b.dropped = append(b.dropped, host+" "+subject)
-	return true
+func (b *fakeBroker) RevokeGrant(id string) bool {
+	for _, g := range b.Grants() {
+		if g.ID == id {
+			b.dropped = append(b.dropped, g.Host+" "+g.Subject)
+			return true
+		}
+	}
+	return false
 }
+
+func (b *fakeBroker) Rule(id string) (authz.Rule, bool) {
+	for _, r := range b.Rules() {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return authz.Rule{}, false
+}
+func (b *fakeBroker) AddRule(r authz.Rule) (authz.Rule, error) { return r, nil }
+func (b *fakeBroker) UpdateRule(string, authz.RuleEdit) (authz.Rule, error) {
+	return authz.Rule{}, authz.ErrNotFound
+}
+func (b *fakeBroker) AddGrant(authz.GrantSpec) (authz.Grant, error) { return authz.Grant{}, nil }
+func (b *fakeBroker) ForgetGrants() int                             { return 0 }
+func (b *fakeBroker) ForgetRefusals() int                           { return 0 }
+func (b *fakeBroker) Explain(string, string) authz.Explanation      { return authz.Explanation{} }
+func (b *fakeBroker) Unmatched() authz.UnmatchedPolicy {
+	return authz.UnmatchedPolicy{Action: authz.ActionAsk, Level: "default"}
+}
+func (b *fakeBroker) Schema() authz.Schema { return authz.DefaultSchema }
+func (b *fakeBroker) PolicyErr() error     { return nil }
+func (b *fakeBroker) Revision() uint64     { return 0 }
 
 // fakeCachelessBroker is the other shape of broker: one that never sees a
 // secret, so it has grants to drop and no cache to purge.
@@ -421,8 +494,8 @@ func TestStateCarriesTheBoard(t *testing.T) {
 	for _, rule := range payload.Rules {
 		if rule.Global {
 			globals++
-			if rule.Index >= 0 {
-				t.Errorf("a global rule was given a revocable index: %+v", rule)
+			if rule.Origin != "global" || rule.ID == "" {
+				t.Errorf("a global rule should carry its ID and say where it is from: %+v", rule)
 			}
 		}
 	}
@@ -435,7 +508,10 @@ func TestStateCarriesTheBoard(t *testing.T) {
 // and both narrow what the remote box can do.
 func TestThePageCanHideAPortAndRevokeAccess(t *testing.T) {
 	ports := newFakeTunnels()
-	broker := &fakeBroker{rules: []authz.Rule{{Subject: "op://V/I/F"}}}
+	broker := &fakeBroker{
+		rules:  []authz.Rule{{Subject: "op://V/I/F"}},
+		grants: []authz.Grant{{Host: "bedev", Subject: "op://V/I/F", Action: authz.ActionAllow}},
+	}
 	s := newTestServer(t, Options{Tunnels: ports, Services: []service.Service{broker}})
 
 	if got := ask(t, s, http.MethodPost, "/api/ports/5432/mode?mode=hidden"); got.Code != http.StatusOK {
@@ -445,7 +521,7 @@ func TestThePageCanHideAPortAndRevokeAccess(t *testing.T) {
 		t.Errorf("the port was not hidden: %+v", ports.modes)
 	}
 
-	if got := ask(t, s, http.MethodPost, "/api/rules/revoke?source=1password&index=0"); got.Code != http.StatusOK {
+	if got := ask(t, s, http.MethodPost, "/api/rules/revoke?source=1password&id=h0"); got.Code != http.StatusOK {
 		t.Fatalf("revoking a rule = %d: %s", got.Code, got.Body)
 	}
 	if len(broker.revoked) != 1 || broker.revoked[0] != 0 {
@@ -453,7 +529,7 @@ func TestThePageCanHideAPortAndRevokeAccess(t *testing.T) {
 	}
 
 	if got := ask(t, s, http.MethodPost,
-		"/api/grants/revoke?source=1password&host=bedev&subject=op://V/I/F"); got.Code != http.StatusOK {
+		"/api/grants/revoke?source=1password&id=gr0"); got.Code != http.StatusOK {
 		t.Fatalf("revoking a grant = %d: %s", got.Code, got.Body)
 	}
 	if len(broker.dropped) != 1 {
@@ -468,7 +544,7 @@ func TestAGlobalRuleCannotBeRevokedFromThePage(t *testing.T) {
 	broker := &fakeBroker{global: []authz.Rule{{Subject: "op://Private/**", Action: authz.ActionDeny}}}
 	s := newTestServer(t, Options{Services: []service.Service{broker}})
 
-	if got := ask(t, s, http.MethodPost, "/api/rules/revoke?source=1password&index=-1"); got.Code == http.StatusOK {
+	if got := ask(t, s, http.MethodPost, "/api/rules/revoke?source=1password&id=g0"); got.Code == http.StatusOK {
 		t.Error("the page revoked a rule from the config file")
 	}
 	if len(broker.revoked) != 0 {
@@ -484,7 +560,7 @@ func TestNonsenseIsRefusedRatherThanApplied(t *testing.T) {
 		"/api/ports/70000/mode?mode=hidden",
 		"/api/ports/3000/mode?mode=whatever",
 		"/api/ports/notaport/mode?mode=hidden",
-		"/api/rules/revoke?source=nosuch&index=0",
+		"/api/rules/revoke?source=nosuch&id=h0",
 	} {
 		if got := ask(t, s, http.MethodPost, path); got.Code == http.StatusOK {
 			t.Errorf("POST %s was accepted", path)
@@ -1003,19 +1079,18 @@ func TestTheBoardCanTurnARuleIntoARefusal(t *testing.T) {
 	}
 	s := newTestServer(t, Options{Services: []service.Service{broker}})
 
-	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&index=0"); got.Code != http.StatusOK {
+	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&id=h0"); got.Code != http.StatusOK {
 		t.Fatalf("denying a rule = %d: %s", got.Code, got.Body)
 	}
 	if len(broker.denied) != 1 || broker.denied[0] != 0 {
 		t.Errorf("denied = %+v", broker.denied)
 	}
 
-	// A rule from the config file arrives with the index the page was given for
-	// it, which is the one index this must not accept: devtun did not write
-	// that file and a page quietly rewriting it would be the worse surprise.
-	fromTheFile := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&index=-1")
-	if fromTheFile.Code != http.StatusBadRequest {
-		t.Errorf("denying a global rule = %d, want 400", fromTheFile.Code)
+	// A rule from the config file is refused: devtun did not write that file
+	// and a page quietly rewriting it would be the worse surprise.
+	fromTheFile := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&id=g0")
+	if fromTheFile.Code != http.StatusForbidden {
+		t.Errorf("denying a global rule = %d, want 403", fromTheFile.Code)
 	}
 	if !strings.Contains(fromTheFile.Body.String(), "config file") {
 		t.Errorf("the refusal does not say where to change it: %s", fromTheFile.Body)
@@ -1024,12 +1099,13 @@ func TestTheBoardCanTurnARuleIntoARefusal(t *testing.T) {
 		t.Errorf("a global rule was denied anyway: %+v", broker.denied)
 	}
 
-	// A grant has no index, so it cannot be named here even by hand — which is
-	// the whole of the interface's "that is a live grant" refusal.
-	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&index=notanindex"); got.Code != http.StatusBadRequest {
-		t.Errorf("denying something that is not a rule = %d, want 400", got.Code)
+	// A grant's ID is not a rule's, so it cannot be named here even by hand —
+	// which is the whole of the interface's "that is a live grant" refusal. An
+	// ID that names nothing (any more) is a conflict: reload.
+	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&id=gr0"); got.Code != http.StatusConflict {
+		t.Errorf("denying something that is not a rule = %d, want 409", got.Code)
 	}
-	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=nosuch&index=0"); got.Code != http.StatusNotFound {
+	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=nosuch&id=h0"); got.Code != http.StatusNotFound {
 		t.Errorf("denying on a service that is not here = %d, want 404", got.Code)
 	}
 }
@@ -1092,7 +1168,7 @@ func TestTheNewMutationsAreGuardedLikeTheOldOnes(t *testing.T) {
 	for _, path := range []string{
 		"/api/ports/3000/local?local=3000",
 		"/api/pause?paused=true",
-		"/api/rules/deny?source=1password&index=0",
+		"/api/rules/deny?source=1password&id=h0",
 		"/api/grants/forget",
 	} {
 		noCookie := httptest.NewRequest(http.MethodPost, path, nil)
