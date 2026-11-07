@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"strings"
 
 	"golang.org/x/crypto/ssh"
 
@@ -63,7 +62,8 @@ type target struct {
 	// bound to a host that forwards the agent onward: the login is then going
 	// somewhere beyond that host, which is worth telling the human.
 	via destination
-	// namespace is the SSHSIG namespace, already made safe to put in a subject.
+	// namespace is the SSHSIG namespace, exactly as signed; targetOf refuses
+	// one that safeNamespace would not put in a subject verbatim.
 	namespace string
 }
 
@@ -155,6 +155,9 @@ func targetOf(key ssh.PublicKey, data []byte, bound destination) (target, error)
 		return loginTarget(key, login, bound)
 	}
 	if namespace, ok := asSSHSIG(data); ok {
+		if !safeNamespace(namespace) {
+			return target{}, errUnsafeNamespace
+		}
 		return target{kind: targetSSHSIG, namespace: namespace}, nil
 	}
 	return target{kind: targetArbitrary}, nil
@@ -226,8 +229,7 @@ func loginTarget(key ssh.PublicKey, login userAuthRequest, bound destination) (t
 	return target{kind: targetLogin, dest: bound}, nil
 }
 
-// asSSHSIG recognises an SSHSIG blob and returns its namespace, made safe for a
-// subject.
+// asSSHSIG recognises an SSHSIG blob and returns its namespace, as signed.
 func asSSHSIG(data []byte) (string, bool) {
 	rest, ok := bytes.CutPrefix(data, []byte(sshsigMagic))
 	if !ok {
@@ -237,28 +239,40 @@ func asSSHSIG(data []byte) (string, bool) {
 	if err := ssh.Unmarshal(rest, &blob); err != nil || blob.Namespace == "" {
 		return "", false
 	}
-	return safeNamespace(blob.Namespace), true
+	return blob.Namespace, true
 }
 
-// safeNamespace keeps a namespace to characters that cannot change how a
-// subject reads or matches: no spaces to fake a " → ", no slash to defeat a
-// `*`, no glob metacharacters, no terminal escapes. Real namespaces ("git",
-// "file", an email-style "name@example.com") pass through untouched.
-func safeNamespace(ns string) string {
-	const limit = 64
-	var b strings.Builder
+// errUnsafeNamespace refuses an SSHSIG namespace the subject cannot carry
+// exactly.
+var errUnsafeNamespace = fmt.Errorf("the SSHSIG namespace is not one devtun can name exactly (letters, digits and . - _ @ +, at most %d)", namespaceLimit)
+
+// namespaceLimit bounds a namespace in a subject.
+const namespaceLimit = 64
+
+// safeNamespace reports whether a namespace can go into a subject verbatim.
+//
+// It is a check, not a cleanup, and that is the point. The namespace is the
+// capability: a signature made for "release/prod" verifies for "release/prod"
+// and nothing else. Rewriting unusual characters to "_" or truncating a long
+// name made the subject lossy — "release_prod" and "release/prod" became one
+// subject, so approving one approved the other, while the signature the remote
+// got covered whichever it actually asked for. A namespace that is not already
+// a plain name is refused outright instead, so every subject names exactly one
+// namespace. The allowed characters also cannot change how a subject reads or
+// matches: no space to fake a " → ", no slash to defeat a `*`, no glob
+// metacharacters, no terminal escapes. Real namespaces ("git", "file", an
+// email-style "name@example.com") are all plain names.
+func safeNamespace(ns string) bool {
+	if ns == "" || len(ns) > namespaceLimit {
+		return false
+	}
 	for _, r := range ns {
-		if b.Len() >= limit {
-			b.WriteString("…")
-			break
-		}
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
 			r == '.', r == '-', r == '_', r == '@', r == '+':
-			b.WriteRune(r)
 		default:
-			b.WriteByte('_')
+			return false
 		}
 	}
-	return b.String()
+	return true
 }

@@ -227,6 +227,11 @@ refused outright. Everything else is its own subject, asked about separately:
 | a git commit or tag (`gpg.format ssh`), `ssh-keygen -Y sign` | `ssh-ed25519 SHA256:… → sshsig:git` (the SSHSIG namespace) |
 | anything else | `ssh-ed25519 SHA256:… → (arbitrary data)` |
 
+An SSHSIG namespace must be a plain name — letters, digits and `. - _ @ +`, at
+most 64 characters — or the signature is refused: devtun puts the namespace in
+the subject exactly, so `release_prod` and `release/prod` can never share an
+approval.
+
 So `* → sshsig:git` in your rules allows commit signing with any key, without
 also letting the box log in anywhere. A wildcard destination (`… → *`, `… → **`,
 a bare `**`, or a host-wide grant) covers logins and SSHSIG namespaces, but it

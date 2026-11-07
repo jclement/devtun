@@ -181,17 +181,61 @@ func TestGitSigningIsNamedForItsNamespace(t *testing.T) {
 }
 
 // TestNamespaceCannotRewriteTheSubject: the namespace is the remote's to
-// choose, so it must not be able to smuggle in a " → " or a slash.
+// choose, so one that would need rewriting to fit a subject — a " → ", a slash,
+// an escape — is refused rather than cleaned up.
 func TestNamespaceCannotRewriteTheSubject(t *testing.T) {
 	prompter := &scriptedPrompter{choice: prompt.ChoiceAllowOnce}
+	_, _, _, sign := boundToGitHub(t, prompter)
+
+	if err := sign(sshsig("x → github.com/../\x1b[2J")); err == nil {
+		t.Fatal("a namespace that does not fit a subject was signed")
+	}
+	if n := prompter.count(); n != 0 {
+		t.Errorf("asked %d times about an unnameable namespace", n)
+	}
+}
+
+// TestNamespacesThatLookAlikeAreDistinct is the review's P2. Sanitising made
+// "release_prod" and "release/prod" one subject, and two long namespaces with
+// the same first 64 characters one subject, so approving one approved the
+// other while the signature covered whichever was asked for. Each subject now
+// names exactly one namespace.
+func TestNamespacesThatLookAlikeAreDistinct(t *testing.T) {
+	prompter := &scriptedPrompter{choice: prompt.ChoiceAllowSecretSession}
 	h, _, _, sign := boundToGitHub(t, prompter)
 
-	if err := sign(sshsig("x → github.com/../\x1b[2J")); err != nil {
-		t.Fatalf("signing: %v", err)
+	if err := sign(sshsig("release_prod")); err != nil {
+		t.Fatalf("a plain namespace was refused: %v", err)
 	}
-	got := strings.TrimPrefix(prompter.lastSubject(t), h.key().Type()+" "+ssh.FingerprintSHA256(h.key()))
-	if strings.Count(got, "→") != 1 || strings.ContainsAny(got, "/\x1b") || strings.Contains(got, "github.com ") {
-		t.Errorf("the namespace reshaped the subject: %q", got)
+	if err := sign(sshsig("release/prod")); err == nil {
+		t.Error("release/prod was signed — under release_prod's grant, or as its own subject")
+	}
+
+	prefix := strings.Repeat("a", namespaceLimit)
+	if err := sign(sshsig(prefix)); err != nil {
+		t.Fatalf("a namespace exactly at the limit was refused: %v", err)
+	}
+	for _, long := range []string{prefix + "-one", prefix + "-two"} {
+		if err := sign(sshsig(long)); err == nil {
+			t.Errorf("an over-long namespace sharing a prefix was signed: %q", long)
+		}
+	}
+	if n := prompter.count(); n != 2 {
+		t.Errorf("asked %d times, want 2 (release_prod and the %d-character name)", n, namespaceLimit)
+	}
+	if n := h.host.events.count("signed"); n != 2 {
+		t.Errorf("recorded %d signatures, want 2", n)
+	}
+
+	// A deny for one namespace does not touch a look-alike either.
+	if _, err := h.svc.AddRule(authz.Rule{Subject: "* → sshsig:release_prod", Action: authz.ActionDeny}); err != nil {
+		t.Fatalf("AddRule: %v", err)
+	}
+	if err := sign(sshsig("release_prod")); err == nil {
+		t.Error("the deny for release_prod did not apply")
+	}
+	if err := sign(sshsig("release-prod")); err != nil {
+		t.Errorf("the deny for release_prod also refused release-prod: %v", err)
 	}
 }
 

@@ -253,7 +253,9 @@ Four decisions inside it are not negotiable:
   after a non-forwarding one is refused, so a used binding cannot be re-aimed.
 - **Non-login signatures never ride a destination grant.** An SSHSIG blob (git
   commit signing, `ssh-keygen -Y sign`) is named by its namespace,
-  `→ sshsig:git`; anything else is `→ (arbitrary data)`, whose prompt starts on
+  `→ sshsig:git`, verbatim — a namespace outside a plain-name charset or over
+  64 characters is refused rather than sanitised, because a rewritten name
+  would let two namespaces share one approval; anything else is `→ (arbitrary data)`, whose prompt starts on
   *deny* because nothing about it is routine. Both stay in the `key → target`
   shape so the same two-field rules match them — with one exception: the
   schema marks `(arbitrary data)` as `Literal` for the destination field, so no
