@@ -295,9 +295,6 @@ func (m *Model) refreshPalette() {
 	m.clampPalette()
 }
 
-// paletteMatches decides whether an action answers a query.
-func paletteMatches(act action, query string) bool { return paletteScore(act, query) > 0 }
-
 // paletteScore ranks how well an action answers a query: 3 when every word is
 // in the title, 2 when the title and tab name between them have every word, 1
 // when it took the aliases, 0 for no match.

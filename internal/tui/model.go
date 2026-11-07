@@ -226,7 +226,7 @@ type Model struct {
 	// detailScroll is how far a detail box taller than the window has been
 	// scrolled.
 	detailScroll int
-	setup          *setupState
+	setup        *setupState
 
 	status session.Status
 	// everConnected gates the reconnect screen: a drop only counts as an
