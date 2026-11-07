@@ -143,11 +143,12 @@ func (g *gate) Extension(extensionType string, contents []byte) ([]byte, error) 
 
 	bind, hostKey, err := parseSessionBind(contents)
 	if err != nil {
-		// A bind that cannot be read or cannot be believed leaves the
-		// connection unbound rather than stale or forged: logins after this
-		// point are attributed to "(destination unknown)", which is the honest
-		// answer and still promptable.
-		g.dest = destination{}
+		// A bind that cannot be read or cannot be believed changes nothing. On
+		// a connection not yet bound, it stays unbound and its logins read
+		// "(destination unknown)", the honest answer. On one already bound,
+		// the established binding stands: clearing it would let a malformed
+		// bind reset the connection so that a later valid bind could replace a
+		// binding the rule below says is final.
 		g.link.unbound(err)
 		return nil, err
 	}

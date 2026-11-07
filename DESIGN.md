@@ -237,8 +237,9 @@ Four decisions inside it are not negotiable:
   client's word, a process on the dev box could claim GitHub's host key, collect
   the grant a human gave for GitHub, and spend it authenticating elsewhere. The
   signature over the session identifier is what makes the destination a fact
-  rather than a claim, and a bind that fails to verify drops the binding rather
-  than leaving an earlier one standing.
+  rather than a claim. A bind that fails to verify changes nothing: an unbound
+  connection stays unbound, and an established binding stands — clearing it
+  would let a malformed bind reset the connection for a later bind to re-aim.
 - **The signed bytes are checked against the binding.** A verified bind proves
   where a connection *says* it is going; it does not stop that connection asking
   for a signature over a login to somewhere else, and a compromised box sees a

@@ -245,24 +245,74 @@ func TestForgedSessionBindIsIgnored(t *testing.T) {
 		Prompter:   &scriptedPrompter{choice: prompt.ChoiceAllowOnce},
 	})
 
-	client := h.client()
-	// Bind honestly first, so the test also proves a forged bind drops the
-	// binding it replaces rather than leaving the previous one standing.
-	if _, err := client.Extension(sessionBindExtension, bindTo(t, real, false)); err != nil {
-		t.Fatalf("binding the session: %v", err)
-	}
-	if _, err := client.Extension(sessionBindExtension, forgedBind(t, real.PublicKey(), other)); err == nil {
+	// On an unbound connection a forged bind leaves it unbound.
+	fresh := h.client()
+	if _, err := fresh.Extension(sessionBindExtension, forgedBind(t, real.PublicKey(), other)); err == nil {
 		t.Fatal("a session-bind signed by the wrong key was accepted")
 	}
-	if _, err := client.Sign(h.key(), login(h.key(), newSessionID(t))); err != nil {
+	if _, err := fresh.Sign(h.key(), login(h.key(), newSessionID(t))); err != nil {
 		t.Fatalf("signing: %v", err)
 	}
-
 	if got := h.prompter.lastSubject(t); !strings.HasSuffix(got, " → "+unknownDestination) {
 		t.Errorf("the human was asked about %q, want the destination to be unknown", got)
 	}
-	if n := h.host.events.count("unbound"); n != 1 {
-		t.Errorf("recorded %d unbound events, want 1: %v", n, h.host.events.kinds())
+
+	// On a bound connection a forged bind changes nothing: the honest binding
+	// stands, logins for its session still name it, and others are refused.
+	bound := h.client()
+	bind, sessionID := bindSession(t, real, false)
+	if _, err := bound.Extension(sessionBindExtension, bind); err != nil {
+		t.Fatalf("binding the session: %v", err)
+	}
+	if _, err := bound.Extension(sessionBindExtension, forgedBind(t, real.PublicKey(), other)); err == nil {
+		t.Fatal("a session-bind signed by the wrong key was accepted")
+	}
+	if _, err := bound.Sign(h.key(), login(h.key(), sessionID)); err != nil {
+		t.Fatalf("signing for the bound session: %v", err)
+	}
+	if got := h.prompter.lastSubject(t); !strings.HasSuffix(got, " → github.com") {
+		t.Errorf("a forged bind disturbed the binding: asked about %q", got)
+	}
+	if _, err := bound.Sign(h.key(), login(h.key(), newSessionID(t))); err == nil {
+		t.Error("after a forged bind, a login for another session was signed")
+	}
+	if n := h.host.events.count("unbound"); n != 2 {
+		t.Errorf("recorded %d unbound events, want 2: %v", n, h.host.events.kinds())
+	}
+}
+
+// TestAMalformedBindCannotResetABinding is the review's sequence: valid bind,
+// malformed bind, valid bind. The malformed one used to clear the binding, so
+// the third replaced a binding that is supposed to be final.
+func TestAMalformedBindCannotResetABinding(t *testing.T) {
+	first, second := newHostKey(t), newHostKey(t)
+	knownHosts := writeKnownHosts(t, map[string]ssh.PublicKey{
+		"first.example":  first.PublicKey(),
+		"second.example": second.PublicKey(),
+	})
+	prompter := &scriptedPrompter{choice: prompt.ChoiceAllowOnce}
+	h := start(t, Options{KnownHosts: []string{knownHosts}, Prompter: prompter})
+	client := h.client()
+
+	bind, sessionID := bindSession(t, first, false)
+	if _, err := client.Extension(sessionBindExtension, bind); err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+	if _, err := client.Extension(sessionBindExtension, []byte("not a bind")); err == nil {
+		t.Fatal("a malformed bind was accepted")
+	}
+	again, againSession := bindSession(t, second, false)
+	if _, err := client.Extension(sessionBindExtension, again); err == nil {
+		t.Fatal("a valid bind after a malformed one replaced the original binding")
+	}
+	if _, err := client.Sign(h.key(), login(h.key(), againSession)); err == nil {
+		t.Error("a login for the would-be replacement session was signed")
+	}
+	if _, err := client.Sign(h.key(), login(h.key(), sessionID)); err != nil {
+		t.Fatalf("the original binding was lost: %v", err)
+	}
+	if got := prompter.lastSubject(t); !strings.HasSuffix(got, " → first.example") {
+		t.Errorf("asked about %q, want first.example", got)
 	}
 }
 
