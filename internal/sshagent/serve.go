@@ -132,21 +132,21 @@ func disconnected(ctx context.Context, err error) bool {
 // built from the key and the destination. Nothing the connection said about
 // itself takes part — an agent connection carries no provenance at all, and
 // what little the protocol offers would be the remote box describing itself.
-func (s *Service) authorize(ctx context.Context, l *link, subject string, dest destination) (allowed bool, reason decision) {
+func (s *Service) authorize(ctx context.Context, l *link, subject string, t target) (allowed bool, reason decision) {
 	asked := s.gate.Authorize(ctx, prompt.Request{
 		Host:    l.host,
 		Subject: subject,
 		Noun:    "key",
 		// The scope is what a subject-wide grant will actually cover, and for a
-		// key that is the destination. "Allow this key for github.com this
-		// session" is a promise someone can weigh; "allow this key" is not.
-		Scope: dest.String(),
+		// key that is the target. "Allow this key for github.com this session"
+		// is a promise someone can weigh; "allow this key" is not.
+		Scope: t.String(),
 		// A `git push` signs several times in a row. Landing the cursor on
 		// "allow once" would cost a keystroke per signature and get the whole
 		// service switched off by lunchtime; the options stay in
 		// narrowest-first order, only the starting point moves.
-		Prefer: prompt.ChoiceAllowSecretSession,
-		Rows:   dest.rows(),
+		Prefer: t.prefer(),
+		Rows:   t.rows(),
 		// Nothing about the caller: an agent connection carries no provenance
 		// at all, and what little the protocol offers would be the remote box
 		// describing itself.

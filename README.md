@@ -214,6 +214,23 @@ agent which host it is authenticating to, and devtun resolves that against your
 `known_hosts`. Where it is not — an older `ssh` — the prompt says the
 destination is unknown rather than implying a precision it does not have.
 
+A grant for a destination covers *logins to that destination* and nothing
+else. devtun reads what it is asked to sign: an SSH login must be for the very
+session the connection proved it is bound to (the check OpenSSH's own agent
+makes for destination-restricted keys), and one for any other session is
+refused outright. Everything else is its own subject, asked about separately:
+
+| What is being signed | Subject |
+|---|---|
+| a login to a known host | `ssh-ed25519 SHA256:… → github.com` |
+| a login whose destination nobody vouched for | `ssh-ed25519 SHA256:… → (destination unknown)` |
+| a git commit or tag (`gpg.format ssh`), `ssh-keygen -Y sign` | `ssh-ed25519 SHA256:… → sshsig:git` (the SSHSIG namespace) |
+| anything else | `ssh-ed25519 SHA256:… → (arbitrary data)` |
+
+So `* → sshsig:git` in your rules allows commit signing with any key, without
+also letting the box log in anywhere. A wildcard destination (`… → **`) still
+matches every row of that table — it means "this key, for everything".
+
 It needs a second line in your shell rc, because `ssh` finds its agent through
 an environment variable and there is no binary to shadow:
 

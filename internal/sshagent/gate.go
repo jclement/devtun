@@ -49,10 +49,22 @@ func (g *gate) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 // the legacy ssh-rsa signature, which is the client asking for a *stronger*
 // algorithm and nothing devtun should second-guess.
 func (g *gate) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
-	subject := subjectFor(key, g.dest)
+	// What the signature is for comes from the bytes being signed, checked
+	// against the binding, never from the binding alone: a destination grant
+	// must cover a login to that destination and nothing else.
+	t, err := targetOf(key, data, g.dest)
+	if err != nil {
+		subject := subjectFor(key, target{kind: targetLogin, dest: g.dest})
+		g.link.requested(subject, g.dest)
+		// No policy took part, so the decision names no rule or grant: the
+		// refusal is the binding's, made before anything was consulted.
+		g.link.denied(subject, decision{reason: err.Error()})
+		return nil, fmt.Errorf("devtun refused this signature: %w", err)
+	}
+	subject := subjectFor(key, t)
 	g.link.requested(subject, g.dest)
 
-	allowed, reason := g.svc.authorize(g.ctx, g.link, subject, g.dest)
+	allowed, reason := g.svc.authorize(g.ctx, g.link, subject, t)
 	if !allowed {
 		g.link.denied(subject, reason)
 		// The message is for our log, not for the remote: the agent protocol
@@ -132,10 +144,22 @@ func (g *gate) Extension(extensionType string, contents []byte) ([]byte, error) 
 	bind, hostKey, err := parseSessionBind(contents)
 	if err != nil {
 		// A bind that cannot be read or cannot be believed leaves the
-		// connection unbound rather than stale or forged: signatures after this
+		// connection unbound rather than stale or forged: logins after this
 		// point are attributed to "(destination unknown)", which is the honest
 		// answer and still promptable.
 		g.dest = destination{}
+		g.link.unbound(err)
+		return nil, err
+	}
+
+	// A connection bound for a login of its own is finished binding. Only a
+	// hop that forwards the agent onward has a reason to be followed by
+	// another bind — the next hop's — so a second bind after a non-forwarding
+	// one is a connection trying to re-aim a binding it has already used.
+	// OpenSSH's agent refuses it for the same reason; the existing binding
+	// stands.
+	if g.dest.hostKey != nil && !g.dest.forwarding {
+		err := fmt.Errorf("this connection is already bound for a login to %s", g.dest)
 		g.link.unbound(err)
 		return nil, err
 	}

@@ -172,11 +172,15 @@ func serveKeyring(t *testing.T, ring agent.Agent) func(context.Context) (net.Con
 // destination's host key, a session identifier, and that host key's signature
 // over the identifier.
 func bindTo(t *testing.T, hostKey ssh.Signer, forwarding bool) []byte {
+	bind, _ := bindSession(t, hostKey, forwarding)
+	return bind
+}
+
+// bindSession is bindTo that also returns the session identifier, for a test
+// that goes on to sign a login for that session.
+func bindSession(t *testing.T, hostKey ssh.Signer, forwarding bool) (bind, sessionID []byte) {
 	t.Helper()
-	sessionID := make([]byte, 32)
-	if _, err := rand.Read(sessionID); err != nil {
-		t.Fatalf("making a session id: %v", err)
-	}
+	sessionID = newSessionID(t)
 	signature, err := hostKey.Sign(rand.Reader, sessionID)
 	if err != nil {
 		t.Fatalf("signing the session id: %v", err)
@@ -186,7 +190,56 @@ func bindTo(t *testing.T, hostKey ssh.Signer, forwarding bool) []byte {
 		SessionID:    sessionID,
 		Signature:    ssh.Marshal(signature),
 		IsForwarding: forwarding,
+	}), sessionID
+}
+
+func newSessionID(t *testing.T) []byte {
+	t.Helper()
+	sessionID := make([]byte, 32)
+	if _, err := rand.Read(sessionID); err != nil {
+		t.Fatalf("making a session id: %v", err)
+	}
+	return sessionID
+}
+
+// login builds the data `ssh` signs to log in with key during sessionID — an
+// RFC 4252 publickey request, exactly as a real client lays it out.
+func login(key ssh.PublicKey, sessionID []byte) []byte {
+	return ssh.Marshal(userAuthRequest{
+		SessionID: sessionID,
+		Type:      msgUserAuthRequest,
+		User:      "git",
+		Service:   userAuthService,
+		Method:    methodPublicKey,
+		HasSig:    true,
+		Algorithm: key.Type(),
+		PublicKey: key.Marshal(),
 	})
+}
+
+// hostBoundLogin is login using OpenSSH's hostbound method, which names the
+// destination's host key inside the signed data.
+func hostBoundLogin(key ssh.PublicKey, sessionID []byte, hostKey ssh.PublicKey) []byte {
+	return ssh.Marshal(userAuthRequest{
+		SessionID: sessionID,
+		Type:      msgUserAuthRequest,
+		User:      "git",
+		Service:   userAuthService,
+		Method:    methodHostBound,
+		HasSig:    true,
+		Algorithm: key.Type(),
+		PublicKey: key.Marshal(),
+		Rest:      ssh.Marshal(struct{ HostKey []byte }{hostKey.Marshal()}),
+	})
+}
+
+// sshsig builds the blob `ssh-keygen -Y sign -n <namespace>` signs.
+func sshsig(namespace string) []byte {
+	return append([]byte(sshsigMagic), ssh.Marshal(sshsigBlob{
+		Namespace: namespace,
+		HashAlg:   "sha512",
+		Hash:      make([]byte, 64),
+	})...)
 }
 
 // forgedBind claims one host key while signing with another, which is what a
@@ -448,4 +501,16 @@ func (r *recorder) find(t *testing.T, kind string) event.Event {
 	}
 	t.Fatalf("no %q event; got %v", kind, r.kinds())
 	return event.Event{}
+}
+
+// lastRequest is the whole of the last question asked, for a test about its
+// rows or where its cursor starts.
+func (s *scriptedPrompter) lastRequest(t *testing.T) prompt.Request {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.requests) == 0 {
+		t.Fatal("nobody was asked anything")
+	}
+	return s.requests[len(s.requests)-1]
 }

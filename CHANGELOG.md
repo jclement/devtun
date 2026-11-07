@@ -5,6 +5,17 @@ this is 0.x, a minor bump may break something.
 
 ## Unreleased
 
+### Security
+
+- **An SSH destination grant covers logins to that destination, and nothing
+  else.** The agent used to authorise a signature on the key and the
+  connection's session-bind alone, then sign whatever bytes it was handed — so
+  a box holding one genuine bind for github.com could have a login to another
+  server signed under the github.com grant. devtun now reads the data: a login
+  must be for the bound session, or it is refused; git/SSHSIG signatures are
+  asked about as `→ sshsig:<namespace>`; anything else as `→ (arbitrary data)`.
+  A rule that matched every destination (`→ **`) still matches these.
+
 ### Fixed
 
 - **Editing a config file while devtun runs no longer loses the edit.** devtun
@@ -38,6 +49,7 @@ this is 0.x, a minor bump may break something.
   host file's hand-written `rules:`, which keep working as before.
 - Activity events for decisions carry what decided: `by=rule|grant|unmatched|…`
   with the rule's ID and source or the grant's ID.
+||||||| parent of 015aa41 (Bind SSH agent signatures to the session they were bound for)
 
 ## v0.1.22
 

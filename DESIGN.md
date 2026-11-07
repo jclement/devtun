@@ -239,6 +239,23 @@ Four decisions inside it are not negotiable:
   signature over the session identifier is what makes the destination a fact
   rather than a claim, and a bind that fails to verify drops the binding rather
   than leaving an earlier one standing.
+- **The signed bytes are checked against the binding.** A verified bind proves
+  where a connection *says* it is going; it does not stop that connection asking
+  for a signature over a login to somewhere else, and a compromised box sees a
+  genuine bind for GitHub every time you fetch. So the gate parses what it is
+  asked to sign, as OpenSSH's agent does for destination-restricted keys: an
+  RFC 4252 public-key login must name the key signing it, be for the bound
+  session (and, for the hostbound method, the bound host key), or it is refused
+  without a prompt — there is no honest subject to ask about. A connection bound
+  for a host that forwards the agent onward is the one exception: a login for a
+  different session there is the next hop's, and is asked about as
+  `(destination unknown)` with the host it came through shown. A second bind
+  after a non-forwarding one is refused, so a used binding cannot be re-aimed.
+- **Non-login signatures never ride a destination grant.** An SSHSIG blob (git
+  commit signing, `ssh-keygen -Y sign`) is named by its namespace,
+  `→ sshsig:git`; anything else is `→ (arbitrary data)`, whose prompt starts on
+  *deny* because nothing about it is routine. Both stay in the `key → target`
+  shape so the same two-field rules match them.
 - **The subject says when it does not know.** An older `ssh` sends no bind at
   all, and then the destination reads `(destination unknown)`. Inventing one
   would be worse than vagueness, because it would be a specific claim that

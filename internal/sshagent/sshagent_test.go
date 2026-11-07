@@ -16,8 +16,10 @@ import (
 	"github.com/jclement/devtun/internal/prompt"
 )
 
-// payload is what a client asks to have signed. Its content is immaterial —
-// what matters is whether it comes back signed.
+// payload is what a client asks to have signed, for the tests where its content
+// is immaterial and only whether it comes back signed matters. It is neither a
+// login nor an SSHSIG blob, so its subject is "(arbitrary data)"; tests about
+// destinations sign a real login instead (see login).
 var payload = []byte("devtun test payload")
 
 func TestSignatureIsRefusedUntilItIsApproved(t *testing.T) {
@@ -149,17 +151,18 @@ func TestDenyRuleBeatsALiveGrant(t *testing.T) {
 	})
 
 	client := h.client()
-	if _, err := client.Extension(sessionBindExtension, bindTo(t, hostKey, false)); err != nil {
+	bind, sessionID := bindSession(t, hostKey, false)
+	if _, err := client.Extension(sessionBindExtension, bind); err != nil {
 		t.Fatalf("binding the session: %v", err)
 	}
 
 	// A grant planted as if it had been given before the deny rule existed. A
 	// rule added to block something must not be undoable by having clicked
 	// through a prompt earlier.
-	subject := subjectFor(h.key(), destination{hostKey: hostKey.PublicKey(), name: "github.com"})
+	subject := subjectFor(h.key(), target{dest: destination{hostKey: hostKey.PublicKey(), name: "github.com"}})
 	h.svc.gate.Store().GrantSession(h.host.Label(), subject)
 
-	if _, err := client.Sign(h.key(), payload); err == nil {
+	if _, err := client.Sign(h.key(), login(h.key(), sessionID)); err == nil {
 		t.Fatal("a denied subject was signed because a grant was live")
 	}
 	denied := h.host.events.find(t, "denied")
@@ -180,10 +183,11 @@ func TestSessionBindNamesTheDestination(t *testing.T) {
 	})
 
 	client := h.client()
-	if _, err := client.Extension(sessionBindExtension, bindTo(t, hostKey, false)); err != nil {
+	bind, sessionID := bindSession(t, hostKey, false)
+	if _, err := client.Extension(sessionBindExtension, bind); err != nil {
 		t.Fatalf("binding the session: %v", err)
 	}
-	if _, err := client.Sign(h.key(), payload); err != nil {
+	if _, err := client.Sign(h.key(), login(h.key(), sessionID)); err != nil {
 		t.Fatalf("signing: %v", err)
 	}
 
@@ -201,10 +205,11 @@ func TestUnnamedDestinationFallsBackToItsFingerprint(t *testing.T) {
 	h := start(t, Options{Prompter: &scriptedPrompter{choice: prompt.ChoiceAllowOnce}})
 
 	client := h.client()
-	if _, err := client.Extension(sessionBindExtension, bindTo(t, hostKey, false)); err != nil {
+	bind, sessionID := bindSession(t, hostKey, false)
+	if _, err := client.Extension(sessionBindExtension, bind); err != nil {
 		t.Fatalf("binding the session: %v", err)
 	}
-	if _, err := client.Sign(h.key(), payload); err != nil {
+	if _, err := client.Sign(h.key(), login(h.key(), sessionID)); err != nil {
 		t.Fatalf("signing: %v", err)
 	}
 
@@ -220,7 +225,7 @@ func TestUnnamedDestinationFallsBackToItsFingerprint(t *testing.T) {
 func TestWithoutASessionBindTheDestinationIsUnknown(t *testing.T) {
 	h := start(t, Options{Prompter: &scriptedPrompter{choice: prompt.ChoiceAllowOnce}})
 
-	if _, err := h.client().Sign(h.key(), payload); err != nil {
+	if _, err := h.client().Sign(h.key(), login(h.key(), newSessionID(t))); err != nil {
 		t.Fatalf("signing: %v", err)
 	}
 	if got := h.prompter.lastSubject(t); !strings.HasSuffix(got, " → "+unknownDestination) {
@@ -249,7 +254,7 @@ func TestForgedSessionBindIsIgnored(t *testing.T) {
 	if _, err := client.Extension(sessionBindExtension, forgedBind(t, real.PublicKey(), other)); err == nil {
 		t.Fatal("a session-bind signed by the wrong key was accepted")
 	}
-	if _, err := client.Sign(h.key(), payload); err != nil {
+	if _, err := client.Sign(h.key(), login(h.key(), newSessionID(t))); err != nil {
 		t.Fatalf("signing: %v", err)
 	}
 
@@ -344,19 +349,21 @@ func TestConcurrentConnectionsKeepTheirOwnDestination(t *testing.T) {
 	})
 
 	first, second := h.client(), h.client()
-	if _, err := first.Extension(sessionBindExtension, bindTo(t, alpha, false)); err != nil {
+	firstBind, firstSession := bindSession(t, alpha, false)
+	if _, err := first.Extension(sessionBindExtension, firstBind); err != nil {
 		t.Fatalf("binding the first session: %v", err)
 	}
-	if _, err := second.Extension(sessionBindExtension, bindTo(t, beta, false)); err != nil {
+	secondBind, secondSession := bindSession(t, beta, false)
+	if _, err := second.Extension(sessionBindExtension, secondBind); err != nil {
 		t.Fatalf("binding the second session: %v", err)
 	}
 
 	var signing sync.WaitGroup
-	for _, client := range []agent.ExtendedAgent{first, second} {
+	for client, sessionID := range map[agent.ExtendedAgent][]byte{first: firstSession, second: secondSession} {
 		signing.Add(1)
 		go func() {
 			defer signing.Done()
-			if _, err := client.Sign(h.key(), payload); err != nil {
+			if _, err := client.Sign(h.key(), login(h.key(), sessionID)); err != nil {
 				t.Errorf("signing: %v", err)
 			}
 		}()
@@ -366,8 +373,8 @@ func TestConcurrentConnectionsKeepTheirOwnDestination(t *testing.T) {
 	got := h.prompter.subjects()
 	slices.Sort(got)
 	want := []string{
-		subjectFor(h.key(), destination{hostKey: alpha.PublicKey(), name: "alpha.example"}),
-		subjectFor(h.key(), destination{hostKey: beta.PublicKey(), name: "beta.example"}),
+		subjectFor(h.key(), target{dest: destination{hostKey: alpha.PublicKey(), name: "alpha.example"}}),
+		subjectFor(h.key(), target{dest: destination{hostKey: beta.PublicKey(), name: "beta.example"}}),
 	}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {

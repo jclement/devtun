@@ -39,6 +39,9 @@ type destination struct {
 	// too. It is reported rather than folded into the subject: it changes how
 	// alarming a request is, not which request it is.
 	forwarding bool
+	// sessionID is the SSH session the bind proved, and the one a login signed
+	// under this destination must be for. See targetOf.
+	sessionID []byte
 }
 
 // String renders the destination for a subject and a prompt, preferring the
@@ -82,17 +85,24 @@ func (d destination) rows() []prompt.Row {
 
 // subjectFor names one signing request for the policy store and the prompt.
 //
-// The format is `<key type> <key fingerprint> → <destination>`. Both halves
-// have to be there: the key alone would let a grant for a throwaway host cover
-// a signature into production, and the destination alone would let a grant for
-// one of your keys cover all of them.
+// The format is `<key type> <key fingerprint> → <target>`. Both halves have to
+// be there: the key alone would let a grant for a throwaway host cover a
+// signature into production, and the target alone would let a grant for one of
+// your keys cover all of them.
+//
+// The target is the login's destination for an SSH login, `sshsig:<namespace>`
+// for an SSHSIG signature (`sshsig:git` for git), or `(arbitrary data)` — see
+// target.String. A grant is for one exact subject, so a session grant for
+// GitHub logins covers neither git signing nor arbitrary data.
 //
 // It is matched against globs in the user's config, so it is a stable string
 // and not a rendering. Matching is field by field (see Schema): `* → github.com`
-// allows any key into GitHub, and `ssh-ed25519 SHA256:… → *` allows one key
-// anywhere.
-func subjectFor(key ssh.PublicKey, dest destination) string {
-	return fmt.Sprintf("%s %s%s%s", key.Type(), ssh.FingerprintSHA256(key), subjectSeparator, dest)
+// allows any key to log in to GitHub, `* → sshsig:git` allows any key to sign
+// git objects, and `ssh-ed25519 SHA256:… → *` allows one key for every login
+// and SSHSIG namespace — but not for arbitrary data, which only a rule naming
+// `(arbitrary data)` matches (see Schema).
+func subjectFor(key ssh.PublicKey, t target) string {
+	return fmt.Sprintf("%s %s%s%s", key.Type(), ssh.FingerprintSHA256(key), subjectSeparator, t)
 }
 
 // subjectSeparator divides a subject's key from its destination.
@@ -145,6 +155,7 @@ func (s *Service) destinationFor(bind sessionBind, hostKey ssh.PublicKey) destin
 		hostKey:    hostKey,
 		name:       s.names.nameOf(hostKey),
 		forwarding: bind.IsForwarding,
+		sessionID:  bind.SessionID,
 	}
 }
 
