@@ -368,6 +368,9 @@ func TestAnAlwaysAnswerStopsTheAsking(t *testing.T) {
 	}
 
 	exchange(t, svc, openRequest{URL: "https://github.com/login"})
+	if got := asker.seen().Service; got != "browser" {
+		t.Errorf("the question names its broker as %q, want browser", got)
+	}
 	if len(svc.Rules()) != 1 {
 		t.Fatalf("no rule was written: %+v", svc.Rules())
 	}

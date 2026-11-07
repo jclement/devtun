@@ -101,6 +101,12 @@ func (c Choice) Refuses() bool {
 
 // Request is everything the human needs to make the decision.
 type Request struct {
+	// Service is the id of the broker asking — "1password", "ssh-agent",
+	// "browser". The broker sets it. A surface that acts on the answer beyond
+	// choosing from the menu (the interface's rule form, say) needs to know
+	// whose policy it is writing to, and guessing from the subject's shape
+	// picked the wrong broker for anything single-field.
+	Service string
 	// Host is the SSH host the request came from — the identity the decision is
 	// recorded against.
 	Host string

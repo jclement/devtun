@@ -336,6 +336,7 @@ func (s *Service) approve(
 	subject := siteOf(parsed)
 
 	asked := s.gate.Authorize(ctx, prompt.Request{
+		Service: "browser",
 		Host:    label,
 		Subject: subject,
 		// "site", so the menu offers "Yes, this site — 5m" rather than

@@ -295,6 +295,7 @@ func (s *Service) handleResolve(ctx context.Context, l *link, request opRequest)
 // to.
 func (s *Service) authorize(ctx context.Context, l *link, subject string, argv []string) (allowed bool, why decision, until time.Time) {
 	asked := s.gate.Authorize(ctx, prompt.Request{
+		Service: "1password",
 		Host:    l.host,
 		Subject: subject,
 		Noun:    "secret",

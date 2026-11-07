@@ -86,12 +86,14 @@ type scriptedPrompter struct {
 	choice prompt.Choice
 	err    error
 	asked  int
+	last   prompt.Request
 }
 
-func (s *scriptedPrompter) Ask(context.Context, prompt.Request) (prompt.Choice, error) {
+func (s *scriptedPrompter) Ask(_ context.Context, request prompt.Request) (prompt.Choice, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.asked++
+	s.last = request
 	return s.choice, s.err
 }
 
@@ -1081,5 +1083,19 @@ func TestOneTimeCodesAreNeverCached(t *testing.T) {
 	}
 	if n := h.runner.reads(); n != 5 {
 		t.Errorf("the plain field was read %d times, want once more: caching must still work for it", n-4)
+	}
+}
+
+// The question names the broker asking, so a surface acting on the answer —
+// the interface's rule form — writes to this broker's policy and no other.
+func TestTheQuestionNamesItsBroker(t *testing.T) {
+	opts := Options{}
+	opts.Prompter = &scriptedPrompter{choice: prompt.ChoiceAllowOnce}
+	h := start(t, opts, map[string]string{"op://Personal/Docker/PAT": "ghp_secret"})
+	h.exec(t, "read", "op://Personal/Docker/PAT")
+	h.prompter.mu.Lock()
+	defer h.prompter.mu.Unlock()
+	if h.prompter.asked != 1 || h.prompter.last.Service != "1password" {
+		t.Errorf("asked %d times, Service %q; want once, from 1password", h.prompter.asked, h.prompter.last.Service)
 	}
 }

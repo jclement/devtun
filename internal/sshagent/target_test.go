@@ -147,6 +147,9 @@ func TestArbitraryDataIsItsOwnSubject(t *testing.T) {
 		t.Errorf("the subject format drifted: %q", want)
 	}
 	request := prompter.lastRequest(t)
+	if request.Service != "ssh-agent" {
+		t.Errorf("the question names its broker as %q, want ssh-agent", request.Service)
+	}
 	if request.Prefer != prompt.ChoiceDeny {
 		t.Errorf("the prompt for arbitrary data starts on %v, want the safe default", request.Prefer)
 	}

@@ -134,6 +134,7 @@ func disconnected(ctx context.Context, err error) bool {
 // what little the protocol offers would be the remote box describing itself.
 func (s *Service) authorize(ctx context.Context, l *link, subject string, t target) (allowed bool, reason decision) {
 	asked := s.gate.Authorize(ctx, prompt.Request{
+		Service: "ssh-agent",
 		Host:    l.host,
 		Subject: subject,
 		Noun:    "key",
