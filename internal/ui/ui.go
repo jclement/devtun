@@ -193,6 +193,39 @@ func ClassGlyph(c event.Class) string {
 	}
 }
 
+// ServiceGlyph is a service's own glyph, as its Meta declares it, or "" for
+// an event from anything that is not a service (the session, the board).
+//
+// Restated here because ui cannot import the services without a cycle; a
+// test in internal/tui checks each one against the service's Meta.
+func ServiceGlyph(service string) string {
+	switch service {
+	case "tunnels":
+		return "⇄"
+	case "1password":
+		return "❖"
+	case "ssh-agent":
+		return "◈"
+	case "gpg-agent":
+		return "✎"
+	case "browser":
+		return "◱"
+	}
+	return ""
+}
+
+// EventGlyph is the glyph a log line leads with: the service's own, so an SSH
+// signature and a 1Password read are told apart before the name is read —
+// both are security events, and leading every security line with the vault's
+// ❖ put a 1Password mark on every refused git push. Events from no service
+// fall back to their class's glyph. The class still shows, as the colour.
+func EventGlyph(e event.Event) string {
+	if g := ServiceGlyph(e.Service); g != "" {
+		return g
+	}
+	return ClassGlyph(e.Class)
+}
+
 // Every glyph ClassGlyph returns is exactly one terminal cell, and that is a
 // rule rather than an observation: **no glyph devtun draws may be an
 // emoji-presentation code point.**

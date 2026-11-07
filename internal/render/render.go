@@ -57,7 +57,7 @@ func (l *Log) Event(e event.Event) {
 	style := ui.ClassStyle(e.Class)
 	line := fmt.Sprintf("%s %s %s  %s",
 		ui.Muted.Render(e.Time.Format("15:04:05")),
-		ui.ClassGlyph(e.Class),
+		style.Render(ui.EventGlyph(e)),
 		style.Render(pad(ui.ShortService(e.Service), 9)),
 		ui.LevelStyle(e.Level).Render(e.Text),
 	)

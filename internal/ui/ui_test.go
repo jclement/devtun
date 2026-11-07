@@ -103,11 +103,11 @@ func TestEveryGlyphIsOneCell(t *testing.T) {
 		// The service glyphs, copied from each service's Meta. They cannot be
 		// read from here without an import cycle, so they are restated — and a
 		// mismatch is caught by the reader, which is the trade this makes.
-		"tunnels":   "⇄",
-		"1password": "❖",
-		"ssh-agent": "◈",
-		"gpg-agent": "✎",
-		"browser":   "◱",
+		"tunnels":   ServiceGlyph("tunnels"),
+		"1password": ServiceGlyph("1password"),
+		"ssh-agent": ServiceGlyph("ssh-agent"),
+		"gpg-agent": ServiceGlyph("gpg-agent"),
+		"browser":   ServiceGlyph("browser"),
 	}
 
 	for name, glyph := range glyphs {

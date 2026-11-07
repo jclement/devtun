@@ -155,7 +155,7 @@ func (m *Model) activityDetailBox() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(ui.ClassStyle(e.Class).Render(ui.ClassGlyph(e.Class)+" "+e.Time.Format("15:04:05")) + "  " + e.Text + "\n")
+	b.WriteString(ui.ClassStyle(e.Class).Render(ui.EventGlyph(e)+" "+e.Time.Format("15:04:05")) + "  " + e.Text + "\n")
 	if why := m.whyText(e); why != "" {
 		b.WriteString("\n" + why)
 	}

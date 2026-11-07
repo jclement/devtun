@@ -649,6 +649,9 @@ func (m *Model) editorLabel() string {
 // no `r revoke` in it, because pressing r there would only produce a toast
 // saying no. A key bar that advertises refusals is a cheat-sheet, not a guide.
 func (m *Model) keyBar() string {
+	if modal, ok := m.modalKeys(); ok {
+		return m.renderKeys(modal, m.width-8)
+	}
 	var keys [][2]string
 	if m.hasSelection() {
 		for _, a := range m.rowActions() {
@@ -704,6 +707,12 @@ func (m *Model) keyBar() string {
 		keys = keys[1:]
 	}
 
+	return m.renderKeys(keys, budget)
+}
+
+// renderKeys draws key hints and records where each landed, so a click runs
+// what is under it.
+func (m *Model) renderKeys(keys [][2]string, budget int) string {
 	sep := ui.Muted.Render(" · ")
 	var bar strings.Builder
 	used := 0
@@ -783,7 +792,7 @@ func (m *Model) ticker() string {
 func eventLine(e event.Event) string {
 	return fmt.Sprintf("%s %s %s  %s",
 		ui.Muted.Render(e.Time.Format("15:04:05")),
-		ui.ClassGlyph(e.Class),
+		ui.ClassStyle(e.Class).Render(ui.EventGlyph(e)),
 		ui.ClassStyle(e.Class).Render(pad(ui.ShortService(e.Service), ui.ServiceWidth)),
 		ui.LevelStyle(e.Level).Render(e.Text),
 	)
@@ -897,4 +906,44 @@ func barWidth(keys [][2]string) int {
 		width += ansi.StringWidth(k[0]) + 1 + ansi.StringWidth(k[1])
 	}
 	return width
+}
+
+// modalKeys is the key bar while an overlay is open: that overlay's own keys,
+// because the list's actions underneath are not what a key does now — `r`
+// typed into the rule form is a letter, not a revoke. ok is false when no
+// overlay is open.
+func (m *Model) modalKeys() ([][2]string, bool) {
+	switch {
+	case m.approval != nil:
+		keys := [][2]string{{"1-9", "choose"}, {"enter", "choose"}}
+		if len(m.d.secrets) > 0 {
+			keys = append(keys, [2]string{"w", "broader rule…"})
+		}
+		return append(keys, [2]string{"esc", "deny"}), true
+	case m.setup != nil:
+		return [][2]string{{"y", "add it"}, {"n", "leave it alone"}}, true
+	case m.confirm != nil:
+		return [][2]string{{"y", m.confirm.yes}, {"n", m.confirm.no}}, true
+	case m.menu != nil:
+		return [][2]string{{"↑↓", "choose"}, {"enter", "run"}, {"esc", "close"}}, true
+	case m.form != nil:
+		return [][2]string{{"tab", "next field"}, {"ctrl+t", "widen"}, {"enter", "save"}, {"esc", "cancel"}}, true
+	case m.test != nil:
+		return [][2]string{{"tab", "next field"}, {"ctrl+n", "rule from this"}, {"esc", "close"}}, true
+	case m.showHelp:
+		return [][2]string{{"?", "close"}}, true
+	case m.showDetail:
+		var keys [][2]string
+		for _, a := range m.detailActions() {
+			if a.short != "" && a.reason(m) == "" {
+				keys = append(keys, [2]string{displayKey(a.key), a.short})
+			}
+		}
+		return append(keys, [2]string{"↑↓", "next row"}, [2]string{"esc", "close"}), true
+	case m.protocolPrompt:
+		return [][2]string{{"h", "http"}, {"s", "https"}, {"esc", "cancel"}}, true
+	case m.offline():
+		return [][2]string{{"r", "try now"}, {"esc", "quit"}}, true
+	}
+	return nil, false
 }
