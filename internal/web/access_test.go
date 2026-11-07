@@ -537,3 +537,75 @@ func TestEventsCarryTheirFields(t *testing.T) {
 		t.Error("no fields should be no map")
 	}
 }
+
+// A wildcard means different things in different services: one path segment
+// in an op:// reference, any run of characters in an SSH key or destination.
+// The form's hint used to say the former about every field, which taught the
+// wrong rule exactly where it mattered — `* → github.com` covers every key.
+func TestEachFieldSaysWhatItsWildcardsMean(t *testing.T) {
+	vault := newVault(t, &testBook{}, authz.Schema{
+		Noun:     "secret",
+		Fields:   []authz.Field{{Name: "reference", Label: "reference"}},
+		PathLike: true,
+	})
+	agent := &namedVault{gatedVault: newVault(t, &testBook{}, sshSchema), id: "ssh-agent", title: "SSH agent"}
+	s := newTestServer(t, Options{Host: "bedev", Services: []service.Service{vault, agent}})
+
+	globs := map[string][]fieldView{}
+	for _, p := range stateOf(t, s).Policies {
+		globs[p.Source] = p.Schema.Fields
+		if p.Source == "1password" && !p.Schema.PathLike {
+			t.Error("1password's schema should say it is path-like")
+		}
+	}
+	op, ssh := globs["1password"], globs["ssh-agent"]
+	if len(op) != 1 || len(ssh) != 2 {
+		t.Fatalf("fields = %+v / %+v", op, ssh)
+	}
+	if !strings.Contains(op[0].Glob, "segment") {
+		t.Errorf("op reference glob = %q, want it to say * is one segment", op[0].Glob)
+	}
+	for _, f := range ssh {
+		if strings.Contains(f.Glob, "segment") || !strings.Contains(f.Glob, "anything") {
+			t.Errorf("ssh %s glob = %q, want * to match anything within the field", f.Name, f.Glob)
+		}
+	}
+}
+
+// The page must take the hint from the schema, and must not carry a glob rule
+// of its own that would be wrong for some service.
+func TestTheFormHintComesFromTheSchema(t *testing.T) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, fixed := range []string{"matches one part", "matches everything below"} {
+		if strings.Contains(text, fixed) {
+			t.Errorf("the page still hard-codes %q as a field hint", fixed)
+		}
+	}
+	if !strings.Contains(text, "f.help || f.glob") {
+		t.Error("the form's field hint is not the field's own help or glob")
+	}
+}
+
+// A row carries one action and the menu: the primary one (revoke, remove
+// refusal, remove) inline, the allow/deny switch only on the row under the
+// pointer or selected, and everything else in the menu, drawer and keys.
+func TestARowShowsOnlyItsPrimaryAction(t *testing.T) {
+	page, err := assets.ReadFile("assets/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	if strings.Contains(text, "inline: true") {
+		t.Error("an action is still always-inline; only the primary one may be")
+	}
+	if n := strings.Count(text, `inline: "primary"`); n != 3 {
+		t.Errorf("%d primary inline actions, want 3 (revoke, remove refusal, remove)", n)
+	}
+	if !strings.Contains(text, `tr:hover .reveal`) || !strings.Contains(text, `tr[aria-selected="true"] .reveal`) {
+		t.Error("the revealed action has no rule showing it on hover and selection")
+	}
+}

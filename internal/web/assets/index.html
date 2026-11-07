@@ -292,6 +292,11 @@
   #access td.subj { white-space: normal; word-break: break-all; min-width: 14rem; }
   #access td.subj .sep { color: var(--muted); }
   #access td.acts { text-align: right; }
+  /* Kept in its place but not drawn, so the row's primary button never moves
+     when the pointer arrives. visibility, not opacity: an undrawn button must
+     not be clickable either. */
+  #access .reveal { visibility: hidden; }
+  #access tr:hover .reveal, #access tr[aria-selected="true"] .reveal, #access .reveal:focus-visible { visibility: visible; }
   #access .outranked { color: var(--warn); margin-left: .4rem; white-space: nowrap; }
   #access tr.fallback td { background: var(--raised); }
   #access tr.fallback:hover { background: none; }
@@ -893,9 +898,11 @@ function means(source, subject) {
 }
 
 // widen takes a pattern one step wider: the last segment, exact → * → **.
-// The same step the terminal's ctrl+t takes.
-function widen(value) {
+// The same step the terminal's ctrl+t takes. Outside a path-like schema `*`
+// already matches the whole field, so there is only the one step.
+function widen(value, pathLike = true) {
   const v = value ?? "";
+  if (!pathLike) return v === "**" ? v : "*";
   if (v === "" || v === "**" || v.endsWith("/**")) return v === "" ? "*" : v;
   if (v === "*") return "**";
   if (v.endsWith("/*")) return v.slice(0, -1) + "*";
@@ -1066,9 +1073,18 @@ function accessRow(row) {
     // buttons that fail.
     inline.append(el("span", "readonly", "read-only · edit config.yaml"));
   } else {
-    for (const a of actionsFor(row).filter((x) => x.inline)) {
+    // One action on the row — the one people come for — and the menu beside
+    // it. The allow/deny switch appears only on the row under the pointer or
+    // the one selected; everything else is in the menu, the drawer and the
+    // keys, which is where a list of seven buttons a row belongs.
+    // The revealed one first, so the primary action always sits beside the
+    // menu and never moves when the other appears.
+    const all = actionsFor(row);
+    const shown = [...all.filter((x) => x.inline === "reveal"), ...all.filter((x) => x.inline === "primary")];
+    for (const a of shown) {
       const b = button(a.label, (event) => { event.stopPropagation(); runAction(row, a); },
-        a.loosens ? "loosen" : a.danger ? "danger" : "", a.enabled ? a.title : a.reason);
+        (a.loosens ? "loosen" : a.danger ? "danger" : "") + (a.inline === "reveal" ? " reveal" : ""),
+        a.enabled ? a.title : a.reason);
       b.disabled = !a.enabled;
       inline.append(b);
     }
@@ -1139,25 +1155,25 @@ function actionsFor(row) {
   const ro = "it is in your config.yaml, which applies to every host — edit that file; devtun does not rewrite it";
   if (row.isGrant) {
     if (row.action === "deny") {
-      out.push({ id: "revoke", label: "remove refusal", key: "r", inline: true, enabled: true, loosens: true,
+      out.push({ id: "revoke", label: "remove refusal", key: "r", inline: "primary", enabled: true, loosens: true,
         title: "stop refusing — the next request is asked about again" });
     } else {
-      out.push({ id: "revoke", label: "revoke", key: "r", inline: true, enabled: true, danger: true,
+      out.push({ id: "revoke", label: "revoke", key: "r", inline: "primary", enabled: true, danger: true,
         title: "take this back now rather than waiting for it to lapse" });
     }
   } else {
     const deny = row.action === "deny";
-    out.push({ id: "remove", label: "remove", key: "r", inline: true,
+    out.push({ id: "remove", label: "remove", key: "r", inline: "primary",
       enabled: !readOnly, reason: ro, loosens: deny, danger: !deny,
       title: deny ? "delete this deny — what it refused falls through to the other rules"
         : "delete this rule — the next request falls through to the other rules" });
-    out.push({ id: "deny", label: "make it a deny", key: "D", inline: !deny, enabled: !readOnly && !deny,
+    out.push({ id: "deny", label: "make it a deny", key: "D", inline: !deny && "reveal", enabled: !readOnly && !deny,
       reason: readOnly ? ro : "it already denies", danger: true,
       title: "rewrite this into a refusal — what it matches is refused, without asking" });
-    out.push({ id: "allow", label: "make it an allow", key: "A", inline: deny, enabled: !readOnly && deny,
+    out.push({ id: "allow", label: "make it an allow", key: "A", inline: deny && "reveal", enabled: !readOnly && deny,
       reason: readOnly ? ro : "it already allows", loosens: true,
       title: "rewrite this refusal into an allow — what it matches is allowed, without asking" });
-    out.push({ id: "edit", label: "widen or change…", key: "w", inline: true, enabled: !readOnly, reason: ro,
+    out.push({ id: "edit", label: "widen or change…", key: "w", enabled: !readOnly, reason: ro,
       title: "change what it matches, where it applies, or its note — asks first if it lets more through" });
   }
   out.push({ id: "test", label: "test a request like this", key: "t", enabled: true,
@@ -1641,7 +1657,7 @@ function openForm(opts = {}) {
   // w on a row opens the form one step wider than the rule already is, which
   // is what it is usually for; saving that still asks first.
   if (editing && opts.widen && editing.action === "allow" && st.values.length) {
-    st.values[0] = widen(st.values[0]);
+    st.values[0] = widen(st.values[0], policyOf(editing.source)?.schema?.pathLike);
   }
   const box = el("div", "dialog");
   const head = el("header", "", (editing ? "change a rule · " : "new rule · ") + "for " + hostName());
@@ -1689,10 +1705,13 @@ function openForm(opts = {}) {
       // know the glob rules to say "any field of this item".
       const wrap = el("div", "seg");
       wrap.style.flexWrap = "nowrap";
-      const wide = button("widen", () => { st.values[i] = widen(input.value.trim()); input.value = st.values[i]; drawMeans(); schedulePreview(); },
+      const wide = button("widen", () => { st.values[i] = widen(input.value.trim(), p.schema?.pathLike); input.value = st.values[i]; drawMeans(); schedulePreview(); },
         "", "one step wider: exact → * → **");
       wrap.append(input, wide);
-      row(f.label, wrap, (f.help ? f.help + " · " : "") + "* matches one part, ** matches everything below");
+      // What a wildcard means differs by service — one path segment in an
+      // op:// reference, any run of characters in an SSH destination — so
+      // the hint is the field's own, from devtun, never a fixed sentence.
+      row(f.label, wrap, f.help || f.glob);
     });
     form.append(el("label", "k", "means"), meansLine);
     drawMeans();

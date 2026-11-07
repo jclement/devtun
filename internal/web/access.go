@@ -57,12 +57,28 @@ type policyView struct {
 type schemaView struct {
 	Fields    []fieldView `json:"fields"`
 	Separator string      `json:"separator,omitempty"`
+	// PathLike says `*` stops at `/` here, which is what decides how the
+	// form widens a field one step.
+	PathLike bool `json:"pathLike,omitempty"`
 }
 
 type fieldView struct {
 	Name  string `json:"name"`
 	Label string `json:"label"`
 	Help  string `json:"help,omitempty"`
+	// Glob says what a wildcard means in this field, from the schema rather
+	// than from the page: `*` is one path segment in an op:// reference and
+	// any run of characters in an SSH destination, and a hint that said the
+	// former about the latter taught people the wrong rule.
+	Glob string `json:"glob"`
+}
+
+// globHelp describes the wildcards of one schema's fields.
+func globHelp(schema authz.Schema) string {
+	if schema.PathLike {
+		return "* is one /-separated segment, ** is everything below"
+	}
+	return "* matches anything within this field"
 }
 
 type unmatchedView struct {
@@ -199,9 +215,11 @@ func (s *Server) policyView(id string, broker Broker) policyView {
 			view.Title, view.Glyph = meta.Title, meta.Glyph
 		}
 	}
-	view.Schema.Separator = schema.Separator
+	view.Schema.Separator, view.Schema.PathLike = schema.Separator, schema.PathLike
 	for _, f := range schema.Fields {
-		view.Schema.Fields = append(view.Schema.Fields, fieldView{Name: f.Name, Label: f.Label, Help: f.Help})
+		view.Schema.Fields = append(view.Schema.Fields, fieldView{
+			Name: f.Name, Label: f.Label, Help: f.Help, Glob: globHelp(schema),
+		})
 	}
 	view.Unmatched = unmatchedOf(broker.Unmatched())
 	if err := broker.PolicyErr(); err != nil {
