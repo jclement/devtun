@@ -263,7 +263,7 @@ func (m *Model) configView() string {
 // terminal, so the name, the value and where it came from are written first and
 // in that order — those three are the row, and the sentence is the gloss.
 const (
-	cfgTitleWidth = 20
+	cfgTitleWidth = 24
 	cfgValueWidth = 10
 	cfgLevelWidth = 8
 )

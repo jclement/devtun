@@ -112,6 +112,10 @@ func (m *Model) actions() []action {
 		{title: "Reverse the sort order", tab: tabTunnels, key: "r", run: press("r")},
 
 		{title: "Show this event in full", short: "detail", tab: tabActivity, key: "enter", row: true, run: press("enter")},
+		{title: "Show the rule or grant that decided this", short: "show rule", tab: tabActivity, key: "o", row: true, run: press("o"),
+			disabled: func(mm *Model) string { return mm.decidingBlocked() }, alt: "why jump access explain"},
+				{title: "Write a rule from this request", tab: tabActivity, key: "n", row: true, run: press("n"),
+			disabled: func(mm *Model) string { return mm.newFromEventBlocked() }, alt: "new allow deny add"},
 		{title: "Copy this log line", short: "copy", tab: tabActivity, key: "y", row: true, run: press("y"), alt: "yank clipboard"},
 		{title: "Filter the log by what it is about", short: "filter", tab: tabActivity, key: "f", run: press("f")},
 
@@ -125,6 +129,10 @@ func (m *Model) actions() []action {
 			disabled: func(mm *Model) string { return mm.denyBlocked() }, alt: "refuse block tighten never"},
 		{title: "Copy the reference, never the secret", short: "copy", tab: tabAccess, key: "y", row: true, run: press("y"),
 			disabled: func(mm *Model) string { return mm.copyBlocked() }, alt: "yank clipboard op://"},
+		{title: "Widen or change this rule", short: "widen", tab: tabAccess, key: "w", row: true, run: press("w"),
+			disabled: func(mm *Model) string { return mm.widenBlocked() }, alt: "edit broaden loosen pattern"},
+		{title: "Write a new rule", short: "new", tab: tabAccess, key: "n", run: press("n"), alt: "add allow deny create"},
+		{title: "Test what a request would get", short: "test", tab: tabAccess, key: "t", run: press("t"), alt: "try check explain why simulate"},
 		{title: "Forget the live grants — refusals stay", short: "forget", tab: tabAccess, key: "F", run: press("F"),
 			disabled: func(mm *Model) string { return mm.forgetBlocked() }, alt: "lock revoke panic"},
 		{title: "Clear the \"stop asking\" refusals", tab: tabAccess, key: "X", run: press("X"),

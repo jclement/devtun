@@ -106,6 +106,10 @@ func (m *Model) frame() string {
 		view = overlayCenter(view, m.confirmBox(), m.width, m.height)
 	case m.menu != nil:
 		view = overlayCenter(view, m.menuBox(), m.width, m.height)
+	case m.form != nil:
+		view = overlayCenter(view, m.formBox(), m.width, m.height)
+	case m.test != nil:
+		view = overlayCenter(view, m.testBox(), m.width, m.height)
 	case m.showHelp:
 		view = overlayCenter(view, m.helpBox(), m.width, m.height)
 	case m.showDetail:
@@ -684,6 +688,15 @@ func (m *Model) keyBar() string {
 	// the keyboard or how to get out. Those two are the last to go.
 	// The `:` commands entry outlives every contextual one: it is where all
 	// of them can still be found once they no longer fit.
+	// `. more` too, when there is a row: it is where every dropped row
+	// action can still be found.
+	tail := 3
+	if m.hasSelection() {
+		tail = 4
+	}
+	for len(keys) > tail && barWidth(keys) > budget {
+		keys = append(keys[:len(keys)-tail-1], keys[len(keys)-tail:]...)
+	}
 	for len(keys) > 3 && barWidth(keys) > budget {
 		keys = append(keys[:len(keys)-4], keys[len(keys)-3:]...)
 	}

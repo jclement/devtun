@@ -225,6 +225,10 @@ func (m *Model) handleApprovalKey(msg tea.KeyPressMsg) tea.Cmd {
 	case "esc", "q", "n", "ctrl+c":
 		// Every way of dismissing this means the same thing.
 		return m.answer(prompt.ChoiceDeny)
+	case "w":
+		if len(m.d.secrets) > 0 {
+			return m.widenFromApproval()
+		}
 	}
 
 	// The answers are numbered on screen, so the numbers answer. Somebody who
@@ -289,7 +293,7 @@ func (m *Model) approvalBox() string {
 		}
 		b.WriteString("  " + style.Render(label) + "\n")
 	}
-	b.WriteString("\n" + ui.Muted.Render("1-9, ↑↓ or click · enter choose · esc deny"))
+	b.WriteString("\n" + ui.Muted.Render("1-9, ↑↓ or click · enter choose · w write a broader rule… · esc deny"))
 	if left := time.Until(a.deadline).Round(time.Second); !a.deadline.IsZero() && left > 0 {
 		b.WriteString(ui.Muted.Render(fmt.Sprintf("  ·  refuses itself in %s", left)))
 	}

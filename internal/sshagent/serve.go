@@ -206,7 +206,7 @@ func (l *link) requested(subject string, dest destination) {
 func (l *link) signed(subject string, reason decision, elapsed time.Duration) {
 	l.event("signed", event.Info,
 		fmt.Sprintf("signed for %s: %s (%s)", l.host, subject, reason),
-		append([]any{"why", reason.reason, "took", elapsed.Round(time.Millisecond)}, reason.by.Fields()...)...)
+		append([]any{"subject", subject, "why", reason.reason, "took", elapsed.Round(time.Millisecond)}, reason.by.Fields()...)...)
 }
 
 // denied records a refused signature. Refusals are Info rather than Warn:
@@ -214,7 +214,7 @@ func (l *link) signed(subject string, reason decision, elapsed time.Duration) {
 func (l *link) denied(subject string, reason decision) {
 	l.event("denied", event.Info,
 		fmt.Sprintf("refused %s a signature with %s — %s", l.host, subject, reason),
-		append([]any{"why", reason.reason}, reason.by.Fields()...)...)
+		append([]any{"subject", subject, "why", reason.reason}, reason.by.Fields()...)...)
 }
 
 // listed records the remote box learning which keys are loaded. It is not an

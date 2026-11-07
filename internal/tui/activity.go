@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/sahilm/fuzzy"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/ui"
 )
@@ -96,6 +97,10 @@ func (m *Model) handleActivityKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.toggleDetail()
 	case "y":
 		return m.copyLogLine()
+	case "o":
+		return m.showDeciding()
+	case "n":
+		return m.newRuleFromEvent()
 	}
 	return nil
 }
@@ -132,14 +137,15 @@ func (m *Model) copyLogLine() tea.Cmd {
 	return tea.Batch(yank(text), m.showToast(toastMsg{text: "copied the line"}))
 }
 
-// activityDetailBox shows one event in full, including the structured fields
-// the single line has no room for.
+// activityDetailBox shows one event in full. For a decision — something a
+// broker gave or refused — it leads with why: what decided, where that lives,
+// and what else matched and lost. That is the question somebody opening a
+// refusal is asking, and the raw fields underneath only half answer it.
 func (m *Model) activityDetailBox() string {
-	i := m.cursor()
-	if i < 0 || i >= len(m.logRows) {
+	e, ok := m.selectedEvent()
+	if !ok {
 		return ""
 	}
-	e := m.logRows[i]
 
 	row := func(label, value string) string {
 		if value == "" {
@@ -149,12 +155,15 @@ func (m *Model) activityDetailBox() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(ui.ClassStyle(e.Class).Render(ui.ClassGlyph(e.Class)+" "+e.Time.Format("15:04:05")) + "\n\n")
+	b.WriteString(ui.ClassStyle(e.Class).Render(ui.ClassGlyph(e.Class)+" "+e.Time.Format("15:04:05")) + "  " + e.Text + "\n")
+	if why := m.whyText(e); why != "" {
+		b.WriteString("\n" + why)
+	}
+	b.WriteString("\n")
 	b.WriteString(row("service", e.Service))
 	b.WriteString(row("kind", e.Kind))
 	b.WriteString(row("class", string(e.Class)))
 	b.WriteString(row("level", e.Level.String()))
-	b.WriteString(row("text", e.Text))
 	for j := 0; j+1 < len(e.Fields); j += 2 {
 		key, ok := e.Fields[j].(string)
 		if !ok {
@@ -163,4 +172,218 @@ func (m *Model) activityDetailBox() string {
 		b.WriteString(row(key, fmt.Sprint(e.Fields[j+1])))
 	}
 	return m.detailFrame(b.String())
+}
+
+// selectedEvent is the highlighted Activity line.
+func (m *Model) selectedEvent() (event.Event, bool) {
+	i := m.cursors[tabActivity]
+	if i < 0 || i >= len(m.logRows) {
+		return event.Event{}, false
+	}
+	return m.logRows[i], true
+}
+
+// eventField reads one structured field of an event as text.
+func eventField(e event.Event, key string) string {
+	for j := 0; j+1 < len(e.Fields); j += 2 {
+		if k, ok := e.Fields[j].(string); ok && k == key {
+			return fmt.Sprint(e.Fields[j+1])
+		}
+	}
+	return ""
+}
+
+// sourceFor is the broker an event came from, when it is one the Access tab
+// shows.
+func (m *Model) sourceFor(e event.Event) (accessSource, bool) {
+	for _, src := range m.d.secrets {
+		if src.id == e.Service {
+			return src, true
+		}
+	}
+	return accessSource{}, false
+}
+
+// whyText explains a decision event, or returns "" for any other event.
+func (m *Model) whyText(e event.Event) string {
+	by := eventField(e, "by")
+	if by == "" {
+		return ""
+	}
+	src, ok := m.sourceFor(e)
+	refused := e.Kind == "denied" || e.Kind == "refused"
+	verb := "given"
+	if refused {
+		verb = "refused"
+	}
+
+	var b strings.Builder
+	head := func(s string) { b.WriteString(ui.Banner.Render(s) + "\n") }
+	switch authz.DeciderKind(by) {
+	case authz.ByRule:
+		id := eventField(e, "rule")
+		var r authz.Rule
+		found := false
+		if ok {
+			r, found = src.ctrl.Rule(id)
+		}
+		if !found {
+			head(verb + " by a rule that has since been changed or removed")
+			break
+		}
+		head(verb + " by a rule — " + sourceWho(r) + ", " + m.sourceWhere(r))
+		b.WriteString("    " + m.matchLine(src, authz.Matched{Rule: &r}) + "\n")
+	case authz.ByGrant:
+		id := eventField(e, "grant")
+		var g *authz.Grant
+		if ok {
+			for _, live := range src.ctrl.Grants() {
+				if live.ID == id {
+					gg := live
+					g = &gg
+				}
+			}
+		}
+		if g == nil {
+			head(verb + " by a grant from a prompt answer — it has since lapsed or been revoked")
+			break
+		}
+		head(verb + " by a live grant from a prompt answer")
+		b.WriteString("    " + m.matchLine(src, authz.Matched{Grant: g}) + "\n")
+	case authz.ByUnmatched:
+		if eventField(e, "unmatched") == string(authz.ActionDeny) {
+			head("refused because nothing matched, and this broker's \"unmatched\" is deny")
+		} else {
+			head("nothing matched, so you were asked")
+		}
+	case authz.ByPrompt:
+		head("you answered the prompt")
+	case authz.ByTimeout:
+		head("nobody answered within the prompt timeout, which counts as No")
+		b.WriteString("    " + ui.Muted.Render("Approvals appear: "+m.promptNow.String()+" — Config ▸ prompt") + "\n")
+	case authz.ByUnreadable:
+		head("refused because a policy file could not be read — everything is, until it is fixed")
+	default:
+		head(verb + " — decided by " + by)
+	}
+
+	// What else matched, asked now. Policy may have changed since, so it is
+	// labelled as now and not passed off as what happened then.
+	subject := eventField(e, "subject")
+	if ok && subject != "" {
+		ex := src.ctrl.Explain(m.d.host, subject)
+		var lost []authz.Matched
+		for _, mt := range ex.Matches {
+			if !mt.Decided && !m.sameDecider(mt, e) {
+				lost = append(lost, mt)
+			}
+		}
+		if len(lost) > 0 {
+			b.WriteString(ui.Muted.Render("also matching now, and losing (a deny always wins):") + "\n")
+			for _, mt := range lost {
+				b.WriteString("    " + m.matchLine(src, mt) + "\n")
+			}
+		}
+		if now := ex.Verdict.Action; now != "" && (now == authz.ActionDeny) != refused {
+			b.WriteString(ui.Warn.Render("policy has changed since: the same request would now be "+verdictWord(now)) + "\n")
+		}
+	}
+	return b.String()
+}
+
+// sameDecider reports whether an explanation entry is the thing the event
+// says decided, so it is not listed again among the losers.
+func (m *Model) sameDecider(mt authz.Matched, e event.Event) bool {
+	switch {
+	case mt.Rule != nil:
+		return mt.Rule.ID == eventField(e, "rule")
+	case mt.Grant != nil:
+		return mt.Grant.ID == eventField(e, "grant")
+	}
+	return false
+}
+
+func verdictWord(a authz.Action) string {
+	switch a {
+	case authz.ActionAllow:
+		return "allowed"
+	case authz.ActionDeny:
+		return "refused"
+	}
+	return "asked about"
+}
+
+// decidingBlocked says why "show the deciding rule" cannot run, or "".
+func (m *Model) decidingBlocked() string {
+	e, ok := m.selectedEvent()
+	if !ok {
+		return "pick a line first"
+	}
+	if eventField(e, "rule") == "" && eventField(e, "grant") == "" {
+		return "no rule or grant decided this line"
+	}
+	if _, ok := m.accessRowFor(e); !ok {
+		return "that rule or grant is gone now"
+	}
+	return ""
+}
+
+// accessRowFor finds the Access row that decided an event.
+func (m *Model) accessRowFor(e event.Event) (int, bool) {
+	rule, grant := eventField(e, "rule"), eventField(e, "grant")
+	for i, r := range m.accessRows {
+		if r.heading != "" || r.source.id != e.Service {
+			continue
+		}
+		if (rule != "" && !r.isGrant && r.rule.ID == rule) || (grant != "" && r.isGrant && r.grant.ID == grant) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// showDeciding jumps to the Access row that decided the selected event.
+func (m *Model) showDeciding() tea.Cmd {
+	e, ok := m.selectedEvent()
+	if !ok {
+		return m.needSelection()
+	}
+	// The search on Access could be hiding it; a jump that lands nowhere is
+	// worse than one that clears a filter.
+	m.search[tabAccess] = ""
+	m.reloadAccess()
+	i, found := m.accessRowFor(e)
+	if !found {
+		return m.showToast(toastMsg{text: "that rule or grant is gone now", bad: true})
+	}
+	m.showDetail = false
+	m.selectTab(tabAccess)
+	m.setCursor(i)
+	m.clampCursor()
+	return nil
+}
+
+// newRuleFromEvent is `n` on a decision: the rule form, seeded with what was
+// asked for, on the Access tab where the rule will appear.
+func (m *Model) newRuleFromEvent() tea.Cmd {
+	if why := m.newFromEventBlocked(); why != "" {
+		return m.showToast(toastMsg{text: why, bad: true})
+	}
+	e, _ := m.selectedEvent()
+	src, _ := m.sourceFor(e)
+	m.showDetail = false
+	m.selectTab(tabAccess)
+	return m.openForm(formSeed{src: m.sourceIndex(src.id), subject: eventField(e, "subject"), effect: authz.ActionAllow})
+}
+
+// newFromEventBlocked says why `n` cannot start from the selected line, or "".
+func (m *Model) newFromEventBlocked() string {
+	e, ok := m.selectedEvent()
+	if !ok {
+		return "pick a line first"
+	}
+	if _, found := m.sourceFor(e); !found || eventField(e, "subject") == "" {
+		return "not a request to a broker"
+	}
+	return ""
 }

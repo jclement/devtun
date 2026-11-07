@@ -630,6 +630,12 @@ func (m *Model) handleAccessKey(msg tea.KeyPressMsg) tea.Cmd {
 		return m.forgetGrants()
 	case "X":
 		return m.clearRefusals()
+	case "n":
+		return m.openNewRule()
+	case "w":
+		return m.openWiden()
+	case "t":
+		return m.openTest()
 	}
 	return nil
 }
@@ -922,11 +928,20 @@ func (m *Model) rankingText(r accessRow) string {
 	if r.isGrant && r.grant.HostWide {
 		return ""
 	}
-	ex := r.source.ctrl.Explain(m.d.host, r.subject())
+	// What a deny beats is every allow that lists it among what outranks
+	// it — computed when the rows were loaded, so the two views agree.
 	var beats []authz.Matched
-	for _, mt := range ex.Matches {
-		if !denyMatch(mt) {
-			beats = append(beats, mt)
+	for _, other := range m.accessRows {
+		for _, mt := range other.by {
+			if (mt.Rule != nil && !r.isGrant && mt.Rule.ID == r.rule.ID) ||
+				(mt.Grant != nil && r.isGrant && mt.Grant.ID == r.grant.ID) {
+				if other.isGrant {
+					beats = append(beats, authz.Matched{Grant: other.grant})
+				} else {
+					rule := other.rule
+					beats = append(beats, authz.Matched{Rule: &rule})
+				}
+			}
 		}
 	}
 	b.WriteString("\n  " + ui.Muted.Render("A deny always beats an allow, wherever the allow is written.") + "\n")

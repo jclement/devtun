@@ -352,11 +352,47 @@ func (s *stubSecrets) ForgetRefusals() int {
 	return n
 }
 
+// Explain imitates the store's evaluation over the stub's rules and grants:
+// every match in evaluation order — deny rules, deny grants, allow rules,
+// allow grants — the first deciding and the rest outranked. It is enough for
+// the interface's purposes, which is to show what the store says; the store's
+// own tests hold the real thing.
 func (s *stubSecrets) Explain(host, subject string) authz.Explanation {
 	if s.explain != nil {
 		return s.explain(host, subject)
 	}
-	return authz.Explanation{Unmatched: s.Unmatched()}
+	schema := s.Schema()
+	ex := authz.Explanation{Unmatched: s.Unmatched()}
+	all := s.Rules()
+	for _, action := range []authz.Action{authz.ActionDeny, authz.ActionAllow} {
+		for i := range all {
+			if all[i].Action == action && schema.Match(all[i].Subject, subject) {
+				r := all[i]
+				ex.Matches = append(ex.Matches, authz.Matched{Rule: &r})
+			}
+		}
+		for i := range s.live {
+			if s.live[i].Action == action && schema.Match(s.live[i].Subject, subject) {
+				g := s.live[i]
+				ex.Matches = append(ex.Matches, authz.Matched{Grant: &g})
+			}
+		}
+	}
+	if len(ex.Matches) == 0 {
+		ex.Verdict = authz.Verdict{Action: ex.Unmatched.Action, By: authz.Decider{Kind: authz.ByUnmatched, Unmatched: ex.Unmatched.Action}}
+		return ex
+	}
+	for i := range ex.Matches {
+		ex.Matches[i].Outranked = i > 0
+	}
+	ex.Matches[0].Decided = true
+	first := ex.Matches[0]
+	if first.Rule != nil {
+		ex.Verdict = authz.Verdict{Action: first.Rule.Action, By: authz.Decider{Kind: authz.ByRule, RuleID: first.Rule.ID, Source: first.Rule.Source}}
+	} else {
+		ex.Verdict = authz.Verdict{Action: first.Grant.Action, By: authz.Decider{Kind: authz.ByGrant, GrantID: first.Grant.ID}}
+	}
+	return ex
 }
 
 func (s *stubSecrets) Unmatched() authz.UnmatchedPolicy {
@@ -371,8 +407,8 @@ func (s *stubSecrets) Schema() authz.Schema {
 	}
 	return authz.DefaultSchema
 }
-func (s *stubSecrets) PolicyErr() error     { return s.policyErr }
-func (s *stubSecrets) Revision() uint64     { return 0 }
+func (s *stubSecrets) PolicyErr() error { return s.policyErr }
+func (s *stubSecrets) Revision() uint64 { return 0 }
 
 func (s *stubSecrets) Forget() (int, int) {
 	s.forgot = true

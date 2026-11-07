@@ -1170,8 +1170,8 @@ func TestEveryTabKeyIsInThePalette(t *testing.T) {
 		keys []string
 	}{
 		{tabTunnels, []string{"x", "H", "a", "b", "y", "t", "l", "n", "p", "s", "r", "enter"}},
-		{tabActivity, []string{"f", "y", "enter"}},
-		{tabAccess, []string{"r", "D", "y", "F"}},
+		{tabActivity, []string{"f", "y", "enter", "o", "n"}},
+		{tabAccess, []string{"enter", "r", "D", "y", "F", "X", "n", "w", "t"}},
 		{tabServices, []string{"e"}},
 	} {
 		for _, key := range want.keys {

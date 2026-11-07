@@ -223,6 +223,9 @@ type Model struct {
 	approval *approvalState
 	// menu is the action menu for the selected row.
 	menu *menuState
+	// test is the test box and form the rule form, on the Access tab.
+	test *testState
+	form *formState
 	// detailScroll is how far a detail box taller than the window has been
 	// scrolled.
 	detailScroll int
@@ -319,7 +322,8 @@ func (m *Model) editing() bool { return m.editor != editorNone }
 // table's cursor and `x` still hid a port, behind a box that said the
 // connection was gone.
 func (m *Model) overlayOpen() bool {
-	return m.approval != nil || m.setup != nil || m.confirm != nil || m.menu != nil || m.showHelp ||
+	return m.approval != nil || m.setup != nil || m.confirm != nil || m.menu != nil ||
+		m.test != nil || m.form != nil || m.showHelp ||
 		m.showDetail || m.protocolPrompt || m.editing() || m.offline() || m.cmd.open
 }
 
@@ -659,6 +663,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	if m.menu != nil {
 		return m.handleMenuKey(msg)
 	}
+	if m.form != nil {
+		return m.handleFormKey(msg)
+	}
+	if m.test != nil {
+		return m.handleTestKey(msg)
+	}
 	// Before the editor, which the palette borrows for its own input line.
 	if m.cmd.open {
 		return m.handlePaletteKey(msg)
@@ -705,6 +715,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		if cmd, handled := m.handleConfigKey(msg); handled {
 			return cmd
 		}
+	}
+	// On Access, w is "widen this rule" — the mockups' key, next to n for a
+	// new one. The web board it opens everywhere else is in the palette and
+	// one tab away; a policy key that silently opened a browser instead
+	// would be the worse surprise.
+	if m.tab == tabAccess && msg.String() == "w" {
+		return m.openWiden()
 	}
 	if cmd, handled := m.handleGlobalKey(msg); handled {
 		return cmd
@@ -1086,6 +1103,24 @@ func (m *Model) clickOverlay(x, y int, right bool) (tea.Cmd, bool) {
 		// everywhere else.
 		if !m.insideBox(box, x, y) {
 			m.menu = nil
+		}
+		return nil, true
+
+	case m.form != nil:
+		// A click outside the form does not cancel it: losing a half-typed
+		// rule to a stray click is worse than having to press esc.
+		if id, ok := m.hitButton(m.formBox(), m.formButtons(), x, y); ok && id == "ctrl+t" {
+			m.widenField()
+		}
+		return nil, true
+
+	case m.test != nil:
+		box := m.testBox()
+		if id, ok := m.hitButton(box, m.testButtons(), x, y); ok && id == "ctrl+n" {
+			return m.handleTestKey(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl}), true
+		}
+		if !m.insideBox(box, x, y) {
+			m.test = nil
 		}
 		return nil, true
 
