@@ -260,7 +260,7 @@ Subjects, not command lines, are what get approved: `op read op://V/I/F` and
 approval covers both and the prompt shows something a human recognises.
 
 Deny beats allow, and persistent beats live — evaluated across the global and
-per-host rule sets as one list. A rule written to block something cannot be
+per-host rule lists as one list. A rule written to block something cannot be
 undone by clicking through a prompt later, or the policy file would be advisory.
 
 **7a. A prompt can refuse as well as approve, and refusals are policy too.**
@@ -287,6 +287,52 @@ The two directions are deliberately not equally easy to undo. An approval given
 by mistake costs one secret; a refusal given by mistake costs a moment's
 confusion. So "always" and "never" are both rules, but only a refusal is immune
 to being clicked away afterwards.
+
+**7c. Rules have an author, an identity, and a file that is read live.**
+Rules come from three lists: the global `rules:` (yours, never edited by
+devtun), a host file's `rules:` (yours, editable through the interface when you
+ask), and the host file's `remembered:` (devtun's — every *Always*, *Never* and
+rule made in the interface). Ownership is by list, not by level: the old split,
+"global is the user's, per-host is devtun's", treated a hand-written host rule
+as devtun's to rewrite and made a global rule impossible to touch even when
+asked.
+
+A rule's ID is a hash of what it says plus an ordinal for exact duplicates. It
+replaced list positions, which the terminal and the board both used, so a revoke
+on one surface between the other's render and its click hit the wrong rule. An
+ID survives reordering, filtering, restarts and other processes; it changes
+when the rule's own text does, and an edit returns the new one.
+
+Every write is a read-modify-write of one key against the file on disk, done
+on the YAML node tree so the rest of the file and its comments survive, under
+a lock file shared by every devtun process. Reads re-read a file whose size or
+mtime moved. The bug this replaced was writing back the startup copy whole,
+which erased hand edits made while devtun ran.
+
+A file that cannot be read or parsed refuses every request through the broker
+that reads it (`ByUnreadable`) until it is fixed, and is never written over.
+Reading it as empty would be failing open in exactly the case — a half-typed
+deny — where it matters most.
+
+**7d. "When nothing matches" is a per-broker policy: `unmatched: ask|deny`.**
+Deny beats allow, so an allow cannot carve an exception out of a deny, and
+"allow GitHub, deny everything else" denied GitHub too — the README said
+otherwise for a year. `unmatched: deny` is the allowlist primitive that keeps
+deny-beats-allow intact: it is consulted only when no rule and no grant
+matched, so it can never loosen anything, and a value that is neither ask nor
+deny reads as deny. Per broker, because "only GitHub" for signatures should not
+also refuse every vault read nobody wrote a rule for.
+
+**7e. Subjects have a schema, and matching is per field.** A broker describes
+its subject as named fields (1Password: one `reference`; the agent: `key` and
+`destination`; the browser: `site`). The agent's two fields are matched one at
+a time with no path separator, because SHA256 fingerprints are base64 and
+about half contain `/` — under one path-like glob `* → github.com` silently
+failed for those keys. Verdicts carry what decided (`Verdict.By`: rule ID and
+source, grant ID, or the unmatched policy), every broker puts it on its
+Activity event, and `Explain` returns the same evaluation with every match
+marked decided or outranked, so a "why?" view cannot disagree with what a
+request got.
 
 **7b. Deciding a request lives in `authz`, not in each broker.** `authz.Broker`
 owns the whole sequence — consult policy, ask a human if policy has no answer,

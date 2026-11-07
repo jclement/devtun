@@ -3,6 +3,42 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
+## Unreleased
+
+### Fixed
+
+- **Editing a config file while devtun runs no longer loses the edit.** devtun
+  wrote back the copy of the host file it read at startup, whole, on its next
+  change — so naming a port or answering *Always* erased a rule typed in a
+  minute earlier, comments and all. Every write is now a read-modify-write of
+  one key against the file on disk, under a lock shared by every devtun
+  process, and a hand edit takes effect on the next request without a restart.
+- **A policy file that cannot be read refuses instead of reading as empty.**
+  Only a missing file is empty; one that is unreadable, or that a hand edit
+  broke mid-session, refuses every request through its broker with the reason
+  until it is fixed, and is never written over.
+- **`* → github.com` matches every key.** SSH rules are matched as two fields,
+  key and destination, and `*` within a field matches anything — fingerprints
+  that contain `/` silently failed before.
+- **The README's SSH allowlist example allowed nothing.** Deny beats allow, so
+  "allow GitHub, deny everything else" denied GitHub too. It now uses
+  `unmatched: deny`.
+- **Revoking a grant could hit an expired duplicate** and leave the live one
+  in place. Grants and rules are addressed by stable IDs, never by position or
+  by subject.
+- **Forget no longer drops refusals.** "No, and stop asking" survives the
+  lock-it-back-up button.
+
+### Added
+
+- **`unmatched: ask|deny` per broker** — what happens when no rule or grant
+  matches. `deny` makes an allowlist expressible without weakening
+  deny-beats-allow. On the Config tab and the board under *Policy*.
+- **`remembered:`** — answers devtun records now go in their own list beside the
+  host file's hand-written `rules:`, which keep working as before.
+- Activity events for decisions carry what decided: `by=rule|grant|unmatched|…`
+  with the rule's ID and source or the grant's ID.
+
 ## v0.1.22
 
 ### Fixed

@@ -227,6 +227,12 @@ devtun offers to add it with the first one. `--no-agent` turns the service off.
 constantly, and approving each one individually is how you end up switching the
 whole thing off by lunchtime.
 
+A rule names the two halves separately — `key → destination` — and each half is
+matched on its own, with `*` matching anything within it. So `* → github.com` is
+any key into GitHub, and `ssh-ed25519 SHA256:… → *` is one key anywhere.
+(Fingerprints are base64 and about half of them contain a `/`; this is why the
+key half is not matched like a path.)
+
 ## Signing commits with the key that never leaves your laptop
 
 `git commit -S` on a dev box needs a private key. The choices are to copy your key there — the thing a YubiKey exists to make impossible — or to stop signing, which is what most people quietly do.
@@ -360,9 +366,17 @@ becomes a silent yes, and it never becomes a silent no either.
 
 **Deny always wins**, at every level: a refusal beats an approval whether it was typed into a file, written by *Never*, or clicked as *stop asking*. Among answers of the same kind the written one wins. So a rule you wrote to block something cannot be undone by clicking through a prompt later — and a standing allow rule does not quietly re-open something you just said no to. That asymmetry is deliberate: an approval given by mistake costs you one secret, a refusal given by mistake costs you a moment's confusion, and the two should not be equally easy to reverse by accident.
 
-The **Access** tab in `--tui` lists everything currently deciding — live grants and refusals with their remaining time, the rules devtun wrote, and the rules from your own config. `r` revokes the first two, and `D` rewrites a rule you regret as a deny, which is the difference between "stop allowing this" and "stop asking me about it". Rules from your config are marked *from your config* and are not editable there: devtun did not write them, and quietly rewriting a file you hand-wrote would be a worse surprise than saying no.
+**Rules live in three places, and devtun only ever writes to one of them.** The `rules:` list in your global config applies to every host and is yours: devtun shows it and never edits it. The `rules:` list in a host's file is yours too — the place for hand-written per-host policy — and the interface may edit or remove those rules when you ask it to. Beside it, `remembered:` is devtun's: every *Always* and *Never* answer lands there, so the list you typed is never the list devtun appends to. Rules written before `remembered:` existed stay in `rules:` and keep working.
 
-`D` only ever tightens. Turning a deny back into an allow on one keystroke, over whichever row the cursor happens to be on, is precisely the accident that deny-beating-allow exists to prevent — so loosening stays deliberate: revoke the rule, or edit the file.
+**Hand edits are safe while devtun runs, and take effect at once.** Every write devtun makes is a read-modify-write of just the key it is changing, against the file as it is on disk — so naming a port or answering *Always* never erases a rule you typed a minute ago, or the comment beside it, and two devtun sessions writing the same file don't lose each other's changes. A rule you add by hand applies to the next request; there is nothing to restart.
+
+**A policy file devtun cannot read refuses everything.** A host or global file that will not parse — or that exists and cannot be read — is not an empty policy: while it is broken, every request through that broker is refused with the reason, nothing is written over it, and fixing the file is all it takes to recover.
+
+**When nothing matches, the broker asks — or refuses, if you say so.** Each broker has an `unmatched:` setting, `ask` (the default) or `deny`, at either level and on the Config tab's *Policy* section. `deny` is how you write an allowlist: because deny beats allow, an allow plus a deny-everything refuses the allow too, whereas an allow plus `unmatched: deny` means exactly "only this". It applies only when no rule and no grant matched, so it never loosens anything, and a value that is neither `ask` nor `deny` is read as `deny`.
+
+The **Access** tab in `--tui` lists everything currently deciding — live grants and refusals with their remaining time, and every rule, with where it lives. `r` revokes a grant or a rule, and `D` rewrites a rule you regret as a deny, which is the difference between "stop allowing this" and "stop asking me about it". Rules from your global config are marked *from your config* and are not editable there. Rules are addressed by a stable identity, not by their position, so a revoke on the web board while the terminal is open cannot land on the wrong rule.
+
+`F` drops every live *approval* and every cached value — the "lock it back up" button. Refusals you gave as *stop asking* survive it, because the panic button should never re-open a question you had closed.
 
 ```yaml
 # ~/.config/devtun/config.yaml
@@ -499,9 +513,9 @@ services:
   ssh-agent: {enabled: true}
   browser:   {enabled: false}
 ssh-agent:
+  unmatched: deny                            # only what a rule allows, from this box…
   rules:
-    - {subject: "** → github.com", action: allow}
-    - {subject: "** → **", action: deny}     # nowhere else, from this box
+    - {subject: "* → github.com", action: allow}   # …which is any key, to GitHub
 browser:
   gate: ask                                  # ask before each site (off by default)
 tunnels:
