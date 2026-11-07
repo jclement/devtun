@@ -381,6 +381,21 @@
     #log .svc { width: 3.5rem; }
     nav#tabs .key, .toolbar kbd, .btn-key { display: none; }
     #access td.acts .inline { display: none; }
+    /* The list has to fit the phone rather than scroll sideways, or the ⋯
+       that holds every action ends up off the edge. */
+    #access td.subj { min-width: 0; }
+    #access tr.group td { white-space: normal; }
+    #access .note { display: none; }
+    #access { table-layout: fixed; }
+    #access th:nth-child(1) { width: 1.6rem; }
+    #access th:nth-child(2) { width: 2.6rem; }
+    #access th:nth-child(7) { width: 2.6rem; }
+    /* The folded columns stay in the table at zero width rather than going
+       away: the group rows span all seven, and a column with no visible cell
+       would otherwise be handed the space the pattern needs. */
+    #access .opt { display: table-cell !important; width: 0; padding: 0; font-size: 0; overflow: hidden; }
+    #access td.subj .outranked { white-space: normal; }
+    #access tr.fallback td, #access .linkish { white-space: normal; text-align: left; }
     button { min-height: 2rem; }
     .menu button, .drawer .acts button, .buttons button { min-height: 2.75rem; }
     .ask-scrim, .scrim { padding: 0; place-items: stretch; }
@@ -971,7 +986,7 @@ function accessRow(row) {
     warn.title = "a deny also matches what this allows, and a deny always wins — open it to see which";
     subj.append(warn);
   }
-  if (row.note) subj.append(el("span", "muted", "  · " + row.note));
+  if (row.note) subj.append(el("span", "muted note", "  · " + row.note));
   tr.append(subj);
 
   tr.append(cell(kindText(row), "opt " + (deny ? "deny" : row.isGrant ? "live" : "allow")));
@@ -1337,7 +1352,7 @@ function matchLine(m) {
   const div = el("div", "match" + (m.decided ? " decided" : ""));
   const deny = m.action === "deny";
   div.append(el("span", deny ? "deny" : "allow", deny ? "✕ " + m.action : "✓ " + m.action));
-  div.append(el("span", "", m.hostWide ? "any request from " + m.host : m.subject));
+  div.append(el("span", "", m.hostWide ? hostWideText(m) : m.subject));
   div.append(el("span", "where", whereText(m)));
   const key = (m.kind === "grant" ? "g:" : "r:") + m.source + ":" + m.id;
   if (accessRows.some((r) => r.key === key)) {
@@ -1348,6 +1363,8 @@ function matchLine(m) {
 
 function whereText(m) {
   if (m.kind === "grant") return m.action === "deny" ? "stop-ask · this session" : "grant · this session";
+  // A global rule's origin already says "all hosts"; repeating it is noise.
+  if (m.origin === "global") return originText(m) + (m.host ? " · only " + m.host : "");
   return originText(m) + (m.host ? " · " + m.host : " · every host");
 }
 
@@ -1463,7 +1480,7 @@ function explanationNodes(x, p) {
   else if (v.action === "deny") line.append(el("span", "verdict deny", "✕ DENY "));
   else line.append(el("span", "verdict ask-c", "? would ASK "));
   if (decided) {
-    line.append(document.createTextNode(" by  "), el("b", "", decided.hostWide ? "any request from " + decided.host : decided.subject),
+    line.append(document.createTextNode(" by  "), el("b", "", decided.hostWide ? hostWideText(decided) : decided.subject),
       el("span", "muted", "  (" + whereText(decided) + ")"));
     const key = (decided.kind === "grant" ? "g:" : "r:") + decided.source + ":" + decided.id;
     if (accessRows.some((r) => r.key === key)) {
@@ -1595,7 +1612,7 @@ function openForm(opts = {}) {
       input.placeholder = i === 0 ? f.label : f.label + "  (blank = any)";
       input.oninput = () => { st.values[i] = input.value; schedulePreview(); };
       if (i === 0) input.setAttribute("autofocus", "");
-      row(f.label, input, f.help + " · * matches one part, ** matches everything below");
+      row(f.label, input, (f.help ? f.help + " · " : "") + "* matches one part, ** matches everything below");
     });
     const host = lastState?.host || "";
     // A grant is for one host — it is what a prompt would have answered for
@@ -2288,7 +2305,7 @@ function settingRow(setting, config) {
 
   const from = cell(setting.level, "from " + setting.level);
   from.title = "the value in force is " + (setting.value || "unset") + ", decided by: " + setting.level;
-  if (setting.level !== "default") from.textContent = setting.value + " · " + setting.level;
+  if (setting.level !== "default" && setting.value) from.textContent = setting.value + " · " + setting.level;
   tr.append(from);
 
   const why = el("td", "why");
