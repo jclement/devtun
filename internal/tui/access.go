@@ -563,6 +563,20 @@ func sshDest(dest string) string {
 	return dest
 }
 
+// splitAccount splits a 1Password subject scoped to an account,
+// "[work] op://…", into the account and the rest. A bare subject means the
+// default account.
+func splitAccount(s string) (account, rest string, ok bool) {
+	if !strings.HasPrefix(s, "[") {
+		return "", s, false
+	}
+	end := strings.Index(s, "] ")
+	if end < 0 {
+		return "", s, false
+	}
+	return s[1:end], s[end+2:], true
+}
+
 // elideMiddle shortens s to w cells by cutting from the middle.
 func elideMiddle(s string, w int) string {
 	n := ansi.StringWidth(s)
@@ -587,13 +601,29 @@ func (m *Model) meaning(r accessRow) string {
 				who = shortKey(key)
 			}
 			where := "signing in to " + dest
-			if dest == "**" || dest == "*" {
-				where = "signing in anywhere"
-			} else if strings.Contains(dest, "*") {
+			switch {
+			case dest == "**" || dest == "*":
+				// A wildcard never covers arbitrary data: only a rule
+				// naming "(arbitrary data)" allows it.
+				where = "signing in anywhere (not arbitrary data — that needs a rule naming it)"
+			case strings.Contains(dest, "*"):
 				where = "signing in to anything matching " + dest
+			case dest == "(arbitrary data)":
+				where = "signing arbitrary data — anything the box hands it, not a login"
+			case strings.HasPrefix(dest, "sshsig:"):
+				where = "making SSHSIG signatures in the " + strings.TrimPrefix(dest, "sshsig:") + " namespace (git signing uses \"git\")"
+			case dest == "(destination unknown)":
+				where = "signing for a login whose destination devtun could not see"
 			}
 			return who + ", " + where
 		}
+	}
+	if account, rest, ok := splitAccount(s); ok {
+		inner := m.meaning(accessRow{rule: authz.Rule{Subject: rest}, source: r.source})
+		if account == "*" {
+			return inner + " — in any 1Password account"
+		}
+		return inner + " — in the " + account + " account"
 	}
 	if strings.HasPrefix(s, "op://") {
 		parts := strings.Split(strings.TrimPrefix(s, "op://"), "/")

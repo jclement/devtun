@@ -268,3 +268,20 @@ func TestPreferredIndexMovesTheCursorNotTheOptions(t *testing.T) {
 		t.Errorf("an unknown preference should land on the first option, got %d", got)
 	}
 }
+
+// A host-wide answer covers one service's requests, so it is named in that
+// service's noun rather than as "anything".
+func TestHostWideOptionsNameWhatTheyCover(t *testing.T) {
+	for noun, want := range map[string]string{"": "any secret", "secret": "any secret", "key": "any signature", "site": "any site"} {
+		menu := MenuFor(Request{Host: "bedev", Subject: "x", Noun: noun, TTL: time.Minute})
+		found := false
+		for _, item := range menu {
+			if item.Choice == ChoiceAllowHostSession && strings.Contains(item.Label, "Yes to "+want+" from bedev") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("noun %q: no host-wide option says %q: %+v", noun, want, menu)
+		}
+	}
+}

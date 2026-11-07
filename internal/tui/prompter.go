@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/jclement/devtun/internal/authz"
 	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
 	"github.com/jclement/devtun/internal/session"
@@ -294,6 +295,9 @@ func (m *Model) approvalBox() string {
 		b.WriteString("  " + style.Render(label) + "\n")
 	}
 	b.WriteString("\n" + ui.Muted.Render("1-9, ↑↓ or click · enter choose · w write a broader rule… · esc deny"))
+	if ctx := m.approvalContext(a); ctx != "" {
+		b.WriteString("\n" + ui.Muted.Render(ctx))
+	}
 	if left := time.Until(a.deadline).Round(time.Second); !a.deadline.IsZero() && left > 0 {
 		b.WriteString(ui.Muted.Render(fmt.Sprintf("  ·  refuses itself in %s", left)))
 	}
@@ -303,6 +307,31 @@ func (m *Model) approvalBox() string {
 	// person. The help and detail overlays share the accent border, so an
 	// approval framed like them is one more box to dismiss.
 	return m.boxOfStyle(ui.AlertPanel, b.String())
+}
+
+// approvalContext is one line on what is already open for this host through
+// the same broker, so a Yes is weighed against what has been said before —
+// and where to take any of it back.
+func (m *Model) approvalContext(a *approvalState) string {
+	if len(m.d.secrets) == 0 {
+		return ""
+	}
+	src := m.d.secrets[m.sourceForRequest(a.request)]
+	allows := 0
+	for _, r := range src.ctrl.Rules() {
+		if r.Action == authz.ActionAllow && r.Source != authz.SourceGlobal {
+			allows++
+		}
+	}
+	for _, g := range src.ctrl.Grants() {
+		if g.Action == authz.ActionAllow {
+			allows++
+		}
+	}
+	if allows == 0 {
+		return "nothing else is allowed for " + a.request.Host + " through " + src.title + " yet"
+	}
+	return a.request.Host + " already has " + itoa(allows) + " allow" + plural(allows) + " through " + src.title + " · Access ▸ r undoes any of it"
 }
 
 func describeCaller(request prompt.Request) string {

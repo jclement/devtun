@@ -12,6 +12,7 @@ import (
 	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/prompt"
 	"github.com/jclement/devtun/internal/service"
+	"github.com/jclement/devtun/internal/sshagent"
 )
 
 // TestCaptureScreens renders the interface's screens, with realistic data, to
@@ -78,9 +79,43 @@ func TestCaptureScreens(t *testing.T) {
 		save("access-confirm-stop-refusing", m, "r on a stop-ask refusal")
 		send(m, "n")
 
-		send(m, "F")
-		save("access-confirm-forget", m, "F while refusals are live: says what it drops")
+		send(m, "X")
+		save("access-confirm-clear-refusals", m, "X: clearing the stop-asking refusals asks first (F keeps them)")
 		send(m, "n")
+
+		selectSubject(m, captureKey+" → github.com")
+		send(m, "enter")
+		save("access-detail-outranked", m, "enter on the github.com allow: ⚠ never wins, and what beats it")
+		send(m, "esc")
+
+		m.setCursor(noSelection)
+		send(m, "t")
+		m.test.fields.values[0].SetValue("op://Private/Root Keys/gpg")
+		save("access-test-deny", m, "t: test box — a request a global deny refuses")
+		m.test.fields.values[0].SetValue("op://Personal/Docker/registry")
+		save("access-test-ask", m, "t: test box — nothing matches, so it would ask")
+		send(m, "esc")
+
+		selectSubject(m, "op://Personal/GitHub/token")
+		send(m, "w")
+		send(m, "ctrl+t")
+		save("access-form-widen", m, "w on a remembered rule, then ctrl+t: …/GitHub/token → …/GitHub/*")
+		send(m, "enter")
+		save("access-confirm-widen", m, "enter: widening an allow asks first, saying what it opens")
+		send(m, "n")
+		send(m, "esc")
+
+		selectSubject(m, captureKey+" → github.com")
+		send(m, "w")
+		m.form.focus = 1
+		send(m, "ctrl+t")
+		save("access-form-ssh", m, "w on the ssh rule: key and destination as two fields; ctrl+t on the key → any key")
+		send(m, "esc")
+
+		m.setCursor(noSelection)
+		send(m, "n")
+		save("access-form-new", m, "n: a blank new rule")
+		send(m, "esc")
 
 		send(m, ":")
 		typeIn(m, "deny")
@@ -112,8 +147,41 @@ func TestCaptureScreens(t *testing.T) {
 		send(m, "2")
 		send(m, "up")
 		send(m, "enter")
-		save("activity-detail", m, "Activity, enter on the newest line")
+		save("activity-detail", m, "Activity, enter on the newest line (a grant gave it)")
 		send(m, "esc")
+		for i, e := range m.logRows {
+			if eventField(e, "rule") == "SSHDENY" {
+				m.setCursor(i)
+			}
+		}
+		m.clampCursor()
+		send(m, "enter")
+		save("activity-why-ssh", m, "Activity, enter on the refused git push: why, and what lost")
+		send(m, "esc")
+		for i, e := range m.logRows {
+			if eventField(e, "rule") == "OPROOT" {
+				m.setCursor(i)
+			}
+		}
+		send(m, "enter")
+		save("activity-why-global", m, "Activity, enter on a refusal by a global rule (mockup C)")
+		send(m, "o")
+		save("activity-o-jumps", m, "o from that detail: Access, with the deciding rule selected")
+
+		m = fresh()
+		reply := make(chan prompt.Choice, 1)
+		req := prompt.Request{Host: "bedev", Subject: "op://Shared/Dev/token", TTL: 5 * time.Minute,
+			Rows: []prompt.Row{{Label: "command", Value: "op read op://Shared/Dev/token"}}}
+		m.Update(approvalMsg{request: req, options: prompt.MenuFor(req), reply: reply})
+		save("approval-op", m, "an approval: host-wide options name the noun; w and the context line (mockup H)")
+		send(m, "w")
+		save("approval-w-form", m, "w in the approval: the form on the request; the request keeps waiting")
+		send(m, "esc")
+		sreq := prompt.Request{Host: "bedev", Subject: captureKey + " → gitlab.com", Noun: "key", Scope: "gitlab.com", TTL: 5 * time.Minute}
+		m.answer(prompt.ChoiceDeny)
+		m.Update(approvalMsg{request: sreq, options: prompt.MenuFor(sreq), reply: reply})
+		save("approval-ssh", m, "an ssh approval: \"any signature from bedev\"")
+		m.answer(prompt.ChoiceDeny)
 
 		send(m, "4")
 		send(m, "down")
@@ -152,32 +220,35 @@ const captureKey = "ssh-ed25519 SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZ/DTMczCvj3tD
 func captureModel(t *testing.T) *Model {
 	op := &stubSecrets{
 		live: []authz.Grant{
-			{Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: authz.ActionAllow, Expires: testNow.Add(3*time.Minute + 12*time.Second)},
+			{ID: "GDOCKER", Host: "bedev", Subject: "op://Personal/Docker/PAT", Action: authz.ActionAllow, Expires: testNow.Add(3*time.Minute + 12*time.Second)},
 			{Host: "bedev", Subject: "op://Barreleye/Azure DevOps/token", Action: authz.ActionAllow},
 			{Host: "bedev", Subject: "op://Personal/AWS root/password", Action: authz.ActionDeny},
 		},
 		rules: []authz.Rule{
-			{Host: "bedev", Subject: "op://Personal/GitHub/token", Action: authz.ActionAllow, Note: "approved interactively on 2026-08-29", Added: testNow.Add(-8 * 24 * time.Hour)},
-			{Host: "bedev", Subject: "op://Barreleye/Sentry/dsn", Action: authz.ActionAllow, Note: "approved interactively on 2026-09-02", Added: testNow.Add(-4 * 24 * time.Hour)},
-			{Host: "bedev", Subject: "op://Personal/Stripe/secret key", Action: authz.ActionDeny, Note: "refused interactively on 2026-09-05", Added: testNow.Add(-26 * time.Hour)},
-			{Host: "bedev", Subject: "op item create --vault Barreleye --category login --title svc-x", Action: authz.ActionAllow, Added: testNow.Add(-20 * time.Hour)},
+			{Host: "bedev", Subject: "op://Personal/GitHub/token", Action: authz.ActionAllow, Note: "approved interactively on 2026-08-29", Added: testNow.Add(-8 * 24 * time.Hour), Source: authz.SourceRemembered},
+			{Host: "bedev", Subject: "op://Barreleye/Sentry/dsn", Action: authz.ActionAllow, Note: "approved interactively on 2026-09-02", Added: testNow.Add(-4 * 24 * time.Hour), Source: authz.SourceRemembered},
+			{Host: "bedev", Subject: "op://Personal/Stripe/secret key", Action: authz.ActionDeny, Note: "refused interactively on 2026-09-05", Added: testNow.Add(-26 * time.Hour), Source: authz.SourceRemembered},
+			{Host: "bedev", Subject: "op item create --vault Barreleye --category login --title svc-x", Action: authz.ActionAllow, Added: testNow.Add(-20 * time.Hour), Source: authz.SourceRemembered},
+			{Host: "bedev", Subject: "op://Private/Recovery/codes", Action: authz.ActionAllow, Note: "for the restore script", Source: authz.SourceHost},
 		},
 		global: []authz.Rule{
-			{Host: "**", Subject: "op://Private/Root Keys/**", Action: authz.ActionDeny},
+			{ID: "OPROOT", Host: "**", Subject: "op://Private/Root Keys/**", Action: authz.ActionDeny},
 			{Host: "**", Subject: "op://Shared/Dev/**", Action: authz.ActionAllow, Note: "dev-only creds"},
 		},
 	}
+	sshSchema := sshagent.Schema
 	ssh := &stubSecrets{
+		schema: &sshSchema,
 		live: []authz.Grant{{Host: "bedev", Subject: authz.HostWildcard, Action: authz.ActionAllow, HostWide: true}},
 		rules: []authz.Rule{
-			{Host: "bedev", Subject: captureKey + " → github.com", Action: authz.ActionAllow, Note: "approved interactively on 2026-08-20", Added: testNow.Add(-17 * 24 * time.Hour)},
-			{Host: "bedev", Subject: "** → **", Action: authz.ActionDeny, Note: "nowhere else, from this box"},
+			{Host: "bedev", Subject: captureKey + " → github.com", Action: authz.ActionAllow, Note: "approved interactively on 2026-08-20", Added: testNow.Add(-17 * 24 * time.Hour), Source: authz.SourceRemembered},
+			{ID: "SSHDENY", Host: "bedev", Subject: "** → **", Action: authz.ActionDeny, Note: "nowhere else, from this box", Source: authz.SourceHost},
 		},
 	}
 	services := []service.Service{
 		stubService{meta: service.Meta{ID: "tunnels", Title: "Tunnels", Glyph: "⇄", Short: "forward ports"}},
-		stubService{meta: service.Meta{ID: "1password", Title: "1Password", Glyph: "❖", Short: "serve op"}},
-		stubService{meta: service.Meta{ID: "ssh-agent", Title: "SSH Agent", Glyph: "⚿", Short: "sign with your keys"}},
+		policyService{stubService{meta: service.Meta{ID: "1password", Title: "1Password", Glyph: "❖", Short: "serve op"}}, op},
+		policyService{stubService{meta: service.Meta{ID: "ssh-agent", Title: "SSH Agent", Glyph: "⚿", Short: "sign with your keys"}}, ssh},
 	}
 	all, _ := prompt.ParseSurfaces("all")
 	m := newTestModel(t, deps{
@@ -192,9 +263,16 @@ func captureModel(t *testing.T) *Model {
 		{Time: testNow.Add(-90 * time.Second), Service: "tunnels", Kind: "started", Class: event.Network, Text: "Tunnels ready"},
 		{Time: testNow.Add(-80 * time.Second), Service: "1password", Kind: "started", Class: event.Lifecycle, Text: "1Password ready"},
 		{Time: testNow.Add(-80 * time.Second), Service: "ssh-agent", Kind: "started", Class: event.Lifecycle, Text: "SSH Agent ready"},
+		{Time: testNow.Add(-60 * time.Second), Service: "ssh-agent", Kind: "denied", Class: event.Security,
+			Text:   "refused bedev a signature with " + captureKey + " → github.com — denied by rule",
+			Fields: []any{"subject", captureKey + " → github.com", "why", "denied by rule", "by", "rule", "rule", "SSHDENY", "source", "host"}},
 		{Time: testNow.Add(-40 * time.Second), Service: "1password", Kind: "denied", Class: event.Security,
-			Text: "refused bedev op://Private/Root Keys/ssh — denied by rule ** → op://Private/Root Keys/**", Fields: []any{"why", "denied by rule ** → op://Private/Root Keys/**"}},
-		{Time: testNow, Service: "1password", Kind: "allowed", Class: event.Security, Text: "gave bedev op://Personal/Docker/PAT (grant, 3m12s left)"},
+			Text:   "refused bedev op://Private/Root Keys/ssh — denied by rule",
+			Fields: []any{"subject", "op://Private/Root Keys/ssh", "why", "denied by rule", "by", "rule", "rule", "OPROOT", "source", "global"}},
+		{Time: testNow.Add(-30 * time.Second), Service: "1password", Kind: "allowed", Class: event.Security, Text: "gave bedev op://Personal/Docker/registry (unmatched → asked, you said once)",
+			Fields: []any{"subject", "op://Personal/Docker/registry", "by", "prompt"}},
+		{Time: testNow, Service: "1password", Kind: "allowed", Class: event.Security, Text: "gave bedev op://Personal/Docker/PAT (grant, 3m12s left)",
+			Fields: []any{"subject", "op://Personal/Docker/PAT", "by", "grant", "grant", "GDOCKER"}},
 	} {
 		m.Update(eventMsg(e))
 	}

@@ -117,6 +117,32 @@ this is 0.x, a minor bump may break something.
   signature from bedev, to anywhere"), SSH keys shortened to keep the
   destination, and an `enter` detail.
 
+- **Access is a policy console.** Rows are grouped by who wrote them —
+  devtun's remembered answers, your host file, your global file — with
+  always/never for devtun's. An allow a deny also matches is marked ⚠, and
+  its detail lists what beats it; a deny's lists what it beats. The last line
+  shows each broker's `unmatched` policy, or a red warning while a policy file
+  cannot be read.
+- **Write rules from the interface.** `n` (new) and `w` (widen or change) open
+  a form built from the broker's own fields, with `ctrl+t` widening one step, a
+  live preview of what it matches this session, and *always* / *this session*
+  / *5m*. Anything that allows asks first. `w` in an approval prompt opens the
+  form on the request, and a rule covering it answers it.
+- **`t` tests a request** against the store's own explanation, without
+  fetching or signing anything.
+- **Activity explains decisions.** `enter` on an allowed or refused request
+  says what decided it, who wrote that and where, what else matched and lost,
+  and whether policy has changed since; `o` jumps to the deciding rule, `n`
+  writes a rule from the request.
+- **`F` keeps "stop asking" refusals** (the store no longer drops them); `X`
+  clears them, after a confirm.
+- Approval prompts name what a host-wide answer covers — "any secret from
+  bedev", "any signature from bedev" rather than "anything" — and say what is
+  already allowed for the host. Decision events carry the `subject` they
+  decided.
+- `w` on the Access tab is *widen*; the web board stays on `w` everywhere else
+  and in the palette.
+
 ### Fixed — the interface
 
 - **Removing a refusal asks first.** `r` on a deny rule or a "stop asking"

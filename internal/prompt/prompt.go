@@ -147,6 +147,24 @@ func (r Request) SubjectNoun() string {
 	return r.Noun
 }
 
+// anyNoun is what a host-wide answer covers, in the service's own noun.
+//
+// "Yes to anything from bedev" read as though it covered every service at
+// once. It never did — a host-wide grant belongs to the one service that
+// asked — so the label says which kind of thing it opens: any secret, or any
+// signature.
+func (r Request) anyNoun() string {
+	switch r.SubjectNoun() {
+	case "secret":
+		return "any secret"
+	case "key", "signature":
+		return "any signature"
+	case "site":
+		return "any site"
+	}
+	return "anything"
+}
+
 // ScopeSuffix renders the scope for a menu label, empty when there is none.
 func (r Request) ScopeSuffix() string {
 	if r.Scope == "" {
@@ -230,8 +248,8 @@ func MenuFor(request Request) []MenuItem {
 		{fmt.Sprintf("Yes, %s — %s", this, ttl), ChoiceAllowSecretTTL},
 		{fmt.Sprintf("Yes, %s — this session", this), ChoiceAllowSecretSession},
 		{fmt.Sprintf("Yes, %s — always (writes a rule)", this), ChoiceAllowSecretAlways},
-		{fmt.Sprintf("Yes to anything from %s — %s", request.Host, ttl), ChoiceAllowHostTTL},
-		{fmt.Sprintf("Yes to anything from %s — this session", request.Host), ChoiceAllowHostSession},
+		{fmt.Sprintf("Yes to %s from %s — %s", request.anyNoun(), request.Host, ttl), ChoiceAllowHostTTL},
+		{fmt.Sprintf("Yes to %s from %s — this session", request.anyNoun(), request.Host), ChoiceAllowHostSession},
 		{"No", ChoiceDeny},
 		{"No, and stop asking this session", ChoiceRefuseSession},
 		{fmt.Sprintf("Never, %s (writes a deny rule)", this), ChoiceRefuseAlways},

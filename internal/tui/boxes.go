@@ -139,16 +139,19 @@ func (m *Model) helpSections() []struct {
 		}},
 		{"activity", [][2]string{
 			{"f", "filter: all → security → network → lifecycle"},
-			{"enter", "the event in full, fields included"},
+			{"enter", "the event in full — and for a decision, why"},
+			{"o · n", "show the deciding rule · write a rule from it"},
 			{"y", "copy the line"},
 		}},
 		{"access — rules and live grants", [][2]string{
-			{"enter", "the rule or grant in full, and what can be done"},
+			{"enter", "the rule or grant in full: what beats it, what it beats"},
+			{"n · w", "write a new rule · widen or change this one"},
+			{"t", "test what a request would get, and why"},
 			{"r", "revoke — asks first if it removes a refusal"},
 			{"D", "rewrite the selected allow rule as a deny"},
 			{"y", "copy the reference — never the secret"},
-			{"F", "forget live grants — asks first if refusals go too"},
-			{"", "a deny always beats an allow, wherever written"},
+			{"F · X", "forget live grants · clear stop-asking refusals"},
+			{"⚠", "an allow a deny also matches: it loses"},
 		}},
 		{"services", [][2]string{
 			{"e", "on or off for this host, from the next connection"},
@@ -271,7 +274,7 @@ func (m *Model) compactHelpBox() string {
 	b.WriteString(row("s / r · p", "sort / reverse · pause"))
 	b.WriteString(ui.Muted.Render("other tabs") + "\n")
 	b.WriteString(row("f", "activity: filter by class"))
-	b.WriteString(row("r · D · y · F", "access: revoke · deny · copy · forget"))
+	b.WriteString(row("n w t r D F", "access: new · widen · test · revoke · deny · forget"))
 	b.WriteString(row("e", "services: on/off for this host"))
 	b.WriteString(row("←→ · g", "config: change · this host or every host"))
 	b.WriteString(ui.Muted.Render("leave") + "\n")
