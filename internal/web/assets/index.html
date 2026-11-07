@@ -344,8 +344,49 @@ let services = new Map();
 // seconds away and would otherwise wipe the message before it was read.
 let noticeUntil = 0;
 
+// session is this tab's credential, traded for the token in the URL that
+// devtun opened. It is sent as a header by this script and never as a cookie:
+// a cookie on 127.0.0.1 would also be sent to every forwarded dev server on
+// 127.0.0.1, which is to say to the remote box. sessionStorage keeps it across
+// a reload of this tab and is partitioned by origin, port included, so nothing
+// on another port can read it.
+const SESSION_KEY = "devtun-session";
+let session = null;
+try { session = sessionStorage.getItem(SESSION_KEY); } catch { /* storage off: memory only */ }
+
+async function signIn() {
+  const token = new URLSearchParams(location.search).get("t");
+  // The token is about to be worth nothing, but it should not be sitting in
+  // the address bar, or in a screenshot of it, either.
+  if (location.search) history.replaceState(null, "", location.pathname + location.hash);
+  if (!token) return;
+  try {
+    const response = await fetch("/api/session", {
+      method: "POST",
+      credentials: "omit",
+      headers: { Authorization: "Bearer " + token },
+    });
+    if (!response.ok) {
+      // A spent link with a credential already in this tab is a reload, and
+      // the credential still works; without one, say what to do.
+      if (!session) notice((await response.text()).trim() || response.statusText);
+      return;
+    }
+    session = (await response.json()).session;
+    try { sessionStorage.setItem(SESSION_KEY, session); } catch { /* memory only */ }
+  } catch (err) {
+    notice(err.message);
+  }
+}
+
+function authorised(init = {}) {
+  const headers = new Headers(init.headers);
+  if (session) headers.set("Authorization", "Bearer " + session);
+  return { ...init, headers, credentials: "omit" };
+}
+
 async function api(path, method = "GET") {
-  const response = await fetch(path, { method, credentials: "same-origin" });
+  const response = await fetch(path, authorised({ method }));
   if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
   return response.headers.get("content-type")?.includes("json") ? response.json() : null;
 }
@@ -1105,6 +1146,7 @@ $("config-level").onclick = () => {
 // The settings are polled on their own clock. They change when somebody
 // changes them — at either surface — and not once a second like the counters.
 async function refreshConfig() {
+  if (!session) return;
   try {
     renderConfig(await api("/api/config"));
   } catch {
@@ -1115,8 +1157,9 @@ async function refreshConfig() {
 
 async function refresh() {
   // A snapshot that is slow to come back must not stack the next poll behind
-  // it, which is how a hung session turns into a thousand open requests.
-  if (inFlight) return;
+  // it, which is how a hung session turns into a thousand open requests. A tab
+  // that never signed in has nothing to ask with.
+  if (inFlight || !session) return;
   inFlight = true;
   try {
     const state = await api("/api/state");
@@ -1155,46 +1198,74 @@ function line(e) {
   return div;
 }
 
-function stream() {
+// stream follows the event stream. It is read with fetch rather than
+// EventSource because EventSource cannot send a header, and the credential is
+// a header precisely so the browser never attaches it by itself.
+async function stream() {
   const log = $("log");
-  const source = new EventSource("/api/events");
+  for (;;) {
+    try {
+      const response = await fetch("/api/events", authorised());
+      if (!response.ok) throw new Error(response.statusText);
+      // Every connection replays the history from the start, so a reconnect
+      // would otherwise leave the whole log on screen twice.
+      log.replaceChildren();
+      $("log-empty").hidden = false;
+      refresh();
 
-  source.onopen = () => {
-    // Every connection replays the history from the start, so a reconnect
-    // would otherwise leave the whole log on screen twice.
-    log.replaceChildren();
-    $("log-empty").hidden = false;
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        let end;
+        while ((end = buffer.indexOf("\n\n")) >= 0) {
+          const frame = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const data = frame.split("\n")
+            .filter((l) => l.startsWith("data:"))
+            .map((l) => l.slice(5).replace(/^ /, ""))
+            .join("\n");
+          if (data) received(log, JSON.parse(data));
+        }
+      }
+    } catch {
+      // Dropped, or devtun stopped. The poll is what decides whether anything
+      // is actually wrong, so ask it, and dial again shortly.
+    }
     refresh();
-  };
-  // The stream drops when devtun stops, and EventSource dials again by itself.
-  // The poll is what decides whether anything is actually wrong, so ask it.
-  source.onerror = () => refresh();
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
 
-  source.onmessage = (message) => {
-    const e = JSON.parse(message.data);
-    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-    log.append(line(e));
-    while (log.childElementCount > 500) log.firstElementChild.remove();
-    if (atBottom) log.scrollTop = log.scrollHeight;
-    $("log-empty").hidden = true;
-    // Anything that changes what is open changes the board too.
-    if (e.kind === "opened" || e.kind === "closed" || e.class === "security") refresh();
-  };
+function received(log, e) {
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  log.append(line(e));
+  while (log.childElementCount > 500) log.firstElementChild.remove();
+  if (atBottom) log.scrollTop = log.scrollHeight;
+  $("log-empty").hidden = true;
+  // Anything that changes what is open changes the board too.
+  if (e.kind === "opened" || e.kind === "closed" || e.class === "security") refresh();
 }
 
 $("reconnect").onclick = () => act("/api/reconnect");
 $("forget").onclick = forgetEverything;
 $("verbose").onchange = (event) => document.body.classList.toggle("verbose", event.target.checked);
 
-// The token was traded for a cookie by the request that fetched this page, so
-// it is already worth nothing — but it should not be sitting in the address
-// bar, or in a screenshot of it, either.
-if (location.search) history.replaceState(null, "", location.pathname + location.hash);
-
 buildTabs();
-refresh();
-refreshConfig();
-stream();
+signIn().then(() => {
+  // No credential means nothing below can succeed, and the poll's "not
+  // talking to devtun" would bury the one message that says what to do.
+  if (!session) {
+    if ($("offline").hidden) notice("devtun: open the link devtun printed — this tab has not signed in");
+    $("state").textContent = "not signed in";
+    return;
+  }
+  refresh();
+  refreshConfig();
+  stream();
+});
 // A hidden tab is nobody looking. It catches up the moment it is looked at.
 setInterval(() => { if (!document.hidden) refresh(); }, 2000);
 // Settings change when a person changes them, at either surface — so they are

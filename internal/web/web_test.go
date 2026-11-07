@@ -236,13 +236,13 @@ func newTestServer(t *testing.T, opts Options) *Server {
 	return server
 }
 
-// ask makes a request the way the page does: loopback Host, the cookie the
+// ask makes a request the way the page does: loopback Host, the credential the
 // token was traded for, and an Origin that matches.
 func ask(t *testing.T, s *Server, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, nil)
 	request.Host = "127.0.0.1:9999"
-	request.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+	request.Header.Set("Authorization", bearerPrefix+s.session)
 	if method != http.MethodGet {
 		request.Header.Set("Origin", "http://127.0.0.1:9999")
 	}
@@ -251,56 +251,161 @@ func ask(t *testing.T, s *Server, method, path string) *httptest.ResponseRecorde
 	return recorder
 }
 
+// trade asks for the session credential the way the page's script does.
+func trade(t *testing.T, s *Server, presented string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/session", nil)
+	request.Host = "127.0.0.1:9999"
+	request.Header.Set("Origin", "http://127.0.0.1:9999")
+	if presented != "" {
+		request.Header.Set("Authorization", bearerPrefix+presented)
+	}
+	recorder := httptest.NewRecorder()
+	s.mux.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func sessionFrom(t *testing.T, recorder *httptest.ResponseRecorder) string {
+	t.Helper()
+	var reply struct{ Session string }
+	if err := json.Unmarshal(recorder.Body.Bytes(), &reply); err != nil || reply.Session == "" {
+		t.Fatalf("no session in %q: %v", recorder.Body.String(), err)
+	}
+	return reply.Session
+}
+
 // A port on 127.0.0.1 is not private: every process on the machine can reach
-// it. The token is the whole of the defence, so nothing may be reachable
-// without it.
-func TestNothingIsReachableWithoutTheToken(t *testing.T) {
+// it. The credential is the whole of the defence, so nothing but the static
+// page may be reachable without it.
+func TestNothingIsReachableWithoutTheCredential(t *testing.T) {
 	s := newTestServer(t, Options{Tunnels: newFakeTunnels()})
 
-	for _, path := range []string{"/", "/api/state", "/api/events"} {
+	for _, path := range []string{"/api/state", "/api/events", "/api/config", "/api/state?t=" + token} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Host = "127.0.0.1:9999"
 		recorder := httptest.NewRecorder()
 		s.mux.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusUnauthorized {
-			t.Errorf("GET %s without a token = %d, want 401", path, recorder.Code)
+			t.Errorf("GET %s without a credential = %d, want 401", path, recorder.Code)
 		}
 	}
 
-	// A wrong token is no better than none.
-	request := httptest.NewRequest(http.MethodGet, "/api/state?t=nearly", nil)
-	request.Host = "127.0.0.1:9999"
-	recorder := httptest.NewRecorder()
-	s.mux.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusUnauthorized {
-		t.Errorf("a wrong token = %d, want 401", recorder.Code)
+	// A wrong credential is no better than none, and neither is the URL token
+	// presented as one: the separate values exist to stop exactly that replay.
+	for _, presented := range []string{"nearly", token} {
+		request := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+		request.Host = "127.0.0.1:9999"
+		request.Header.Set("Authorization", bearerPrefix+presented)
+		recorder := httptest.NewRecorder()
+		s.mux.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Errorf("credential %q = %d, want 401", presented, recorder.Code)
+		}
+	}
+	if recorder := trade(t, s, "nearly"); recorder.Code != http.StatusUnauthorized {
+		t.Errorf("trading a wrong token = %d, want 401", recorder.Code)
+	}
+	if recorder := trade(t, s, ""); recorder.Code != http.StatusUnauthorized {
+		t.Errorf("trading no token = %d, want 401", recorder.Code)
 	}
 }
 
-// The token arrives in the URL once and is traded for a cookie, so it stops
-// being in the address bar — and in every screenshot of it. The cookie is not
-// the token: if it were, the token out of browser history could be replayed as
-// a cookie and the trade would have bought nothing.
-func TestTheTokenInTheURLIsTradedForACookie(t *testing.T) {
+// TestNoCredentialIsEverACookie is the forwarded-port P1. Cookies are scoped to
+// a host name, not a port, so a cookie set by the board on 127.0.0.1 would be
+// sent to every forwarded dev server on 127.0.0.1 — to the remote box. Nothing
+// the board answers may set one, and a cookie, even carrying the right value,
+// must not authenticate: the credential is a header or it is nothing.
+func TestNoCredentialIsEverACookie(t *testing.T) {
 	s := newTestServer(t, Options{Tunnels: newFakeTunnels()})
 
-	request := httptest.NewRequest(http.MethodGet, "/api/state?t="+token, nil)
-	request.Host = "localhost:9999"
+	page := httptest.NewRequest(http.MethodGet, "/?t="+token, nil)
+	page.Host = "127.0.0.1:9999"
+	recorder := httptest.NewRecorder()
+	s.mux.ServeHTTP(recorder, page)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the page = %d", recorder.Code)
+	}
+	traded := trade(t, s, token)
+	for _, r := range []*httptest.ResponseRecorder{recorder, traded, ask(t, s, http.MethodGet, "/api/state")} {
+		if cookies := r.Result().Cookies(); len(cookies) != 0 {
+			t.Errorf("a response set a cookie: %+v", cookies)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	request.Host = "127.0.0.1:9999"
+	request.AddCookie(&http.Cookie{Name: "devtun", Value: s.session})
+	recorder = httptest.NewRecorder()
+	s.mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("a cookie authenticated: %d", recorder.Code)
+	}
+}
+
+// TestTheBoardCannotBeFramed: a page on another port of the same host could
+// otherwise overlay the board in an invisible iframe and steer a click onto
+// "approve".
+func TestTheBoardCannotBeFramed(t *testing.T) {
+	s := newTestServer(t, Options{Tunnels: newFakeTunnels()})
+
+	page := httptest.NewRequest(http.MethodGet, "/", nil)
+	page.Host = "127.0.0.1:9999"
+	recorder := httptest.NewRecorder()
+	s.mux.ServeHTTP(recorder, page)
+	unauthorised := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	unauthorised.Host = "127.0.0.1:9999"
+	refused := httptest.NewRecorder()
+	s.mux.ServeHTTP(refused, unauthorised)
+
+	for name, r := range map[string]*httptest.ResponseRecorder{
+		"the page": recorder, "an API reply": ask(t, s, http.MethodGet, "/api/state"), "a refusal": refused,
+	} {
+		if got := r.Header().Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("%s: X-Frame-Options = %q", name, got)
+		}
+		if got := r.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
+			t.Errorf("%s: Content-Security-Policy = %q", name, got)
+		}
+		if got := r.Header().Get("Referrer-Policy"); got != "no-referrer" {
+			t.Errorf("%s: Referrer-Policy = %q", name, got)
+		}
+	}
+}
+
+// The token arrives in the URL once and is traded for a session credential, so
+// it stops being in the address bar — and in every screenshot of it. The
+// credential is not the token: if it were, the token out of browser history
+// could be replayed as one and the trade would have bought nothing.
+func TestTheTokenInTheURLIsTradedForACredential(t *testing.T) {
+	s := newTestServer(t, Options{Tunnels: newFakeTunnels()})
+
+	recorder := trade(t, s, token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("the token was refused: %d %s", recorder.Code, recorder.Body.String())
+	}
+	session := sessionFrom(t, recorder)
+	if session == token {
+		t.Error("the credential is the URL token, so the token in browser history still opens the board")
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("the credential may be cached: Cache-Control = %q", got)
+	}
+}
+
+// The trade is a POST, so it is held to the Origin check like any mutation: a
+// page on a forwarded port that somehow had the token still could not trade it
+// from there.
+func TestTheTradeIsSameOriginOnly(t *testing.T) {
+	s := newTestServer(t, Options{Tunnels: newFakeTunnels()})
+
+	request := httptest.NewRequest(http.MethodPost, "/api/session", nil)
+	request.Host = "127.0.0.1:9999"
+	request.Header.Set("Origin", "http://127.0.0.1:3000")
+	request.Header.Set("Authorization", bearerPrefix+token)
 	recorder := httptest.NewRecorder()
 	s.mux.ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("the token in the URL was refused: %d", recorder.Code)
-	}
-	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != cookieName || cookies[0].Value == "" {
-		t.Fatalf("no cookie was set: %+v", cookies)
-	}
-	if cookies[0].Value == token {
-		t.Error("the cookie is the URL token, so the token in browser history still opens the board")
-	}
-	if !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
-		t.Errorf("the cookie is not locked down: %+v", cookies[0])
+	if recorder.Code != http.StatusForbidden {
+		t.Errorf("a trade from another port = %d, want 403", recorder.Code)
 	}
 }
 
@@ -314,27 +419,17 @@ func TestTheURLTokenIsGoodForOneTrade(t *testing.T) {
 		Now:     func() time.Time { return now },
 	})
 
-	first := httptest.NewRequest(http.MethodGet, "/?t="+token, nil)
-	first.Host = "127.0.0.1:9999"
-	opened := httptest.NewRecorder()
-	s.mux.ServeHTTP(opened, first)
-	if opened.Code != http.StatusOK {
-		t.Fatalf("the first use of the token = %d", opened.Code)
+	first := trade(t, s, token)
+	if first.Code != http.StatusOK {
+		t.Fatalf("the first use of the token = %d", first.Code)
 	}
-	cookies := opened.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("the first use set no cookie: %+v", cookies)
-	}
-	granted := cookies[0]
+	granted := sessionFrom(t, first)
 
 	now = now.Add(time.Hour)
 
-	// The bookmark, reopened tomorrow in a browser that no longer has the
-	// cookie: refused, and told what to do about it.
-	replay := httptest.NewRequest(http.MethodGet, "/?t="+token, nil)
-	replay.Host = "127.0.0.1:9999"
-	refused := httptest.NewRecorder()
-	s.mux.ServeHTTP(refused, replay)
+	// The bookmark, reopened tomorrow in a tab that has no credential:
+	// refused, and told what to do about it.
+	refused := trade(t, s, token)
 	if refused.Code != http.StatusUnauthorized {
 		t.Errorf("the token worked twice: %d", refused.Code)
 	}
@@ -342,35 +437,21 @@ func TestTheURLTokenIsGoodForOneTrade(t *testing.T) {
 		t.Errorf("a spent token says only %q", refused.Body.String())
 	}
 
-	// Nor is the token any use as a cookie, which is the replay the separate
-	// values exist to stop.
-	asCookie := httptest.NewRequest(http.MethodGet, "/api/state", nil)
-	asCookie.Host = "127.0.0.1:9999"
-	asCookie.AddCookie(&http.Cookie{Name: cookieName, Value: token})
-	recorder := httptest.NewRecorder()
-	s.mux.ServeHTTP(recorder, asCookie)
-	if recorder.Code != http.StatusUnauthorized {
-		t.Errorf("the URL token was accepted as a cookie: %d", recorder.Code)
-	}
-
-	// The tab that did the trade is unaffected, however long it stays open —
-	// including when it reloads the bookmarked URL it still has in its bar.
-	for _, path := range []string{"/api/state", "/api/state?t=" + token} {
-		request := httptest.NewRequest(http.MethodGet, path, nil)
-		request.Host = "127.0.0.1:9999"
-		request.AddCookie(granted)
-		kept := httptest.NewRecorder()
-		s.mux.ServeHTTP(kept, request)
-		if kept.Code != http.StatusOK {
-			t.Errorf("GET %s with the cookie from the trade = %d, want 200", path, kept.Code)
-		}
+	// The tab that did the trade is unaffected, however long it stays open.
+	request := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	request.Host = "127.0.0.1:9999"
+	request.Header.Set("Authorization", bearerPrefix+granted)
+	kept := httptest.NewRecorder()
+	s.mux.ServeHTTP(kept, request)
+	if kept.Code != http.StatusOK {
+		t.Errorf("the credential from the trade = %d, want 200", kept.Code)
 	}
 }
 
-// One page load is not one request, and a browser may prerender the URL before
+// One page load is not always one trade: a browser may prerender the URL before
 // navigating to it. Whatever arrives in that first moment has to get the same
-// cookie rather than racing the token into a refusal.
-func TestConcurrentFirstRequestsAllGetTheSameCookie(t *testing.T) {
+// credential rather than racing the token into a refusal.
+func TestConcurrentFirstTradesAllGetTheSameCredential(t *testing.T) {
 	s := newTestServer(t, Options{Tunnels: newFakeTunnels()})
 
 	var wait sync.WaitGroup
@@ -380,24 +461,21 @@ func TestConcurrentFirstRequestsAllGetTheSameCookie(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			request := httptest.NewRequest(http.MethodGet, "/api/state?t="+token, nil)
-			request.Host = "127.0.0.1:9999"
-			recorder := httptest.NewRecorder()
-			s.mux.ServeHTTP(recorder, request)
+			recorder := trade(t, s, token)
 			codes[i] = recorder.Code
-			if cookies := recorder.Result().Cookies(); len(cookies) == 1 {
-				values[i] = cookies[0].Value
-			}
+			var reply struct{ Session string }
+			_ = json.Unmarshal(recorder.Body.Bytes(), &reply)
+			values[i] = reply.Session
 		}()
 	}
 	wait.Wait()
 
 	for i, code := range codes {
 		if code != http.StatusOK {
-			t.Fatalf("request %d of the page load = %d, want 200", i, code)
+			t.Fatalf("trade %d = %d, want 200", i, code)
 		}
 		if values[i] == "" || values[i] != values[0] {
-			t.Fatalf("request %d was given a different cookie: %q vs %q", i, values[i], values[0])
+			t.Fatalf("trade %d was given a different credential: %q vs %q", i, values[i], values[0])
 		}
 	}
 }
@@ -410,7 +488,7 @@ func TestAHostThatIsNotLoopbackIsRefused(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/api/state", nil)
 	request.Host = "devtun.attacker.example"
-	request.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+	request.Header.Set("Authorization", bearerPrefix+s.session)
 	recorder := httptest.NewRecorder()
 	s.mux.ServeHTTP(recorder, request)
 
@@ -419,8 +497,8 @@ func TestAHostThatIsNotLoopbackIsRefused(t *testing.T) {
 	}
 }
 
-// A cookie is sent by the browser whatever page asked, so anything that changes
-// something has to prove it came from this one.
+// Anything that changes something has to prove it came from this page, even
+// with the credential in hand.
 func TestACrossOriginPostIsRefused(t *testing.T) {
 	tunnels := newFakeTunnels()
 	s := newTestServer(t, Options{Tunnels: tunnels})
@@ -428,7 +506,7 @@ func TestACrossOriginPostIsRefused(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/ports/3000/mode?mode=hidden", nil)
 	request.Host = "127.0.0.1:9999"
 	request.Header.Set("Origin", "https://evil.example")
-	request.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+	request.Header.Set("Authorization", bearerPrefix+s.session)
 	recorder := httptest.NewRecorder()
 	s.mux.ServeHTTP(recorder, request)
 
@@ -580,7 +658,7 @@ func TestTheEventStreamOpensWithTheHistory(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/api/events", nil)
 	request.Host = "127.0.0.1:9999"
-	request.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+	request.Header.Set("Authorization", bearerPrefix+s.session)
 	ctx, cancel := context.WithCancel(request.Context())
 	request = request.WithContext(ctx)
 
@@ -681,6 +759,9 @@ func TestThePageCallsNothingItIsNotAllowedTo(t *testing.T) {
 		t.Fatalf("reading the page: %v", err)
 	}
 	allowed := map[string]bool{
+		// The token trade: it hands out the credential, and only for the
+		// token in the URL devtun opened, inside the exchange window.
+		"/api/session":       true,
 		"/api/state":         true,
 		"/api/events":        true,
 		"/api/ports/*/mode":  true,
@@ -865,7 +946,7 @@ func TestApproveIsGuardedLikeEveryOtherMutation(t *testing.T) {
 
 	rebound := httptest.NewRequest(http.MethodPost, path, nil)
 	rebound.Host = "devtun.attacker.example"
-	rebound.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+	rebound.Header.Set("Authorization", bearerPrefix+s.session)
 	recorder = httptest.NewRecorder()
 	s.mux.ServeHTTP(recorder, rebound)
 	if recorder.Code != http.StatusForbidden {
@@ -875,7 +956,7 @@ func TestApproveIsGuardedLikeEveryOtherMutation(t *testing.T) {
 	crossOrigin := httptest.NewRequest(http.MethodPost, path, nil)
 	crossOrigin.Host = "127.0.0.1:9999"
 	crossOrigin.Header.Set("Origin", "https://evil.example")
-	crossOrigin.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+	crossOrigin.Header.Set("Authorization", bearerPrefix+s.session)
 	recorder = httptest.NewRecorder()
 	s.mux.ServeHTTP(recorder, crossOrigin)
 	if recorder.Code != http.StatusForbidden {
@@ -1171,19 +1252,19 @@ func TestTheNewMutationsAreGuardedLikeTheOldOnes(t *testing.T) {
 		"/api/rules/deny?source=1password&id=h0",
 		"/api/grants/forget",
 	} {
-		noCookie := httptest.NewRequest(http.MethodPost, path, nil)
-		noCookie.Host = "127.0.0.1:9999"
-		noCookie.Header.Set("Origin", "http://127.0.0.1:9999")
+		noCredential := httptest.NewRequest(http.MethodPost, path, nil)
+		noCredential.Host = "127.0.0.1:9999"
+		noCredential.Header.Set("Origin", "http://127.0.0.1:9999")
 		recorder := httptest.NewRecorder()
-		s.mux.ServeHTTP(recorder, noCookie)
+		s.mux.ServeHTTP(recorder, noCredential)
 		if recorder.Code != http.StatusUnauthorized {
-			t.Errorf("POST %s without the cookie = %d, want 401", path, recorder.Code)
+			t.Errorf("POST %s without the credential = %d, want 401", path, recorder.Code)
 		}
 
 		crossOrigin := httptest.NewRequest(http.MethodPost, path, nil)
 		crossOrigin.Host = "127.0.0.1:9999"
 		crossOrigin.Header.Set("Origin", "https://evil.example")
-		crossOrigin.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+		crossOrigin.Header.Set("Authorization", bearerPrefix+s.session)
 		recorder = httptest.NewRecorder()
 		s.mux.ServeHTTP(recorder, crossOrigin)
 		if recorder.Code != http.StatusForbidden {
@@ -1192,7 +1273,7 @@ func TestTheNewMutationsAreGuardedLikeTheOldOnes(t *testing.T) {
 
 		notLoopback := httptest.NewRequest(http.MethodPost, path, nil)
 		notLoopback.Host = "devtun.example"
-		notLoopback.AddCookie(&http.Cookie{Name: cookieName, Value: s.session})
+		notLoopback.Header.Set("Authorization", bearerPrefix+s.session)
 		recorder = httptest.NewRecorder()
 		s.mux.ServeHTTP(recorder, notLoopback)
 		if recorder.Code != http.StatusForbidden {

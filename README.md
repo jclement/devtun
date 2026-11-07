@@ -451,7 +451,9 @@ If you want both — one on each monitor — say `--tui --web`, because the comm
 
 It **opens in your browser by itself** (`--web-open=false` if you would rather it did not), and prints the URL as well.
 
-**The URL works exactly once.** It carries a token that is traded for a session cookie on the first request and is then dead — so the copy left behind in your browser history, or in a URL-logging extension, is not a way back in. The tab that made the trade keeps working; a second attempt on the same link says so plainly rather than failing with a bare 401. Restart devtun for a fresh one.
+**The URL is good for one trade.** It carries a token that the page trades for a session credential the moment it loads — a few seconds' grace covers a browser that prerenders the link and then opens it — and is then dead, so the copy left behind in your browser history, or in a URL-logging extension, is not a way back in. The tab that made the trade keeps working, reloads included; a second attempt on the same link says so plainly rather than failing with a bare 401. Restart devtun for a fresh one.
+
+**The credential is never a cookie, on purpose.** Cookies belong to a host name, not a port, so a cookie the board set on `127.0.0.1` would be sent to every forwarded dev server on `127.0.0.1` — that is, to the remote box. The page keeps its credential in that tab's own storage, which the browser partitions by port, and sends it as a header itself; a forwarded port gets nothing. The page also refuses to be framed, so a page on another port cannot lay the board under its own buttons and steer a click onto *approve*. Two boards from two devtun runs no longer knock each other out, either.
 
 Under the interface, `w` opens the board and copies its URL to your clipboard — over OSC 52, so it works through SSH and tmux. That is the answer to "the URL is in the log and I cannot select it": the mouse belongs to the port table, so devtun hands you the link rather than making you drag across one.
 
@@ -469,7 +471,7 @@ It runs *alongside* whichever interface owns your terminal rather than instead o
 
 Four things make that safe to do over HTTP, and the first three were already here:
 
-- the **one-shot token** and the session cookie behind it;
+- the **one-shot token** and the per-tab credential behind it, which no other port can read;
 - the **loopback-only `Host` check**, which is what stops DNS rebinding;
 - the **`Origin` check** on everything that changes something;
 - and **an unguessable id per request, spent on first use.** You approve *that request*, never "whatever is pending" — between reading the board and clicking, the pending one may be a different question entirely. A replay gets a 409. A choice is checked against the menu built for that one request, so a signature cannot be answered with an option only ever offered for a vault read.
@@ -478,9 +480,10 @@ Four things make that safe to do over HTTP, and the first three were already her
 
 Three things keep the port honest, because a port on `127.0.0.1` is not private — every process on your machine can reach it, and so can a web page you have open:
 
-- a **token**, on every request;
+- a **credential**, on every request but the static page itself;
 - the **Host** header has to name loopback, which is what stops DNS rebinding — a hostname somebody else controls, pointed at 127.0.0.1. This holds even if you bind to `0.0.0.0`, so the board stays local whatever address you give it;
-- an **Origin** check on anything that changes something, so a page you happened to be reading cannot post to it.
+- an **Origin** check on anything that changes something, so a page you happened to be reading cannot post to it;
+- and `frame-ancestors 'none'` / `X-Frame-Options: DENY`, so no other page can frame it.
 
 The page is served from the binary — no CDN, no build step, works on a train.
 

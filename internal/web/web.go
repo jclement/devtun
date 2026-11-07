@@ -29,14 +29,32 @@
 //
 // Loopback only, and a token. A port on 127.0.0.1 is not private: every process
 // on the machine can reach it, and a web page in your browser can too. So the
-// URL carries a token that is traded — once — for a cookie, every API call
-// needs that cookie, and two header checks stand in the way of a browser being
-// used as the way in:
+// URL carries a token that is traded — once — for a session credential, every
+// API call has to present that credential, and two header checks stand in the
+// way of a browser being used as the way in:
 //
 //   - the Host header has to be a loopback name, which is what stops DNS
 //     rebinding — a hostname somebody else controls, pointed at 127.0.0.1;
 //   - a mutating request has to come from this origin, which is what stops a
 //     page you happened to be reading from posting to it.
+//
+// The credential is a bearer header the page's own script sends, kept in that
+// tab's memory and sessionStorage — never a cookie. That is the port boundary,
+// and it is the reason. Cookies are scoped to a host name, not a port, so a
+// cookie set by the board on 127.0.0.1 is sent to every other server on
+// 127.0.0.1 too — and those are exactly the remote dev servers devtun forwards.
+// Opening a tunnel after opening the board handed the board's credential to
+// the box it is supposed to be guarding against. sessionStorage, by contrast, is
+// partitioned by origin, port included, so nothing served on another port can
+// read it, and a header has to be added deliberately by script rather than
+// attached by the browser to whatever asks. Serving the board on a host name of
+// its own (a `*.localhost` name, a second loopback address) would also isolate
+// a cookie, but neither works everywhere: macOS answers only on 127.0.0.1, and
+// not every browser resolves `*.localhost`.
+//
+// The page also refuses to be framed (CSP frame-ancestors and X-Frame-Options),
+// so a page on another port cannot overlay it and steer a click onto
+// "approve".
 //
 // The trade is one-way and happens once. devtun opens the browser itself, so
 // the tokened URL lands in history, where nothing this program does can reach
@@ -77,10 +95,10 @@ const loopbackAny = "127.0.0.1:0"
 //go:embed assets/*
 var assets embed.FS
 
-// cookieName carries the credential the URL token was traded for, so the tab
-// that did the trade keeps working and the token stops appearing in the
-// address bar.
-const cookieName = "devtun"
+// bearerPrefix introduces the credential in an Authorization header: the URL
+// token on the one request that trades it, the session credential on every
+// request after.
+const bearerPrefix = "Bearer "
 
 // exchangeWindow is how long the one trade stays open.
 //
@@ -191,9 +209,10 @@ type Server struct {
 	opts Options
 	// token is the one in the URL, good for a single trade.
 	token string
-	// session is what the cookie carries. It is deliberately not the token:
-	// were they the same, the token out of browser history could be replayed
-	// as a cookie and the trade would have bought nothing.
+	// session is the credential the page presents on every API call. It is
+	// deliberately not the token: were they the same, the token out of browser
+	// history could be replayed as a session and the trade would have bought
+	// nothing.
 	session string
 	mux     *http.ServeMux
 	// url is filled in once the listener is bound, by Run's goroutine, and read
@@ -305,7 +324,10 @@ func (s *Server) routes() {
 		panic("web: the page is missing from the binary: " + err.Error())
 	}
 
-	s.mux.HandleFunc("GET /", s.guard(func(w http.ResponseWriter, r *http.Request) {
+	// The page itself needs no credential: it is the same static file for
+	// everyone and holds nothing, and it has to load before its script can
+	// trade the token. Everything it then asks for does.
+	s.mux.HandleFunc("GET /", s.public(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
@@ -316,6 +338,7 @@ func (s *Server) routes() {
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(page)
 	}))
+	s.mux.HandleFunc("POST /api/session", s.public(s.handleSession))
 
 	s.mux.HandleFunc("GET /api/state", s.guard(s.handleState))
 	s.mux.HandleFunc("GET /api/events", s.guard(s.handleEvents))
@@ -335,10 +358,31 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/config/{key}", s.guard(s.handleSetting))
 }
 
-// guard is the whole of the access control, in one place so that no handler can
-// be added without it.
-func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
+// secure sets the headers every response carries.
+//
+// frame-ancestors and X-Frame-Options are the anti-framing pair: a page on
+// another port of this same host could otherwise put the board in an
+// invisible iframe and line a button of its own up over "approve". The board
+// answers questions about secrets, so a click is a decision, and nobody else's
+// page gets to arrange where it lands. no-referrer keeps the tokened URL out of
+// the Referer of anything the page links to, and nosniff keeps a JSON reply
+// from ever being read as something executable.
+func secure(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cross-Origin-Opener-Policy", "same-origin")
+	h.Set("Cross-Origin-Resource-Policy", "same-origin")
+}
+
+// public is the checks that need no credential: the Host header, and the
+// Origin of anything that changes state. They apply to every route, the page
+// and the token trade included.
+func (s *Server) public(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		secure(w)
 		if !loopbackHost(r.Host) {
 			// A hostname somebody else controls, resolved to 127.0.0.1, is how
 			// a page in your browser reaches a server it should not be able to
@@ -350,56 +394,61 @@ func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "cross-origin request refused", http.StatusForbidden)
 			return
 		}
-		ok, spent := s.authorize(w, r)
-		if spent {
-			// The one refusal a person can do something about, so it says what
-			// to do rather than leaving them to guess at a 401.
-			http.Error(w, "devtun: this link has already been used — restart devtun for a new one",
-				http.StatusUnauthorized)
-			return
-		}
-		if !ok {
-			http.Error(w, "devtun: wrong or missing token", http.StatusUnauthorized)
-			return
-		}
 		next(w, r)
 	}
 }
 
-// authorize accepts the cookie, or trades the URL token for one. It also
-// reports whether the refusal was a token that had already been traded, which
-// is the only one worth explaining.
-//
-// The cookie is tried first, and that ordering is the whole race guard: one
-// page load makes several requests — the page, the state, the stream — and only
-// the first carries ?t=. Every request behind it already has the cookie and
-// never reaches the trade at all, and neither does a reload of the bookmarked
-// URL by the tab that did the trading.
-func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (ok, spent bool) {
-	if cookie, err := r.Cookie(cookieName); err == nil && matches(cookie.Value, s.session) {
-		return true, false
+// guard is the whole of the access control, in one place so that no handler can
+// be added without it.
+func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
+	return s.public(func(w http.ResponseWriter, r *http.Request) {
+		if !matches(bearer(r), s.session) {
+			http.Error(w, "devtun: wrong or missing credential — open the link devtun printed", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	})
+}
+
+// bearer is the credential in the request's Authorization header, or "".
+func bearer(r *http.Request) string {
+	value, ok := strings.CutPrefix(r.Header.Get("Authorization"), bearerPrefix)
+	if !ok {
+		return ""
 	}
-	token := r.URL.Query().Get("t")
+	return strings.TrimSpace(value)
+}
+
+// handleSession trades the URL token for the session credential.
+//
+// The token arrives in the Authorization header rather than the URL of this
+// request, so it is not written into anything that logs request lines. Every
+// trade inside the exchange window gets the same credential: one page load is
+// not always one request — a prerender and then the real navigation, a retry —
+// and a token that died on the first of those would strand the tab that
+// devtun itself opened. After the window the token is spent, and a refusal says
+// so, because it is the one refusal a person can do something about.
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	token := bearer(r)
 	if token == "" || !matches(token, s.token) {
-		return false, false
+		http.Error(w, "devtun: wrong or missing token", http.StatusUnauthorized)
+		return
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.spentAt.IsZero() && s.opts.Now().Sub(s.spentAt) > exchangeWindow {
-		return false, true
+		s.mu.Unlock()
+		http.Error(w, "devtun: this link has already been used — restart devtun for a new one",
+			http.StatusUnauthorized)
+		return
 	}
 	if s.spentAt.IsZero() {
 		s.spentAt = s.opts.Now()
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
-		Value:    s.session,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
-	return true, false
+	s.mu.Unlock()
+
+	writeJSON(w, map[string]string{"session": s.session})
 }
 
 // matches compares in constant time. The comparison is not the weak point here,

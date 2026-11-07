@@ -22,6 +22,15 @@ this is 0.x, a minor bump may break something.
   `[personal] op://…`; existing rules keep meaning the default account, deny
   rules still apply whichever account is named, `--account` may appear only
   once, and routing no longer adds a second `--account` to such a request.
+- **The web board's credential no longer reaches forwarded ports.** It was a
+  cookie on `127.0.0.1`, and cookies ignore ports, so every forwarded dev
+  server opened in the same browser was sent it. The page now trades the URL
+  token for a per-tab credential kept in sessionStorage (partitioned by port)
+  and sent as a header; the event stream is read with `fetch` so it can carry
+  one. The board also sends `Content-Security-Policy: frame-ancestors 'none'`
+  and `X-Frame-Options: DENY`, so a page on another port cannot frame it and
+  steer a click onto *approve*. Two boards from two runs no longer clobber
+  each other's cookie.
 
 ### Fixed
 
