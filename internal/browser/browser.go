@@ -162,6 +162,18 @@ func askDefault(configured *bool) bool {
 	return false
 }
 
+// GateFallback is what the gate is when neither config file sets it: "ask"
+// when the session was started with --gate ask, "auto" otherwise. The
+// settings catalogue reads it, so an edit that writes auto over that
+// fallback is classified as the loosening it is, and the Config tab shows the
+// value the browser will actually use.
+func (s *Service) GateFallback() string {
+	if askDefault(s.opts.Ask) {
+		return "ask"
+	}
+	return "auto"
+}
+
 // SetPrompter replaces how approvals are asked for. See authz.Gate.
 func (s *Service) SetPrompter(p prompt.Prompter) { s.gate.SetPrompter(p) }
 

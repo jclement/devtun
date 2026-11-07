@@ -474,3 +474,29 @@ func TestTheSettingsConfirmIsSpecificToTheSetting(t *testing.T) {
 		t.Errorf("the gate confirm should say rules are skipped too:\n%s", text)
 	}
 }
+
+// Under --gate ask with a silent config, stepping the gate back from inherit
+// lands on auto, which turns the gate off: the Config tab asks first.
+func TestConfigConfirmsAutoOverAGateAskFallback(t *testing.T) {
+	yes := true
+	store := newTestStore(t)
+	m := newTestModel(t, deps{services: []service.Service{browser.New(browser.Options{Ask: &yes})}, store: store})
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	send(m, "5")
+	for i, r := range m.cfgRows {
+		if r.setting != nil && r.setting.Key == "gate" {
+			m.setCursor(i)
+		}
+	}
+	send(m, "left") // inherit → auto
+	if m.confirm == nil {
+		t.Fatal("auto over a --gate ask fallback was applied without a confirm")
+	}
+	if got := store.Setting("bedev", "browser", "gate"); got != "" {
+		t.Fatalf("written before the confirm: %q", got)
+	}
+	send(m, "y")
+	if got := store.Setting("bedev", "browser", "gate"); got != "auto" {
+		t.Errorf("after y the gate is %q", got)
+	}
+}

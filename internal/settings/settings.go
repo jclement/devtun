@@ -233,6 +233,11 @@ type Deps struct {
 	// with, empty when there is none. A function because looking along PATH is
 	// worth caching, and the caller is who knows how long a cache may live.
 	DialogChooser func() string
+	// GateFallback is the browser gate's value when no file sets it, for a
+	// caller whose Services do not include the browser service itself. The
+	// browser service answers this directly when it is among Services; when
+	// neither can say, an unset gate is treated as ask.
+	GateFallback func() string
 }
 
 // Catalogue is every setting, grouped.
@@ -305,13 +310,18 @@ func (d Deps) approvalSettings() []*Setting {
 	// one document and asks for a string back. Listing it costs a line and an
 	// `if`; leaving it out costs somebody the only place it can be reached.
 	if d.hasService("browser") {
-		gate := d.storeSetting("gate", "Ask before a site", "browser", "gate", BothLevels, "auto")
+		fallback := d.gateFallback()
+		shown := fallback
+		if shown == "" {
+			shown = "auto"
+		}
+		gate := d.storeSetting("gate", "Ask before a site", "browser", "gate", BothLevels, shown)
 		gate.Options = []string{OptInherit, "ask", "auto"}
 		gate.Help = func() string {
 			return "ask before the remote opens each site · from the next connection"
 		}
 		gate.Loosens = func(level Level, value string) string {
-			return gateLoosens(gate, level, value)
+			return gateLoosens(gate, level, value, fallback)
 		}
 		gate.Validate = ValidGate
 		settings = append(settings, gate)
@@ -433,11 +443,33 @@ func promptLoosens(row *Setting, level Level, value string) string {
 // without asking, and ask — or anything it does not recognise, failing
 // closed — means ask. So an edit loosens when the effective value becomes
 // auto.
-func gateLoosens(row *Setting, level Level, value string) string {
+//
+// fallback is what the browser uses when neither file says anything — ask
+// under --gate ask, auto otherwise — and "" when this catalogue cannot tell.
+// Unknown is taken as ask, so writing auto over an unset gate asks first: the
+// conservative reading, since a session started with --gate ask is asking.
+func gateLoosens(row *Setting, level Level, value, fallback string) string {
+	if fallback == "" {
+		fallback = "ask"
+	}
 	asks := func(v string) bool { return v != "auto" }
-	before, after := effectiveValues(row, level, value, "auto")
+	before, after := effectiveValues(row, level, value, fallback)
 	if asks(before) && !asks(after) {
 		return "The remote box will open sites in your browser without asking. With the gate off the browser's rules and grants are not consulted either — nothing is checked."
+	}
+	return ""
+}
+
+// gateFallback is the browser's own answer for an unset gate, from the
+// browser service when it can say, else Deps.GateFallback, else "" (unknown).
+func (d Deps) gateFallback() string {
+	for _, svc := range d.Services {
+		if f, ok := svc.(interface{ GateFallback() string }); ok {
+			return f.GateFallback()
+		}
+	}
+	if d.GateFallback != nil {
+		return d.GateFallback()
 	}
 	return ""
 }

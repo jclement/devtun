@@ -151,6 +151,11 @@ this is 0.x, a minor bump may break something.
   accepts only ask or auto. A literal `inherit` already in a file now means
   inherit everywhere — for `unmatched`, `prompt` and `gate` — and a `gate`
   value the browser does not recognise asks rather than opening unasked.
+- **Writing `gate: auto` under `--gate ask` asks first.** With neither file
+  setting the gate, a session started with `--gate ask` asks before each
+  site, so an explicit `auto` turns the gate off. The settings catalogue now
+  takes the browser's real fallback (and treats an unknown one as ask), and
+  the Config tab shows that fallback as the effective value.
 - **A rule form that will write a grant, or a rule on another broker, is
   classified as that.** Switching broker on an edit makes it a new rule, and
   a lifetime other than *always* makes a new grant; an allow either way asks

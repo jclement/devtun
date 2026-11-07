@@ -405,9 +405,27 @@ func TestLooseningClassifiesPromptEdits(t *testing.T) {
 	}
 }
 
-type browserService struct{ service.Service }
+// browserService stands in for the browser. fallback is what it says an unset
+// gate means; empty is the browser's own default, auto.
+type browserService struct {
+	service.Service
+	fallback string
+}
 
 func (browserService) Meta() service.Meta { return service.Meta{ID: "browser", Title: "Browser"} }
+
+func (b browserService) GateFallback() string {
+	if b.fallback == "" {
+		return "auto"
+	}
+	return b.fallback
+}
+
+// unknownBrowser is a browser service that cannot say what an unset gate
+// means.
+type unknownBrowser struct{ service.Service }
+
+func (unknownBrowser) Meta() service.Meta { return service.Meta{ID: "browser", Title: "Browser"} }
 
 // The browser's gate loosens when it stops being ask: anything else opens
 // sites without a question.
@@ -585,5 +603,46 @@ func TestGateClassificationAgreesWithTheBrowser(t *testing.T) {
 				t.Errorf("confirm = %v (want %v); the browser went asks=%v → asks=%v", confirm, c.wantConfirm, before, after)
 			}
 		})
+	}
+}
+
+// The classifier uses the browser's real fallback for an unset gate. Under
+// --gate ask that is ask, so writing auto over nothing loosens; when the
+// fallback cannot be known, an unset gate is taken as ask.
+func TestTheGateClassifierUsesTheBrowsersFallback(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		svc           service.Service
+		level         Level
+		value         string
+		wantLoosening bool
+		wantShown     string
+	}{
+		{"--gate ask, host silent → auto", browserService{fallback: "ask"}, LevelHost, "auto", true, "ask"},
+		{"--gate ask, global silent → auto", browserService{fallback: "ask"}, LevelGlobal, "auto", true, "ask"},
+		{"default, host silent → auto", browserService{}, LevelHost, "auto", false, "auto"},
+		{"unknown fallback, host silent → auto", unknownBrowser{}, LevelHost, "auto", true, "auto"},
+		{"--gate ask, host silent → ask", browserService{fallback: "ask"}, LevelHost, "ask", false, "ask"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := deps(newStore())
+			d.Services = []service.Service{c.svc}
+			row := find(t, d, "gate")
+			if got := Loosening(row, c.level, c.value); (got != "") != c.wantLoosening {
+				t.Errorf("Loosening = %q, want loosening %v", got, c.wantLoosening)
+			}
+			if v, _ := row.Value(); v != c.wantShown {
+				t.Errorf("the effective value shown is %q, want %q", v, c.wantShown)
+			}
+		})
+	}
+
+	// Deps.GateFallback answers when the browser service is not among
+	// Services.
+	d := deps(newStore())
+	d.Services = []service.Service{unknownBrowser{}}
+	d.GateFallback = func() string { return "auto" }
+	if Loosening(find(t, d, "gate"), LevelHost, "auto") != "" {
+		t.Error("Deps.GateFallback = auto was not used")
 	}
 }

@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"github.com/jclement/devtun/internal/hostcfg"
+	"github.com/jclement/devtun/internal/settings"
 	"net"
 	"strings"
 	"sync"
@@ -454,11 +455,18 @@ func (h fileHost) Config() service.Config { return h.section }
 // whether it asks before opening a site.
 func attachAsks(t *testing.T, store *hostcfg.Store) bool {
 	t.Helper()
+	return attachAsksWith(t, store, nil)
+}
+
+// attachAsksWith is attachAsks with the session's --gate default.
+func attachAsksWith(t *testing.T, store *hostcfg.Store, askDefault *bool) bool {
+	t.Helper()
 	asked := 0
 	svc := New(Options{
 		Prompter: promptFunc(func() (prompt.Choice, error) { asked++; return prompt.ChoiceDeny, nil }),
 		Tunnels:  &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174}}},
 		Open:     func(context.Context, string) error { return nil },
+		Ask:      askDefault,
 	})
 	if _, err := svc.Attach(context.Background(), fileHost{stubHost: newStubHost(), section: store.Section("bedev", "browser")}); err != nil {
 		t.Fatal(err)
@@ -499,5 +507,52 @@ func TestTheGateIsReadTheWayTheSettingsClassifyIt(t *testing.T) {
 				t.Errorf("asks = %v, want %v", got, c.wantAsk)
 			}
 		})
+	}
+}
+
+// Under --gate ask with nothing in either file, the browser asks. Writing
+// auto — explicitly, or by stepping back from inherit — is a loosening the
+// settings catalogue must flag, and after it the browser, reattached, no
+// longer asks: the classification and the behaviour agree.
+func TestGateAskFallbackMakesAnAutoWriteALoosening(t *testing.T) {
+	yes := true
+	for _, edit := range []string{"explicit", "step"} {
+		t.Run(edit, func(t *testing.T) {
+			store := hostcfg.Open(t.TempDir())
+			if !attachAsksWith(t, store, &yes) {
+				t.Fatal("--gate ask with silent config did not ask")
+			}
+			svc := New(Options{Ask: &yes})
+			d := settings.Deps{Store: store, Host: "bedev", Services: []service.Service{svc}}
+			gate := d.Find("gate")
+			if v, _ := gate.Value(); v != "ask" {
+				t.Errorf("the Config tab would show %q, want the --gate ask fallback", v)
+			}
+			value := "auto"
+			if edit == "step" {
+				var ok bool
+				value, ok = settings.Step(gate, settings.LevelHost, -1)
+				if !ok || value != "auto" {
+					t.Fatalf("stepping back from inherit gave %q", value)
+				}
+			}
+			if settings.Loosening(gate, settings.LevelHost, value) == "" {
+				t.Fatal("auto over a --gate ask fallback was not classified as loosening")
+			}
+			if _, err := settings.Apply(gate, settings.LevelHost, value, "bedev"); err != nil {
+				t.Fatal(err)
+			}
+			if attachAsksWith(t, store, &yes) {
+				t.Error("after writing auto the reattached browser still asks — the classification and the behaviour disagree")
+			}
+		})
+	}
+
+	// Without --gate ask the unset gate is already auto: no loosening, and
+	// the browser does not ask before or after.
+	store := hostcfg.Open(t.TempDir())
+	d := settings.Deps{Store: store, Host: "bedev", Services: []service.Service{New(Options{})}}
+	if settings.Loosening(d.Find("gate"), settings.LevelHost, "auto") != "" {
+		t.Error("auto over the default auto was classified as loosening")
 	}
 }
