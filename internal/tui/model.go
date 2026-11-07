@@ -982,6 +982,24 @@ func (m *Model) handleClick(e tea.Mouse) tea.Cmd {
 	if e.Button != tea.MouseLeft && !right {
 		return nil
 	}
+	// The key bar first, even over an overlay: it is the overlay's own bar
+	// then, and its buttons are the overlay's keys. An approval's bar waits
+	// out the same arming delay as its answers.
+	// Only while the bar is what the bottom border shows: an editor or a
+	// toast draws there instead, and the recorded zones would be stale.
+	if e.Y == m.height-1 && !right && !m.editing() && !m.hasToast {
+		if m.approval != nil && m.d.now().Sub(m.approval.opened) < approvalArm {
+			return nil
+		}
+		for _, z := range m.footerZones {
+			if z.contains(e.X) {
+				return m.runAction(z.id)
+			}
+		}
+		if m.overlayOpen() {
+			return nil
+		}
+	}
 	if cmd, handled := m.clickOverlay(e.X, e.Y, right); handled {
 		return cmd
 	}
@@ -997,14 +1015,9 @@ func (m *Model) handleClick(e tea.Mouse) tea.Cmd {
 		return nil
 	}
 
-	// The key bar is clickable, which makes every action discoverable without
-	// knowing a single shortcut.
+	// The bottom border is handled above when it is the key bar; as a toast
+	// it is not a control.
 	if e.Y == m.height-1 {
-		for _, z := range m.footerZones {
-			if z.contains(e.X) {
-				return m.runAction(z.id)
-			}
-		}
 		return nil
 	}
 
@@ -1198,6 +1211,15 @@ func (m *Model) rowAt(y int) int {
 // here and a vault reference there. Replaying the keystroke keeps that
 // resolution in one place instead of two.
 func (m *Model) runAction(id string) tea.Cmd {
+	// With an overlay open the bar is the overlay's, and a click is its key
+	// delivered to it — esc closes the form rather than asking to quit.
+	if m.overlayOpen() {
+		switch id {
+		case "↑↓", "1-9":
+			return nil
+		}
+		return m.handleKey(namedKey(id))
+	}
 	switch id {
 	case "↑↓", "←→":
 		return nil
@@ -1212,6 +1234,22 @@ func (m *Model) runAction(id string) tea.Cmd {
 		return m.toggleDetail()
 	}
 	return m.handleKey(keyPress(id))
+}
+
+// namedKey builds the message a key name arrives as, special keys included.
+func namedKey(name string) tea.KeyPressMsg {
+	switch name {
+	case "enter":
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
+	case "esc":
+		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
+	}
+	if rest, ok := strings.CutPrefix(name, "ctrl+"); ok {
+		return tea.KeyPressMsg{Code: []rune(rest)[0], Mod: tea.ModCtrl}
+	}
+	return keyPress(name)
 }
 
 // keyPress builds the message a printable key arrives as.
