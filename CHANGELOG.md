@@ -42,6 +42,8 @@ this is 0.x, a minor bump may break something.
 
 ### Fixed
 
+- **The board removed a deny in one click.** Every change that loosens access
+  now asks first, and the server refuses it unconfirmed.
 - **Editing a config file while devtun runs no longer loses the edit.** devtun
   wrote back the copy of the host file it read at startup, whole, on its next
   change — so naming a port or answering *Always* erased a rule typed in a
@@ -84,6 +86,12 @@ this is 0.x, a minor bump may break something.
 
 ### Added
 
+- **The web board's Access tab is the whole console.** Grouped by where each
+  rule lives, with a service column, ⚠ *outranked*, the *nothing matches* row,
+  a detail view with what beats a rule, a test box, a new-rule/grant form,
+  edit, allow↔deny, separate *forget grants* and *forget refusals*, and
+  *why?* on every decision in Activity. Keyboard throughout (`?`), light and
+  dark with a toggle, and it fits a phone.
 - **`unmatched: ask|deny` per broker** — what happens when no rule or grant
   matches. `deny` makes an allowlist expressible without weakening
   deny-beats-allow. On the Config tab and the board under *Policy*.
