@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 	"github.com/jclement/devtun/internal/hostcfg"
 	"github.com/jclement/devtun/internal/settings"
 	"net"
@@ -555,4 +556,75 @@ func TestGateAskFallbackMakesAnAutoWriteALoosening(t *testing.T) {
 	if settings.Loosening(d.Find("gate"), settings.LevelHost, "auto") != "" {
 		t.Error("auto over the default auto was classified as loosening")
 	}
+}
+
+// askingBusHost asks, and records events on a bus a test can read back.
+type askingBusHost struct{ busHost }
+
+func (h askingBusHost) Config() service.Config {
+	return &stubConfig{docs: map[string]any{gateKey: "ask"}}
+}
+
+// decisionFields runs one request and returns the fields of the event that
+// recorded its outcome.
+func decisionFields(t *testing.T, prompter prompt.Prompter, tn Tunnels, raw, kind string) map[string]string {
+	t.Helper()
+	bus := event.NewBus(16)
+	svc := New(Options{
+		Prompter: prompter,
+		Tunnels:  tn,
+		Open:     func(context.Context, string) error { return nil },
+		Poll:     time.Millisecond,
+		Wait:     50 * time.Millisecond,
+	})
+	if _, err := svc.Attach(context.Background(), askingBusHost{busHost{bus: bus}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = exchange(t, svc, openRequest{URL: raw})
+	for _, e := range bus.History() {
+		if e.Kind != kind {
+			continue
+		}
+		fields := map[string]string{}
+		for i := 0; i+1 < len(e.Fields); i += 2 {
+			if key, ok := e.Fields[i].(string); ok {
+				fields[key] = fmt.Sprint(e.Fields[i+1])
+			}
+		}
+		return fields
+	}
+	t.Fatalf("no %q event:\n%+v", kind, bus.History())
+	return nil
+}
+
+// A decision event names the host and the subject exactly as the decision
+// did, so "explain" and "write a rule from this request" ask about the same
+// thing the rule or grant was about. For a forwarded loopback port that is the
+// port the box asked for, not the local one the URL was rewritten to.
+func TestDecisionEventsCarryTheOriginalSubjectAndHost(t *testing.T) {
+	t.Run("an external site", func(t *testing.T) {
+		f := decisionFields(t, allowOnce{}, &fakeTunnels{}, "https://github.com/login/oauth?x=1", "opened")
+		if f["subject"] != "github.com" || f["host"] != "bedev" || f["by"] == "" {
+			t.Errorf("fields = %v, want subject github.com, host bedev, and what decided", f)
+		}
+	})
+	t.Run("a forwarded localhost port", func(t *testing.T) {
+		tn := &fakeTunnels{states: []tunnels.State{{RemotePort: 5173, LocalPort: 5174}}}
+		f := decisionFields(t, allowOnce{}, tn, "http://localhost:5173/app", "opened")
+		if f["subject"] != "localhost:5173" {
+			t.Errorf("subject = %q, want the port as asked for (localhost:5173)", f["subject"])
+		}
+		if !strings.Contains(f["url"], "5174") {
+			t.Errorf("url = %q, want the rewritten one, so the two can be told apart", f["url"])
+		}
+		if f["host"] != "bedev" {
+			t.Errorf("host = %q", f["host"])
+		}
+	})
+	t.Run("a refusal", func(t *testing.T) {
+		f := decisionFields(t, denyAll{}, &fakeTunnels{}, "https://evil.example:8443/x", "refused")
+		if f["subject"] != "evil.example:8443" || f["host"] != "bedev" || f["by"] == "" {
+			t.Errorf("fields = %v, want subject evil.example:8443, host bedev, and what decided", f)
+		}
+	})
 }

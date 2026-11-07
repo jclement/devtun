@@ -287,6 +287,17 @@ func (s *Service) HandleConn(ctx context.Context, conn net.Conn, caller service.
 	// "bedev wants to open github.com" is a sentence somebody can answer.
 	by, err := s.approve(ctx, label, request.URL, caller, events)
 
+	// What was decided, named the way the decision named it: the site of the
+	// URL as it was asked for, before localize rewrites a loopback port. The
+	// URL in the event may be the rewritten one, and a site worked out from it
+	// would name a different port than the rule or grant that decided — so
+	// "explain" and "write a rule from this request" would ask about the wrong
+	// thing. Empty when the URL does not parse, which is refused anyway.
+	decided := []any{"host", label}
+	if subject, perr := requestSubject(request.URL); perr == nil {
+		decided = append(decided, "subject", subject)
+	}
+
 	var target string
 	if err == nil {
 		target, err = s.localize(ctx, request.URL)
@@ -306,13 +317,13 @@ func (s *Service) HandleConn(ctx context.Context, conn net.Conn, caller service.
 		events.Emit(event.Event{
 			Kind: "refused", Class: event.Network, Level: event.Warn,
 			Text:   fmt.Sprintf("did not open %s for %s: %v", shown, callerName(caller), err),
-			Fields: append([]any{"url", shown, "caller", caller.Program}, by.Fields()...),
+			Fields: append(append([]any{"url", shown, "caller", caller.Program}, decided...), by.Fields()...),
 		})
 	default:
 		events.Emit(event.Event{
 			Kind: "opened", Class: event.Network, Level: event.Info,
 			Text:   fmt.Sprintf("opened %s for %s on %s", target, callerName(caller), label),
-			Fields: append([]any{"url", target, "requested", shown, "caller", caller.Program}, by.Fields()...),
+			Fields: append(append([]any{"url", target, "requested", shown, "caller", caller.Program}, decided...), by.Fields()...),
 		})
 	}
 
@@ -340,11 +351,10 @@ func (s *Service) approve(
 		return authz.Decider{}, nil
 	}
 
-	parsed, err := url.Parse(strings.TrimSpace(raw))
+	subject, err := requestSubject(raw)
 	if err != nil {
-		return authz.Decider{}, fmt.Errorf("not a URL: %q", raw)
+		return authz.Decider{}, err
 	}
-	subject := siteOf(parsed)
 
 	asked := s.gate.Authorize(ctx, prompt.Request{
 		Service: "browser",
@@ -373,6 +383,16 @@ func (s *Service) approve(
 		return asked.By, fmt.Errorf("refused: %s", asked.Reason)
 	}
 	return asked.By, nil
+}
+
+// requestSubject is the authorization subject for a URL as it was asked for:
+// the one place both the decision and the event that records it get it from.
+func requestSubject(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", fmt.Errorf("not a URL: %q", raw)
+	}
+	return siteOf(parsed), nil
 }
 
 // siteOf names what is being decided.

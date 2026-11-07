@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jclement/devtun/internal/authz"
+	"github.com/jclement/devtun/internal/event"
 	"github.com/jclement/devtun/internal/service"
 )
 
@@ -640,5 +641,34 @@ func TestAGrantTTLIsBoundedBeforeItCanOverflow(t *testing.T) {
 	}
 	if got := vault.Grants(); len(got) == 1 && got[0].Expires.IsZero() {
 		t.Error("the one-day grant came out as a session grant")
+	}
+}
+
+// The board's "explain" on a browser decision asks the browser's policy about
+// the event's own subject and host. Both have to reach the page, and the
+// browser has to be one of the policies the page can ask.
+func TestABrowserDecisionReachesThePageWithItsSubject(t *testing.T) {
+	site := &namedVault{gatedVault: newVault(t, &testBook{}, authz.Schema{
+		Noun: "site", Fields: []authz.Field{{Name: "site", Label: "site"}}, PathLike: true,
+	}), id: "browser", title: "Browser"}
+	s := newTestServer(t, Options{Host: "bedev", Services: []service.Service{site}})
+	if p := stateOf(t, s).Policies; len(p) != 1 || p[0].Source != "browser" || p[0].Noun != "site" {
+		t.Fatalf("policies = %+v, want the browser's", p)
+	}
+
+	recorder := httptest.NewRecorder()
+	err := writeEvent(recorder, event.Event{
+		Service: "browser", Kind: "opened", Class: event.Network, Text: "opened",
+		Fields: []any{"url", "http://localhost:5174/app", "host", "bedev", "subject", "localhost:5173", "by", "prompt"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view eventView
+	if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(recorder.Body.String(), "data: "))), &view); err != nil {
+		t.Fatalf("decoding %q: %v", recorder.Body, err)
+	}
+	if view.Service != "browser" || view.Fields["subject"] != "localhost:5173" || view.Fields["host"] != "bedev" || view.Fields["by"] != "prompt" {
+		t.Errorf("event on the stream = %+v", view)
 	}
 }
