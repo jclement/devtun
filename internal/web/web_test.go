@@ -599,7 +599,7 @@ func TestThePageCanHideAPortAndRevokeAccess(t *testing.T) {
 		t.Errorf("the port was not hidden: %+v", ports.modes)
 	}
 
-	if got := ask(t, s, http.MethodPost, "/api/rules/revoke?source=1password&id=h0"); got.Code != http.StatusOK {
+	if got := ask(t, s, http.MethodPost, "/api/rules/remove?source=1password&id=h0"); got.Code != http.StatusOK {
 		t.Fatalf("revoking a rule = %d: %s", got.Code, got.Body)
 	}
 	if len(broker.revoked) != 1 || broker.revoked[0] != 0 {
@@ -622,7 +622,7 @@ func TestAGlobalRuleCannotBeRevokedFromThePage(t *testing.T) {
 	broker := &fakeBroker{global: []authz.Rule{{Subject: "op://Private/**", Action: authz.ActionDeny}}}
 	s := newTestServer(t, Options{Services: []service.Service{broker}})
 
-	if got := ask(t, s, http.MethodPost, "/api/rules/revoke?source=1password&id=g0"); got.Code == http.StatusOK {
+	if got := ask(t, s, http.MethodPost, "/api/rules/remove?source=1password&id=g0"); got.Code == http.StatusOK {
 		t.Error("the page revoked a rule from the config file")
 	}
 	if len(broker.revoked) != 0 {
@@ -638,7 +638,7 @@ func TestNonsenseIsRefusedRatherThanApplied(t *testing.T) {
 		"/api/ports/70000/mode?mode=hidden",
 		"/api/ports/3000/mode?mode=whatever",
 		"/api/ports/notaport/mode?mode=hidden",
-		"/api/rules/revoke?source=nosuch&id=h0",
+		"/api/rules/remove?source=nosuch&id=h0",
 	} {
 		if got := ask(t, s, http.MethodPost, path); got.Code == http.StatusOK {
 			t.Errorf("POST %s was accepted", path)
@@ -765,7 +765,7 @@ func TestThePageCallsNothingItIsNotAllowedTo(t *testing.T) {
 		"/api/state":         true,
 		"/api/events":        true,
 		"/api/ports/*/mode":  true,
-		"/api/rules/revoke":  true,
+		"/api/rules/remove":  true,
 		"/api/grants/revoke": true,
 		"/api/reconnect":     true,
 		"/api/hidden":        true,
@@ -773,10 +773,17 @@ func TestThePageCallsNothingItIsNotAllowedTo(t *testing.T) {
 		"/api/ports/*/label": true,
 		"/api/ports/*/local": true,
 		"/api/pause":         true,
-		"/api/rules/deny":    true,
-		"/api/grants/forget": true,
-		"/api/config":        true,
-		"/api/config/*":      true,
+		"/api/rules/action":  true,
+		"/api/rules/add":     true,
+		"/api/rules/update":  true,
+		"/api/explain":       true,
+		"/api/grants/add":    true,
+		// Separate from forget because it loosens, and the server wants it
+		// confirmed.
+		"/api/grants/forget-refusals": true,
+		"/api/grants/forget":          true,
+		"/api/config":                 true,
+		"/api/config/*":               true,
 		// The trailing-slash form is what the scanner sees in the string that
 		// builds a key path; the key itself is interpolated.
 		"/api/config/": true,
@@ -1160,7 +1167,7 @@ func TestTheBoardCanTurnARuleIntoARefusal(t *testing.T) {
 	}
 	s := newTestServer(t, Options{Services: []service.Service{broker}})
 
-	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&id=h0"); got.Code != http.StatusOK {
+	if got := ask(t, s, http.MethodPost, "/api/rules/action?action=deny&source=1password&id=h0"); got.Code != http.StatusOK {
 		t.Fatalf("denying a rule = %d: %s", got.Code, got.Body)
 	}
 	if len(broker.denied) != 1 || broker.denied[0] != 0 {
@@ -1169,7 +1176,7 @@ func TestTheBoardCanTurnARuleIntoARefusal(t *testing.T) {
 
 	// A rule from the config file is refused: devtun did not write that file
 	// and a page quietly rewriting it would be the worse surprise.
-	fromTheFile := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&id=g0")
+	fromTheFile := ask(t, s, http.MethodPost, "/api/rules/action?action=deny&source=1password&id=g0")
 	if fromTheFile.Code != http.StatusForbidden {
 		t.Errorf("denying a global rule = %d, want 403", fromTheFile.Code)
 	}
@@ -1183,10 +1190,10 @@ func TestTheBoardCanTurnARuleIntoARefusal(t *testing.T) {
 	// A grant's ID is not a rule's, so it cannot be named here even by hand —
 	// which is the whole of the interface's "that is a live grant" refusal. An
 	// ID that names nothing (any more) is a conflict: reload.
-	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=1password&id=gr0"); got.Code != http.StatusConflict {
+	if got := ask(t, s, http.MethodPost, "/api/rules/action?action=deny&source=1password&id=gr0"); got.Code != http.StatusConflict {
 		t.Errorf("denying something that is not a rule = %d, want 409", got.Code)
 	}
-	if got := ask(t, s, http.MethodPost, "/api/rules/deny?source=nosuch&id=h0"); got.Code != http.StatusNotFound {
+	if got := ask(t, s, http.MethodPost, "/api/rules/action?action=deny&source=nosuch&id=h0"); got.Code != http.StatusNotFound {
 		t.Errorf("denying on a service that is not here = %d, want 404", got.Code)
 	}
 }
@@ -1249,7 +1256,7 @@ func TestTheNewMutationsAreGuardedLikeTheOldOnes(t *testing.T) {
 	for _, path := range []string{
 		"/api/ports/3000/local?local=3000",
 		"/api/pause?paused=true",
-		"/api/rules/deny?source=1password&id=h0",
+		"/api/rules/action?action=deny&source=1password&id=h0",
 		"/api/grants/forget",
 	} {
 		noCredential := httptest.NewRequest(http.MethodPost, path, nil)
@@ -1299,7 +1306,13 @@ func TestThePageOffersEveryActionTheInterfaceDoes(t *testing.T) {
 	for endpoint, action := range map[string]string{
 		"/api/ports/${port.remote}/local": "pin a local port",
 		"/api/pause":                      "pause and resume forwarding",
-		"/api/rules/deny":                 "turn a rule into a refusal",
+		"/api/rules/action":               "turn a rule into a refusal, or back",
+		"/api/rules/remove":               "remove a rule",
+		"/api/rules/add":                  "write a new rule",
+		"/api/rules/update":               "edit a rule",
+		"/api/grants/add":                 "grant something before it is asked for",
+		"/api/grants/forget-refusals":     "forget the refusals",
+		"/api/explain":                    "say what would decide a request",
 		"/api/grants/forget":              "forget every live grant",
 	} {
 		if !strings.Contains(text, endpoint) {

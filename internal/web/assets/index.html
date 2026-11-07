@@ -2,29 +2,51 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>devtun</title>
+<script>
+  // The theme is chosen before the first paint, so a page left on dark does not
+  // flash white on every reload. System is the default and the third state:
+  // following the machine is what most people want, and an explicit choice is
+  // remembered only once somebody makes one.
+  try {
+    const theme = localStorage.getItem("devtun.theme");
+    if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+  } catch {}
+</script>
 <style>
   /* One file, no CDN, no build step. The page is served from a socket on your
-     own machine and has to work with the network unplugged. */
+     own machine and has to work with the network unplugged — and it is the
+     front of a security tool, where a third-party script is the last thing
+     that should be running. */
   :root {
-    color-scheme: light dark;
-    --bg: #16161e; --panel: #1a1b26; --line: #2f334d; --text: #c0caf5;
+    color-scheme: dark;
+    --bg: #16161e; --panel: #1a1b26; --raised: #20222f; --line: #2f334d; --text: #c0caf5;
     --muted: #737aa2; --ok: #9ece6a; --warn: #e0af68; --err: #f7768e;
     --net: #7dcfff; --sec: #bb9af7; --life: #7aa2f7;
-    --bad-bg: #2b1a20; --ask-bg: #2a2333;
+    --bad-bg: #2b1a20; --ask-bg: #2a2333; --sel: #283457; --hover: #1f2335;
+    --head: #0f0f14; --head-text: #c0caf5;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
+  /* Light, twice: once for a machine that prefers it and has not been told
+     otherwise, once for somebody who picked it. Every colour is restated, not
+     only the greys — the dark palette's green and yellow are unreadable on
+     white, which is what a half-done light mode looks like. */
   @media (prefers-color-scheme: light) {
-    /* Every colour is restated, not only the greys: the dark palette's green
-       and yellow are unreadable on white, which is what a half-done light mode
-       looks like. */
-    :root {
-      --bg: #f4f5f8; --panel: #fff; --line: #d8dbe6; --text: #22242e;
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --bg: #f4f5f8; --panel: #fff; --raised: #fafbfd; --line: #d8dbe6; --text: #22242e;
       --muted: #626884; --ok: #2f7d32; --warn: #8a5a00; --err: #c02a3f;
       --net: #1f7fa8; --sec: #7a4fc4; --life: #2f5fd0;
-      --bad-bg: #fdeaed; --ask-bg: #f3edfd;
+      --bad-bg: #fdeaed; --ask-bg: #f3edfd; --sel: #e3ebfb; --hover: #f0f2f7;
     }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f4f5f8; --panel: #fff; --raised: #fafbfd; --line: #d8dbe6; --text: #22242e;
+    --muted: #626884; --ok: #2f7d32; --warn: #8a5a00; --err: #c02a3f;
+    --net: #1f7fa8; --sec: #7a4fc4; --life: #2f5fd0;
+    --bad-bg: #fdeaed; --ask-bg: #f3edfd; --sel: #e3ebfb; --hover: #f0f2f7;
   }
   * { box-sizing: border-box; }
 
@@ -36,63 +58,74 @@
      had correctly set `hidden` on it. One rule makes the whole class of that
      bug impossible, which is worth an `!important` in a file this size. */
   [hidden] { display: none !important; }
+  html, body { overflow-x: hidden; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 var(--mono);
+    font: 13px/1.45 var(--mono);
   }
-  header {
-    display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap;
-    padding: .75rem 1rem; border-bottom: 1px solid var(--line);
-    position: sticky; top: 0; background: var(--bg); z-index: 2;
+  /* The header is dark in both themes, the way the rest of Jeff's apps are:
+     it is the frame, not the content, and it says which machine this is. */
+  body > header {
+    display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+    padding: .45rem 1rem; padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+    position: sticky; top: 0; background: var(--head); color: var(--head-text); z-index: 20;
+    border-bottom: 1px solid #000;
   }
-  h1 { font-size: 1rem; margin: 0; letter-spacing: .04em; font-weight: 600; }
-  h1 b { color: var(--net); }
-  h1 span { color: var(--muted); font-weight: normal; }
+  body > header button { color: var(--head-text); border-color: #3b3f5c; }
+  body > header .muted { color: #8a90b8; }
+  h1 { font-size: .95rem; margin: 0; letter-spacing: .04em; font-weight: 600; }
+  h1 b { color: #7dcfff; }
+  h1 span { color: #8a90b8; font-weight: normal; }
   .dot {
     width: .6rem; height: .6rem; border-radius: 50%; display: inline-block;
     background: var(--muted); margin-right: .35rem;
   }
-  .dot.connected { background: var(--ok); }
-  .dot.connecting, .dot.reconnecting { background: var(--warn); }
-  .dot.disconnected, .dot.stopped, .dot.gone { background: var(--err); }
+  .dot.connected { background: #9ece6a; }
+  .dot.connecting, .dot.reconnecting { background: #e0af68; }
+  .dot.disconnected, .dot.stopped, .dot.gone { background: #f7768e; }
   .grow { flex: 1; }
   /* The tab bar. Under the header rather than beside it, because the header is
      about the connection — which host, whether it is up — and that stays true
      whichever tab you are on. */
   nav#tabs {
-    display: flex; gap: .25rem; padding: 0 1rem; flex-wrap: wrap;
+    display: flex; gap: .15rem; padding: 0 1rem; overflow-x: auto;
     border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 2.45rem; z-index: 15;
   }
   nav#tabs button {
-    border: none; border-bottom: 2px solid transparent; border-radius: 0;
-    padding: .5rem .7rem; color: var(--muted); font-size: .8rem;
+    border: none; border-bottom: 2px solid transparent; border-radius: 0; white-space: nowrap;
+    padding: .45rem .65rem; color: var(--muted); font-size: .78rem;
     text-transform: uppercase; letter-spacing: .08em;
   }
   nav#tabs button:hover { color: var(--text); border-bottom-color: var(--line); }
   nav#tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--net); }
+  nav#tabs .key { color: var(--muted); opacity: .6; margin-right: .3rem; }
   /* A count on the tab, so putting a panel behind a tab does not mean losing
      sight of what is on it. The one that matters is a question waiting: that
      one pulls attention rather than reporting a number. */
   nav#tabs .count { margin-left: .4rem; font-variant-numeric: tabular-nums; opacity: .7; }
   nav#tabs .count.urgent { color: var(--err); opacity: 1; font-weight: 600; }
   .muted { color: var(--muted); }
-  main { padding: 1rem; display: grid; gap: 1rem; max-width: 1100px; }
-  section { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; }
+  main { padding: .75rem 1rem; display: grid; gap: .75rem; max-width: 1280px; }
+  section { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); overflow: hidden; min-width: 0; }
   section > h2 {
-    display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap;
-    font-size: .8rem; text-transform: uppercase; letter-spacing: .1em;
-    margin: 0; padding: .6rem .8rem; color: var(--muted);
+    display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+    font-size: .78rem; text-transform: uppercase; letter-spacing: .1em;
+    margin: 0; padding: .45rem .7rem; color: var(--muted);
     border-bottom: 1px solid var(--line);
   }
-  /* Rules and grants are two kinds of thing, not two colours of row, so each
-     gets its own panel and its own sentence saying which kind it is. */
-  .what { margin: 0; padding: .5rem .8rem; color: var(--muted); font-size: .8rem;
+  section > h2 button { text-transform: none; letter-spacing: 0; }
+  /* One line under each panel's title saying what it shows. The terminal
+     carries the same line under each tab, in the same words. */
+  .what { margin: 0; padding: .35rem .7rem; color: var(--muted); font-size: .78rem;
     border-bottom: 1px solid var(--line); }
   .scroll { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: .4rem .8rem; white-space: nowrap; vertical-align: baseline; }
-  th { color: var(--muted); font-weight: normal; font-size: .8rem; }
+  th, td { text-align: left; padding: .25rem .6rem; white-space: nowrap; vertical-align: baseline; }
+  th { color: var(--muted); font-weight: normal; font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
   tbody tr { border-top: 1px solid var(--line); }
+  tbody tr:hover { background: var(--hover); }
   td.wide { white-space: normal; word-break: break-word; }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
   .port { font-variant-numeric: tabular-nums; }
@@ -103,21 +136,40 @@
   tr.dim td { color: var(--muted); }
   a { color: var(--net); }
   button, .toggle {
-    font: inherit; font-size: .8rem; color: var(--text); background: transparent;
-    border: 1px solid var(--line); border-radius: 5px; padding: .15rem .5rem; cursor: pointer;
+    font: inherit; font-size: .78rem; color: var(--text); background: transparent;
+    border: 1px solid var(--line); border-radius: 4px; padding: .1rem .45rem; cursor: pointer;
   }
-  button:hover, .toggle:hover { border-color: var(--net); color: var(--net); }
-  button.danger:hover { border-color: var(--err); color: var(--err); }
+  button:hover:not(:disabled), .toggle:hover { border-color: var(--net); color: var(--net); }
+  button:focus-visible, select:focus-visible, input:focus-visible, tr:focus-visible {
+    outline: 2px solid var(--net); outline-offset: 1px;
+  }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.danger:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+  button.primary { border-color: var(--net); color: var(--net); }
   .toggle { display: inline-flex; align-items: center; gap: .35rem; text-transform: none; letter-spacing: 0; }
   .tag {
     font-size: .7rem; padding: 0 .3rem; border-radius: 4px; margin-left: .4rem;
-    border: 1px solid var(--line); color: var(--muted);
+    border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
   }
-  .allow { color: var(--ok); } .deny { color: var(--err); } .live { color: var(--warn); }
-  .banner { padding: .5rem 1rem; border-bottom: 1px solid var(--line); font-size: .85rem; }
+  .allow { color: var(--ok); } .deny { color: var(--err); } .live { color: var(--warn); } .ask-c { color: var(--warn); }
+  .banner { padding: .45rem 1rem; border-bottom: 1px solid var(--line); font-size: .82rem; }
   .banner.bad { background: var(--bad-bg); color: var(--err); }
   .banner.ask { background: var(--ask-bg); }
   .banner b { color: var(--sec); }
+
+  /* Toasts say what a click did. A refusal and a confirmation must not look
+     alike: "1Password: off for bedev" in the same red as "that grant lapsed"
+     reads as a failure, and the person undoes something that worked. */
+  #toasts {
+    position: fixed; right: 1rem; bottom: 1rem; z-index: 60; display: grid; gap: .4rem;
+    width: min(28rem, calc(100vw - 2rem));
+    margin-bottom: env(safe-area-inset-bottom);
+  }
+  .toast {
+    background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--ok);
+    border-radius: 6px; padding: .5rem .7rem; box-shadow: 0 8px 24px rgb(0 0 0 / .3); font-size: .82rem;
+  }
+  .toast.bad { border-left-color: var(--err); color: var(--err); }
 
   /* A waiting approval is the one state worth interrupting for: devtun is
      holding a request open and a person has to answer it, and the cost of not
@@ -127,35 +179,38 @@
      are where an interface puts the things you are meant to ignore; a question
      that has stopped the world belongs in the middle of it, where it cannot be
      read as chrome. */
-  .ask-scrim {
+  .ask-scrim, .scrim {
     position: fixed; inset: 0; z-index: 40;
     background: rgb(0 0 0 / .55);
     display: grid; place-items: center; padding: 1rem;
   }
-  .ask {
+  .ask-scrim { z-index: 50; }
+  .ask, .dialog {
     width: min(46rem, 100%); max-height: 90vh; overflow-y: auto;
     background: var(--panel); color: var(--text);
-    border: 3px solid var(--err); border-radius: 10px;
+    border: 1px solid var(--line); border-radius: 8px;
     box-shadow: 0 18px 50px rgb(0 0 0 / .5);
   }
-  .ask header {
-    background: var(--err); color: #fff;
-    padding: .55rem 1rem; font-weight: 600; letter-spacing: .02em;
-    position: static; border: 0;
+  .ask { border: 3px solid var(--err); }
+  .ask header, .dialog header {
+    padding: .5rem 1rem; font-weight: 600; letter-spacing: .02em;
+    border-bottom: 1px solid var(--line); display: flex; gap: .5rem; align-items: baseline;
   }
-  .ask .body { padding: 1rem; }
-  .ask h2 { margin: 0 0 .5rem; font-size: 1rem; font-weight: 600; }
-  .ask .subject {
+  .ask header { background: var(--err); color: #fff; border: 0; }
+  .dialog header.loosen { background: var(--bad-bg); color: var(--err); }
+  .ask .body, .dialog .body { padding: .9rem 1rem; }
+  .ask h2, .dialog h2 { margin: 0 0 .5rem; font-size: .95rem; font-weight: 600; }
+  .ask .subject, .subject-big {
     font-family: var(--mono); word-break: break-all;
-    color: var(--sec); font-size: 1.05rem; margin-bottom: .8rem;
+    color: var(--sec); font-size: 1rem; margin-bottom: .8rem;
   }
-  .ask dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: .15rem .8rem; font-size: .85rem; }
-  .ask dt { color: var(--muted); }
-  .ask dd { margin: 0; font-family: var(--mono); word-break: break-all; }
-  .ask .caveat { margin: .7rem 0 0; font-size: .78rem; color: var(--muted); }
+  dl.kv { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: .2rem .9rem; font-size: .82rem; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; word-break: break-all; }
+  .ask .caveat { margin: .7rem 0 0; font-size: .76rem; color: var(--muted); }
   .ask .answers { display: flex; flex-direction: column; gap: .3rem; margin-top: 1rem; }
   .ask .answers button {
-    text-align: left; font-size: .88rem; padding: .4rem .7rem;
+    text-align: left; font-size: .86rem; padding: .4rem .7rem;
     display: flex; gap: .6rem; align-items: baseline;
   }
   .ask .answers button .n { color: var(--muted); font-family: var(--mono); min-width: 1ch; }
@@ -168,16 +223,23 @@
   .ask .answers button.no:hover, .ask .answers button.no:focus-visible {
     border-color: var(--err); color: var(--err);
   }
+  .ask .how, .hint { margin-top: .8rem; font-size: .76rem; color: var(--muted); }
+  .buttons { display: flex; gap: .5rem; justify-content: flex-end; flex-wrap: wrap; margin-top: 1rem; }
+  .buttons button { padding: .3rem .8rem; font-size: .82rem; }
+  .buttons button kbd, .menu kbd { color: var(--muted); margin-left: .4rem; }
+  button.loosen { border-color: var(--err); color: var(--err); }
+  button.loosen:hover:not(:disabled) { background: var(--err); color: var(--panel); }
   .proc .label { color: var(--net); font-weight: 600; }
   /* A setting is a name, a value, and where that value came from. The sentence
      explaining it is the gloss, and it is what gives way when the window is
      narrow — so it is last, and it wraps rather than pushing anything off. */
-  .setting select, .setting input {
+  select, input[type="text"], input:not([type]) {
     font: inherit; font-size: .8rem; color: var(--text); background: var(--bg);
-    border: 1px solid var(--line); border-radius: 5px; padding: .15rem .4rem; min-width: 9rem;
+    border: 1px solid var(--line); border-radius: 4px; padding: .15rem .4rem;
   }
-  .setting select:hover, .setting input:focus { border-color: var(--net); outline: none; }
-  .setting .why { color: var(--muted); font-size: .8rem; white-space: normal; }
+  .setting select, .setting input { min-width: 9rem; }
+  select:hover, input:focus { border-color: var(--net); outline: none; }
+  .setting .why { color: var(--muted); font-size: .78rem; white-space: normal; }
   /* Where a value came from, in the same three words the terminal uses. A value
      nothing on disk decided is devtun's own default, and showing that in the
      same weight as one somebody chose would be a lie of emphasis. */
@@ -185,36 +247,117 @@
   .from.host { color: var(--ok); }
   .from.global { color: var(--life); }
   .warn { color: var(--warn); }
-  tr.heading td { color: var(--muted); font-size: .8rem; text-transform: uppercase;
-    letter-spacing: .1em; padding-top: .7rem; }
+  tr.heading td { color: var(--muted); font-size: .75rem; text-transform: uppercase;
+    letter-spacing: .1em; padding-top: .6rem; }
+  tr.heading:hover { background: none; }
   /* A service switched on but not running is the interesting row, so it keeps
      full contrast; one switched off recedes. */
   tr.off td { color: var(--muted); }
-  /* The controls that edit a row stay out of the way until it is pointed at:
+  /* The controls that edit a port stay out of the way until it is pointed at:
      naming a port and pinning its local port are both rare, deliberate things,
      and a pair of buttons on every row would compete with the numbers, which
      are what the table is for. */
   .rowbtn { margin-left: .5rem; font-size: .7rem; padding: 0 .3rem; opacity: 0; }
   tr:hover .rowbtn, .rowbtn:focus-visible { opacity: 1; }
-  td button + button { margin-left: .35rem; }
+  td button + button { margin-left: .3rem; }
   /* Paused is a state, not a press: the button carries the colour so the header
      says which way the switch is without a second thing to read. */
   button.on { border-color: var(--warn); color: var(--warn); }
-  /* The panic button says what it is before it is hovered. Every other control
-     here takes one thing back; this one takes all of them, in every service,
-     including the values the vault still has in memory. */
+  /* The panic button says what it is before it is hovered. */
   .scary { border-color: var(--err); color: var(--err); }
-  .scary:hover { background: var(--err); color: var(--panel); border-color: var(--err); }
-  .ask .how { margin-top: .8rem; font-size: .78rem; color: var(--muted); }
+  .scary:hover:not(:disabled) { background: var(--err); color: var(--panel); border-color: var(--err); }
   @media (prefers-reduced-motion: no-preference) {
-    .ask { animation: ask-in .16s ease-out; }
+    .ask, .dialog { animation: ask-in .14s ease-out; }
+    .drawer { animation: drawer-in .14s ease-out; }
   }
   @keyframes ask-in { from { opacity: 0; transform: scale(.97); } }
-  #log { max-height: min(60vh, 22rem); overflow-y: auto; padding: .4rem .8rem; }
-  #log div { display: flex; gap: .6rem; }
-  #log time { color: var(--muted); }
-  #log .svc { width: 6rem; flex: none; }
-  #log .txt { word-break: break-word; }
+  @keyframes drawer-in { from { opacity: 0; transform: translateX(1rem); } }
+
+  /* --- Access ------------------------------------------------------------- */
+  .toolbar { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; padding: .4rem .7rem;
+    border-bottom: 1px solid var(--line); }
+  .toolbar input { min-width: 12rem; }
+  .toolbar kbd, nav kbd, .btn-key { color: var(--muted); font-size: .7rem; margin-left: .3rem; }
+  #access tr.group td {
+    color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .08em;
+    padding-top: .55rem; background: var(--raised);
+  }
+  #access tr.group:hover { background: none; }
+  #access tr.group .n { float: right; }
+  #access tr.row { cursor: default; }
+  #access tr.row[aria-selected="true"] { background: var(--sel); }
+  #access tr.row[aria-selected="true"] td:first-child { box-shadow: inset 3px 0 var(--net); }
+  #access td.mark { width: 1.5rem; text-align: center; font-weight: 700; }
+  #access td.svc { color: var(--muted); }
+  #access td.subj { white-space: normal; word-break: break-all; min-width: 14rem; }
+  #access td.subj .sep { color: var(--muted); }
+  #access td.acts { text-align: right; }
+  #access .outranked { color: var(--warn); margin-left: .4rem; white-space: nowrap; }
+  #access tr.fallback td { background: var(--raised); }
+  #access tr.fallback:hover { background: none; }
+  .fallback .pol { margin-right: 1rem; white-space: nowrap; }
+  .readonly { color: var(--muted); font-size: .72rem; }
+  .more { padding: 0 .35rem; }
+
+  /* The test box. Always one keystroke away, because "would this be allowed?"
+     is the question every rule change is really trying to answer. */
+  #test { padding: .5rem .7rem; border-bottom: 1px solid var(--line); background: var(--raised); }
+  #test .fields { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+  #test .fields input { flex: 1 1 12rem; min-width: 8rem; }
+  #test-result { margin-top: .4rem; font-size: .82rem; }
+  #test-result .lost { color: var(--muted); }
+  .verdict { font-weight: 700; }
+  .linkish { background: none; border: none; padding: 0; color: var(--net); text-decoration: underline; cursor: pointer; font-size: inherit; }
+
+  /* The detail drawer. A side panel on a wide screen so the list stays in view
+     beside it — you are usually looking at a row because of its neighbours —
+     and a full-screen sheet on a phone, where there is no beside. */
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(36rem, 100vw); z-index: 30;
+    background: var(--panel); border-left: 1px solid var(--line); box-shadow: -12px 0 40px rgb(0 0 0 / .35);
+    display: flex; flex-direction: column;
+  }
+  .drawer header { padding: .6rem 1rem; border-bottom: 1px solid var(--line); display: flex; gap: .5rem; align-items: baseline; }
+  .drawer header h2 { margin: 0; font-size: .85rem; font-weight: 600; flex: 1; }
+  .drawer .body { padding: .9rem 1rem; overflow-y: auto; flex: 1; }
+  .drawer .acts { border-top: 1px solid var(--line); padding: .6rem 1rem; display: grid; gap: .3rem; }
+  .actrow { display: flex; gap: .6rem; align-items: baseline; }
+  .actrow button { min-width: 9rem; text-align: left; }
+  .actrow .reason { color: var(--muted); font-size: .76rem; }
+  .callout { border: 1px solid var(--warn); border-radius: 6px; padding: .5rem .7rem; margin-top: .8rem; font-size: .82rem; }
+  .callout.info { border-color: var(--line); }
+  .match { display: flex; gap: .6rem; padding: .15rem 0; align-items: baseline; flex-wrap: wrap; }
+  .match .where { color: var(--muted); font-size: .76rem; }
+  .match.decided { font-weight: 600; }
+
+  /* The action menu: the same list of actions as the drawer and the keyboard,
+     in one place, with the ones that cannot be done shown with why. */
+  .menu {
+    position: fixed; z-index: 45; min-width: 16rem; max-width: min(26rem, calc(100vw - 1rem));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 12px 32px rgb(0 0 0 / .4); padding: .25rem 0;
+  }
+  .menu button { display: flex; width: 100%; border: 0; border-radius: 0; text-align: left; padding: .35rem .7rem; gap: .5rem; align-items: baseline; }
+  .menu button .lbl { flex: 1; }
+  .menu button .why { color: var(--muted); font-size: .72rem; display: block; }
+  .menu button:hover:not(:disabled), .menu button:focus-visible { background: var(--hover); }
+  .menu hr { border: 0; border-top: 1px solid var(--line); margin: .25rem 0; }
+
+  /* The rule form. */
+  .form { display: grid; grid-template-columns: max-content 1fr; gap: .5rem .9rem; align-items: center; font-size: .82rem; }
+  .form label.k { color: var(--muted); }
+  .form .seg { display: flex; flex-wrap: wrap; gap: .25rem; }
+  .form .seg button[aria-pressed="true"] { border-color: var(--net); color: var(--net); background: var(--sel); }
+  .form input { width: 100%; }
+  .form .help { grid-column: 2; color: var(--muted); font-size: .74rem; margin-top: -.35rem; }
+  .form .preview { grid-column: 1 / -1; font-size: .8rem; border-top: 1px solid var(--line); padding-top: .5rem; }
+
+  #log { max-height: calc(100vh - 13rem); overflow-y: auto; padding: .3rem .7rem; }
+  #log > div { display: flex; gap: .6rem; align-items: baseline; padding: .05rem 0; }
+  #log time { color: var(--muted); flex: none; }
+  #log .svc { width: 5rem; flex: none; }
+  #log .txt { word-break: break-word; flex: 1; }
+  #log .why-btn { flex: none; font-size: .7rem; padding: 0 .35rem; }
   .security .svc, .security .txt { color: var(--sec); }
   .network .svc { color: var(--net); }
   .lifecycle .svc { color: var(--life); }
@@ -223,15 +366,27 @@
      verbose shows what already happened instead of only what happens next. */
   body:not(.verbose) #log .diagnostic { display: none; }
   .warn .txt { color: var(--warn); } .error .txt { color: var(--err); }
-  footer { padding: 0 1rem 2rem; font-size: .8rem; }
-  .empty { padding: .8rem; margin: 0; color: var(--muted); }
-  @media (max-width: 640px) {
+  footer { padding: 0 1rem 2rem; font-size: .76rem; }
+  .empty { padding: .7rem; margin: 0; color: var(--muted); }
+  kbd { font-family: var(--mono); font-size: .72rem; }
+  #help table td:first-child { color: var(--net); width: 8rem; }
+
+  @media (max-width: 720px) {
     /* A phone gets the ports, what they are, and the buttons. The byte
-       counters are the first thing to go. */
+       counters are the first thing to go; on Access the kind and lifetime
+       columns fold into the row's menu and detail. */
     .opt { display: none; }
     main { padding: .5rem; }
-    th, td { padding: .4rem .5rem; }
-    #log .svc { width: 4.5rem; }
+    th, td { padding: .35rem .45rem; }
+    #log .svc { width: 3.5rem; }
+    nav#tabs .key, .toolbar kbd, .btn-key { display: none; }
+    #access td.acts .inline { display: none; }
+    button { min-height: 2rem; }
+    .menu button, .drawer .acts button, .buttons button { min-height: 2.75rem; }
+    .ask-scrim, .scrim { padding: 0; place-items: stretch; }
+    .ask, .dialog { width: 100%; max-height: 100vh; border-radius: 0; }
+    .form { grid-template-columns: 1fr; }
+    .form .help { grid-column: 1; }
   }
 </style>
 </head>
@@ -243,14 +398,16 @@
   <span class="grow"></span>
   <button id="pause">pause</button>
   <button id="reconnect" title="drop the connection and dial the box again">reconnect</button>
+  <button id="theme" title="theme: follow the system, light, or dark"></button>
+  <button id="help-open" title="keyboard shortcuts (?)">?</button>
 </header>
 
 <!-- The same five the interface has, in the same order and under the same
-     names. Two surfaces onto one session should not need to be learned twice,
-     and the board had grown into six panels down a single scroll. -->
+     names. Two surfaces onto one session should not need to be learned twice. -->
 <nav id="tabs" role="tablist"></nav>
 
 <div class="banner bad" id="offline" role="status" hidden></div>
+<div class="banner bad" id="policy-err" role="alert" hidden></div>
 
 <main>
   <section data-tab="Tunnels">
@@ -259,6 +416,7 @@
       <span class="grow"></span>
       <button id="hidden-toggle" hidden></button>
     </h2>
+    <p class="what">what the box is listening on, and where devtun forwards it on this machine</p>
     <div class="scroll">
       <table>
         <thead><tr>
@@ -282,20 +440,33 @@
 
   <section data-tab="Access">
     <h2>
-      Grants <span class="muted" id="grants-count"></span>
+      Access <span class="muted" id="access-count"></span>
       <span class="grow"></span>
-      <button id="forget" class="scary" hidden>forget everything</button>
+      <button id="forget" title="drop every live allow grant and every cached secret — refusals stay">forget grants<span class="btn-key">F</span></button>
+      <button id="forget-refusals" title="drop every “No, and stop asking” refusal — those requests are asked about again">forget refusals</button>
     </h2>
-    <p class="what">answered at a prompt and live only for now — they lapse on their own, and go when devtun stops</p>
-    <div class="scroll"><table><tbody id="grants"></tbody></table></div>
-    <p class="empty" id="grants-empty">nothing is granted right now</p>
-  </section>
-
-  <section data-tab="Access">
-    <h2>Rules <span class="muted" id="rules-count"></span></h2>
-    <p class="what">written down and remembered — each one keeps deciding, without asking, until it is revoked</p>
-    <div class="scroll"><table><tbody id="rules"></tbody></table></div>
-    <p class="empty" id="rules-empty">nothing is written down — every request is asked about</p>
+    <p class="what">what decides each request: live grants, then the rules on disk — a deny always beats an allow</p>
+    <div class="toolbar">
+      <button id="test-open" title="would this be allowed? (t)">test<kbd>t</kbd></button>
+      <button id="new-rule" class="primary" title="write a new rule or grant (n)">new rule<kbd>n</kbd></button>
+      <span class="grow"></span>
+      <input id="filter" type="text" placeholder="filter  /" aria-label="filter the rules">
+    </div>
+    <div id="test" hidden>
+      <div class="fields" id="test-fields"></div>
+      <div id="test-result" role="status"></div>
+    </div>
+    <div class="scroll">
+      <table id="access">
+        <thead><tr>
+          <th scope="col"></th><th scope="col">svc</th><th scope="col">matches</th>
+          <th scope="col" class="opt">kind</th><th scope="col" class="opt">host</th>
+          <th scope="col" class="opt">lifetime</th><th scope="col"></th>
+        </tr></thead>
+        <tbody id="access-body"></tbody>
+      </table>
+    </div>
+    <p class="empty" id="access-empty" hidden></p>
   </section>
 
   <section data-tab="Config">
@@ -314,12 +485,17 @@
       <span class="grow"></span>
       <label class="toggle"><input type="checkbox" id="verbose"> verbose</label>
     </h2>
+    <p class="what">everything that happened, newest at the bottom — “why?” on a decision shows the rule that made it</p>
     <div id="log"></div>
     <p class="empty" id="log-empty">waiting for something to happen</p>
   </section>
 </main>
 
 <div class="ask-scrim" id="ask" role="alertdialog" aria-modal="true" aria-live="assertive" hidden></div>
+<div class="scrim" id="modal" role="dialog" aria-modal="true" hidden></div>
+<aside class="drawer" id="drawer" role="dialog" aria-label="detail" hidden></aside>
+<div class="menu" id="menu" role="menu" hidden></div>
+<div id="toasts" aria-live="polite"></div>
 
 <footer class="muted">
   <span id="version"></span> ·
@@ -327,22 +503,22 @@
 </footer>
 
 <script>
-// The page is a thin renderer over two endpoints: a state snapshot it polls,
-// and an event stream it listens to. No framework, because the whole thing is
-// three tables and a log, and a build step would be a worse trade.
+// The page is a thin renderer over a handful of endpoints: a state snapshot it
+// polls, an event stream it listens to, and one call per action. No framework,
+// because a build step would be a worse trade for a page this size — and no
+// policy logic either: every "would this be allowed?" is asked of devtun, which
+// is the only thing that knows.
 //
-// Both endpoints are needed, and neither replaces the other: connection counts
-// and byte counters move with traffic and emit no event, so they can only be
-// asked for; everything that is event-shaped arrives on the stream and pulls a
-// snapshot after it, so the board is current within a frame of anything
-// happening rather than within two seconds of it.
+// Both the snapshot and the stream are needed, and neither replaces the other:
+// connection counts and byte counters move with traffic and emit no event, so
+// they can only be asked for; everything that is event-shaped arrives on the
+// stream and pulls a snapshot after it, so the board is current within a frame
+// of anything happening rather than within two seconds of it.
 const $ = (id) => document.getElementById(id);
 
 let inFlight = false;
 let services = new Map();
-// noticeUntil keeps a refusal on screen for a few seconds: the poll is two
-// seconds away and would otherwise wipe the message before it was read.
-let noticeUntil = 0;
+let lastState = null;
 
 // session is this tab's credential, traded for the token in the URL that
 // devtun opened. It is sent as a header by this script and never as a cookie:
@@ -394,49 +570,32 @@ async function api(path, method = "GET") {
 // act is every button on the page. A refusal — a grant that lapsed a second
 // ago, a rule that is not devtun's to rewrite — is worth saying out loud;
 // swallowing it leaves a button that looks like it did nothing.
-async function act(path) {
+async function act(path, done) {
+  let result = null;
   try {
-    const result = await api(path, "POST");
-    // A settings write answers with the sentence describing what it did —
-    // which level it landed on, or what the value now inherits. That sentence
+    result = await api(path, "POST");
+    // A write answers with the sentence describing what it did. That sentence
     // is most of what the person reads, so it is not thrown away.
-    if (result?.text) notice(result.text, Boolean(result.warn));
+    if (result?.text) toast(result.text, Boolean(result.warn));
+    else if (done) toast(done, false);
   } catch (err) {
-    notice(err.message);
+    toast(err.message);
   }
   refresh();
   if (path.startsWith("/api/config/")) refreshConfig();
+  return result;
 }
 
-// forgetEverything is the panic button: every live grant and every cached
-// secret value, in every service, in one press.
-//
-// It says what went rather than going quiet — a button that empties a list
-// which was already empty looks broken, and "nothing to forget" is a real
-// answer to the question somebody just asked.
-async function forgetEverything() {
-  try {
-    const gone = await api("/api/grants/forget", "POST");
-    const parts = [];
-    if (gone.grants) parts.push(gone.grants + " grant" + (gone.grants === 1 ? "" : "s"));
-    if (gone.cached) parts.push(gone.cached + " cached value" + (gone.cached === 1 ? "" : "s"));
-    notice(parts.length ? "forgot " + parts.join(" and ") : "nothing to forget");
-  } catch (err) {
-    notice(err.message);
-  }
-  refresh();
+function toast(text, bad = true) {
+  const node = el("div", "toast" + (bad ? " bad" : ""), text);
+  $("toasts").append(node);
+  setTimeout(() => node.remove(), bad ? 7000 : 4000);
 }
 
-// A refusal and a confirmation use the same strip, because there is only one
-// place on this page that says what just happened — but they must not look
-// alike. "1Password: off for bedev" in the same red as "that grant lapsed"
-// reads as a failure, and the person undoes something that worked.
-function notice(text, bad = true) {
+function notice(text) {
   const banner = $("offline");
   banner.textContent = text;
-  banner.classList.toggle("bad", bad);
   banner.hidden = false;
-  noticeUntil = Date.now() + 5000;
 }
 
 function bytes(n) {
@@ -456,6 +615,16 @@ function left(iso) {
   return Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m left";
 }
 
+// ago is a date in prose, "8d ago" — not a table format reused in a sentence.
+function ago(iso) {
+  if (!iso) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
+  if (seconds < 86400) return Math.floor(seconds / 3600) + "h ago";
+  return Math.floor(seconds / 86400) + "d ago";
+}
+
 // shorten makes a command line readable in one row. The interesting words in
 // `node /home/you/.npm/_npx/38bc83.../node_modules/.bin/mcp-server barreleye`
 // are all at the end, which is exactly what an ellipsis would eat, so the
@@ -473,18 +642,37 @@ function cell(text, className) {
   return td;
 }
 
+function el(tagName, className, text) {
+  const node = document.createElement(tagName);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
+}
+
 function tag(text, title) {
-  const span = document.createElement("span");
-  span.className = "tag";
-  span.textContent = text;
+  const span = el("span", "tag", text);
   if (title) span.title = title;
   return span;
+}
+
+function button(label, onclick, className, title) {
+  const b = el("button", className, label);
+  b.type = "button";
+  if (title) b.title = title;
+  b.onclick = onclick;
+  return b;
 }
 
 function who(source) {
   const meta = services.get(source);
   return meta ? (meta.glyph ? meta.glyph + " " : "") + meta.title : source;
 }
+
+function hostName() {
+  return lastState?.host || "this host";
+}
+
+// --- tunnels ----------------------------------------------------------------
 
 function renderPorts(state) {
   const ports = state.ports ?? [];
@@ -523,26 +711,20 @@ function renderPorts(state) {
     // Pinning is `l` at the table, and the case it exists for is one the board
     // could not reach at all: a login flow's callback has to arrive on the exact
     // port the remote baked into its redirect URI.
-    const pin = document.createElement("button");
-    pin.className = "rowbtn";
-    pin.textContent = port.pinned ? "pinned" : "pin";
-    pin.title = port.pinned
-      ? "this port is pinned to " + port.pinned + " — blank the number to go back to matching the box"
-      : "always forward this port to a local port you choose, remembered for this host";
-    pin.onclick = () => {
+    const pin = button(port.pinned ? "pinned" : "pin", () => {
       const given = prompt("Forward remote port " + port.remote +
         " to which local port? Blank goes back to matching the box.", port.pinned || "");
       if (given === null) return;
       // Blank is how a pin comes off, and zero is what the endpoint calls that.
       act(`/api/ports/${port.remote}/local?local=${encodeURIComponent(given.trim() || "0")}`);
-    };
+    }, "rowbtn", port.pinned
+      ? "this port is pinned to " + port.pinned + " — blank the number to go back to matching the box"
+      : "always forward this port to a local port you choose, remembered for this host");
     local.append(pin);
     tr.append(local);
 
     const remote = cell(port.remote, "port");
     if (port.remapped) {
-      // Two numbers that differ is the whole surprise, and the reason for it
-      // does not deserve a column of its own.
       remote.title = "port " + port.remote + " was already taken here, so devtun moved it to " + port.local;
       remote.append(tag("moved"));
     }
@@ -551,28 +733,18 @@ function renderPorts(state) {
     const proc = document.createElement("td");
     proc.className = "proc";
     // A name you gave sits *beside* what is actually running, not instead of
-    // it — which is what the table in the terminal does, and the two must not
-    // disagree about the same row. The board used to substitute one for the
-    // other, so naming a port hid the process it was for.
+    // it — which is what the table in the terminal does.
     const command = port.cmd && port.cmd !== "?" ? port.cmd : "";
     const name = port.proc;
     if (port.label) {
-      const label = document.createElement("b");
-      label.className = "label";
-      label.textContent = port.label;
-      proc.append(label, document.createTextNode(" · "));
+      proc.append(el("b", "label", port.label), document.createTextNode(" · "));
     }
     if (name) {
       proc.append(document.createTextNode(name));
       // ps reports the process as `node` and the command line as `node …`, so
       // the argv[0] that just said the same thing is dropped.
       const rest = command.startsWith(name + " ") ? command.slice(name.length + 1) : command;
-      if (rest && rest !== name) {
-        const detail = document.createElement("span");
-        detail.className = "cmd";
-        detail.textContent = " " + shorten(rest);
-        proc.append(detail);
-      }
+      if (rest && rest !== name) proc.append(el("span", "cmd", " " + shorten(rest)));
     } else if (command) {
       proc.append(document.createTextNode(shorten(command)));
     } else {
@@ -581,17 +753,11 @@ function renderPorts(state) {
     }
     proc.title = command || name || "";
 
-    // Naming is a thing you can do at the table and could not do here, which
-    // under `--web` — where the board is the surface — made it unreachable.
-    const rename = document.createElement("button");
-    rename.className = "rowbtn";
-    rename.textContent = port.label ? "rename" : "name";
-    rename.title = "give this port a name, remembered for " + (document.getElementById("host").textContent || "this host");
-    rename.onclick = () => {
+    const rename = button(port.label ? "rename" : "name", () => {
       const given = prompt("A name for remote port " + port.remote + " — blank clears it", port.label ?? "");
       if (given === null) return;
       act(`/api/ports/${port.remote}/label?label=${encodeURIComponent(given.trim())}`);
-    };
+    }, "rowbtn", "give this port a name, remembered for " + hostName());
     proc.append(rename);
     if (hidden) proc.append(tag("hidden", "you hid this port; devtun does not forward it"));
     else if (port.status !== "active") proc.append(tag(port.skip || port.status));
@@ -602,13 +768,9 @@ function renderPorts(state) {
     tr.append(cell(bytes(port.out), "num opt"));
 
     const actions = document.createElement("td");
-    const hide = document.createElement("button");
-    hide.textContent = hidden ? "unhide" : "hide";
-    hide.title = hidden
-      ? "forward this port again"
-      : "stop forwarding this port — it stays hidden until you unhide it";
-    hide.onclick = () => act(`/api/ports/${port.remote}/mode?mode=${hidden ? "auto" : "hidden"}`);
-    actions.append(hide);
+    actions.append(button(hidden ? "unhide" : "hide",
+      () => act(`/api/ports/${port.remote}/mode?mode=${hidden ? "auto" : "hidden"}`), "",
+      hidden ? "forward this port again" : "stop forwarding this port — it stays hidden until you unhide it"));
     tr.append(actions);
 
     if (hidden || port.status !== "active") tr.classList.add("dim");
@@ -632,87 +794,1081 @@ function renderPorts(state) {
     : "nothing forwarded yet — ports appear here as the box opens them";
 }
 
-function renderGrants(state) {
-  const grants = state.grants ?? [];
-  const body = $("grants");
-  body.replaceChildren();
+// --- access -----------------------------------------------------------------
 
-  for (const grant of grants) {
-    const tr = document.createElement("tr");
-    const refusing = grant.action === "deny";
-    tr.append(cell(refusing ? "refuse" : "grant", refusing ? "deny" : "live"));
-    tr.append(cell(who(grant.source), "muted"));
-    tr.append(cell(grant.host, "muted"));
-    tr.append(cell(grant.hostWide ? "anything from " + grant.host : grant.subject, "wide"));
-    tr.append(cell(grant.expires ? left(grant.expires) : "this session", "muted"));
+// The access list is built from the snapshot into rows that carry everything a
+// row needs to draw itself and to say what can be done to it. The same rows
+// drive the table, the action menu, the drawer and the keyboard, so the four
+// cannot disagree about what is allowed.
+let accessRows = [];
+let selectedKey = null;
+let filterText = "";
 
-    const actions = document.createElement("td");
-    const revoke = document.createElement("button");
-    revoke.className = "danger";
-    revoke.textContent = "revoke";
-    revoke.title = "take this back now rather than waiting for it to lapse";
-    revoke.onclick = () => act(`/api/grants/revoke?source=${encodeURIComponent(grant.source)}` +
-      `&id=${encodeURIComponent(grant.id)}`);
-    actions.append(revoke);
-    tr.append(actions);
-    body.append(tr);
-  }
-
-  $("grants-count").textContent = grants.length ? grants.length + " live" : "";
-  $("grants-empty").hidden = grants.length > 0;
-  // Not "are there grants": the vault's cache keeps its own clock, so a value
-  // can still be held here after the grant behind it lapsed, and that is
-  // exactly what this button is for.
-  $("forget").hidden = !state.gated;
+function policyOf(source) {
+  return (lastState?.policies ?? []).find((p) => p.source === source);
 }
 
-function renderRules(state) {
-  const rules = state.rules ?? [];
-  const body = $("rules");
-  body.replaceChildren();
+function shortOf(source) {
+  return policyOf(source)?.short || source;
+}
 
-  for (const rule of rules) {
-    const tr = document.createElement("tr");
-    tr.append(cell(rule.action, rule.action === "deny" ? "deny" : "allow"));
-    tr.append(cell(who(rule.source), "muted"));
-    tr.append(cell(rule.host, "muted"));
-    tr.append(cell(rule.subject, "wide"));
-    tr.append(cell(rule.global ? "from your config" : rule.note ?? "", "muted"));
-
-    const actions = document.createElement("td");
-    if (rule.global) {
-      // A rule out of a hand-written file is not devtun's to rewrite, so the
-      // page says where to change it rather than offering a button that fails.
-      actions.append(tag("edit your config file"));
-    } else {
-      const revoke = document.createElement("button");
-      revoke.className = "danger";
-      revoke.textContent = "revoke";
-      revoke.title = "forget this rule — the next request asks again";
-      revoke.onclick = () => act(`/api/rules/revoke?source=${encodeURIComponent(rule.source)}&id=${encodeURIComponent(rule.id)}`);
-      actions.append(revoke);
-
-      // Deny only appears on an allow, and only ever tightens. "I clicked
-      // always and I should not have, and I do not want to be asked again
-      // either" is the change people make in a hurry; the reverse one, on
-      // whichever row a click lands on, is the accident deny-beats-allow exists
-      // to prevent, and it stays an edit of the file.
-      if (rule.action !== "deny") {
-        const deny = document.createElement("button");
-        deny.className = "danger";
-        deny.textContent = "deny";
-        deny.title = "rewrite this into a refusal — the next request is refused, without asking";
-        deny.onclick = () => act(`/api/rules/deny?source=${encodeURIComponent(rule.source)}&id=${encodeURIComponent(rule.id)}`);
-        actions.append(deny);
-      }
+// subjectNode shows a subject as its fields. A two-field SSH subject keeps its
+// destination whole and shortens the fingerprint in the middle, because the
+// destination is the part that means something to a person and the end of a
+// fingerprint is the part they compare.
+function subjectNode(parts, schema, full) {
+  const span = el("span");
+  const sep = schema?.separator || " → ";
+  const list = parts ?? [full];
+  for (let i = 0; i < list.length; i++) {
+    if (i > 0) span.append(el("span", "sep", sep));
+    let text = String(list[i] ?? "");
+    if (list.length > 1 && i === 0 && text.length > 28) {
+      text = text.slice(0, 12) + "…" + text.slice(-8);
     }
-    tr.append(actions);
+    span.append(document.createTextNode(text));
+  }
+  span.title = full;
+  return span;
+}
+
+// hostWideText words a host-wide grant in the broker's own noun, so it reads
+// "any signature from bedev" rather than "anything".
+function hostWideText(row) {
+  const noun = policyOf(row.source)?.noun || "request";
+  return "any " + noun + " from " + row.host;
+}
+
+function originText(row) {
+  switch (row.origin) {
+    case "global": return "your config.yaml · all hosts";
+    case "host": return "hosts/" + hostName() + ".yaml · you wrote it";
+    case "remembered": return "hosts/" + hostName() + ".yaml · devtun wrote it";
+    default: return "live · this session";
+  }
+}
+
+function kindText(row) {
+  if (row.isGrant) return row.action === "deny" ? "stop-ask" : "grant";
+  return row.action;
+}
+
+function buildAccessRows(state) {
+  const rows = [];
+  for (const grant of state.grants ?? []) {
+    rows.push({ ...grant, isGrant: true, origin: "live", key: "g:" + grant.source + ":" + grant.id });
+  }
+  for (const rule of state.rules ?? []) {
+    rows.push({ ...rule, isGrant: false, key: "r:" + rule.source + ":" + rule.id });
+  }
+  return rows;
+}
+
+// The groups, in the order a request is decided against them, each saying
+// where its rows live — which is what decides whether they can be changed here.
+function accessGroups() {
+  const host = hostName();
+  return [
+    { title: "LIVE — this session only, gone when devtun quits", test: (r) => r.isGrant && r.action !== "deny" },
+    { title: "REFUSALS — “No, and stop asking”, this session only", test: (r) => r.isGrant && r.action === "deny" },
+    { title: "REMEMBERED — devtun wrote these · hosts/" + host + ".yaml", test: (r) => r.origin === "remembered" },
+    { title: "THIS HOST — you wrote these · hosts/" + host + ".yaml", test: (r) => r.origin === "host" },
+    { title: "ALL HOSTS — your config.yaml · read-only here", test: (r) => r.origin === "global" },
+  ];
+}
+
+function rowMatchesFilter(row) {
+  if (!filterText) return true;
+  const hay = [shortOf(row.source), who(row.source), row.subject, row.host, row.note, kindText(row)].join(" ").toLowerCase();
+  return hay.includes(filterText.toLowerCase());
+}
+
+function visibleRows() {
+  const out = [];
+  for (const group of accessGroups()) {
+    for (const row of accessRows) if (group.test(row) && rowMatchesFilter(row)) out.push(row);
+  }
+  return out;
+}
+
+function renderAccess(state) {
+  accessRows = buildAccessRows(state);
+  const body = $("access-body");
+  body.replaceChildren();
+  let shown = 0;
+
+  for (const group of accessGroups()) {
+    const rows = accessRows.filter((r) => group.test(r) && rowMatchesFilter(r));
+    if (!rows.length) continue;
+    const head = el("tr", "group");
+    const td = el("td");
+    td.colSpan = 7;
+    td.append(document.createTextNode(group.title), el("span", "n", String(rows.length)));
+    head.append(td);
+    body.append(head);
+    for (const row of rows) {
+      body.append(accessRow(row));
+      shown++;
+    }
+  }
+
+  // The rule nobody wrote: what happens when nothing matches. It decides most
+  // requests, so it is on screen like any other rule.
+  const policies = state.policies ?? [];
+  if (policies.length) {
+    const tr = el("tr", "fallback");
+    const td = el("td");
+    td.colSpan = 7;
+    td.append(el("b", "", "NOTHING MATCHES → "));
+    for (const p of policies) {
+      const pol = el("span", "pol");
+      const unmatched = p.unmatched?.action || "ask";
+      pol.append(el("span", "muted", p.short + ": "), el("span", unmatched === "deny" ? "deny" : "ask-c", unmatched));
+      if (p.unmatched?.level && p.unmatched.level !== "default") pol.append(el("span", "muted", " (" + p.unmatched.level + ")"));
+      if (p.unmatched?.err) pol.title = p.unmatched.err;
+      td.append(pol);
+    }
+    td.append(button("Config ▸ Policy to change", () => selectTab("Config"), "linkish"));
+    tr.append(td);
     body.append(tr);
   }
 
-  $("rules-count").textContent = rules.length ? rules.length + " standing" : "";
-  $("rules-empty").hidden = rules.length > 0;
+  $("access-count").textContent = accessRows.length ? String(accessRows.length) : "";
+  const empty = $("access-empty");
+  empty.hidden = shown > 0;
+  if (!state.gated) empty.textContent = "nothing on this session decides access — no gated service is running";
+  else if (filterText) empty.textContent = "nothing matches “" + filterText + "”";
+  else empty.textContent = "no grants and no rules — every request falls through to “nothing matches”";
+  $("forget").disabled = !state.gated;
+  const refusals = accessRows.filter((r) => r.isGrant && r.action === "deny").length;
+  $("forget-refusals").disabled = refusals === 0;
+  $("forget-refusals").title = refusals
+    ? "drop " + refusals + " “No, and stop asking” refusal" + (refusals === 1 ? "" : "s") + " — those requests are asked about again"
+    : "there are no refusals to forget";
+  $("new-rule").disabled = !policies.length;
+  $("test-open").disabled = !policies.length;
+
+  // A selection follows identity, not position: a grant lapsing above the row
+  // you are on must not move you onto its neighbour.
+  if (selectedKey && !accessRows.some((r) => r.key === selectedKey)) selectedKey = null;
+  markSelected();
+  refreshDrawer();
 }
+
+function accessRow(row) {
+  const tr = el("tr", "row");
+  tr.dataset.key = row.key;
+  tr.tabIndex = -1;
+  const deny = row.action === "deny";
+  tr.append(cell(deny ? "✕" : "✓", "mark " + (deny ? "deny" : "allow")));
+  tr.append(cell(shortOf(row.source), "svc"));
+
+  const subj = el("td", "subj");
+  if (row.isGrant && row.hostWide) subj.append(document.createTextNode(hostWideText(row)));
+  else subj.append(subjectNode(row.parts, policyOf(row.source)?.schema, row.subject));
+  if (row.outranked) {
+    const warn = el("span", "outranked", "⚠ outranked");
+    warn.title = "a deny also matches what this allows, and a deny always wins — open it to see which";
+    subj.append(warn);
+  }
+  if (row.note) subj.append(el("span", "muted", "  · " + row.note));
+  tr.append(subj);
+
+  tr.append(cell(kindText(row), "opt " + (deny ? "deny" : row.isGrant ? "live" : "allow")));
+  tr.append(cell(row.host || "**", "opt muted"));
+  let life;
+  if (row.isGrant) life = row.expires ? left(row.expires) : "this session";
+  else if (row.origin === "global") life = "always";
+  else life = row.added ? "since " + ago(row.added) : "always";
+  tr.append(cell(life, "opt muted"));
+
+  const acts = el("td", "acts");
+  const inline = el("span", "inline");
+  if (row.origin === "global") {
+    // A rule out of the file you keep for every host is not devtun's to
+    // rewrite, so the row says where to change it rather than offering
+    // buttons that fail.
+    inline.append(el("span", "readonly", "read-only · edit config.yaml"));
+  } else {
+    for (const a of actionsFor(row).filter((x) => x.inline)) {
+      const b = button(a.label, (event) => { event.stopPropagation(); runAction(row, a); },
+        a.loosens ? "loosen" : a.danger ? "danger" : "", a.enabled ? a.title : a.reason);
+      b.disabled = !a.enabled;
+      inline.append(b);
+    }
+  }
+  acts.append(inline);
+  const more = button("⋯", (event) => {
+    event.stopPropagation();
+    select(row.key);
+    const r = event.currentTarget.getBoundingClientRect();
+    openMenu(row, r.right, r.bottom);
+  }, "more", "every action for this row");
+  acts.append(more);
+  tr.append(acts);
+
+  tr.onclick = () => {
+    // A click on the selected row opens it, the way a double-click would.
+    if (selectedKey === row.key) openDrawer(row.key);
+    else select(row.key);
+  };
+  tr.ondblclick = () => openDrawer(row.key);
+  tr.oncontextmenu = (event) => {
+    event.preventDefault();
+    select(row.key);
+    openMenu(row, event.clientX, event.clientY);
+  };
+  return tr;
+}
+
+function select(key) {
+  selectedKey = key;
+  markSelected();
+}
+
+function markSelected() {
+  for (const tr of $("access-body").querySelectorAll("tr.row")) {
+    const on = tr.dataset.key === selectedKey;
+    tr.setAttribute("aria-selected", String(on));
+    if (on && document.activeElement?.closest?.("#access")) tr.focus({ preventScroll: true });
+  }
+}
+
+// rowElement finds a row's <tr> by its key. A walk rather than a selector, so
+// an id with a quote in it cannot break the lookup.
+function rowElement(key) {
+  return [...$("access-body").querySelectorAll("tr.row")].find((tr) => tr.dataset.key === key);
+}
+
+function selectedRow() {
+  return accessRows.find((r) => r.key === selectedKey);
+}
+
+function moveSelection(delta) {
+  const rows = visibleRows();
+  if (!rows.length) return;
+  let at = rows.findIndex((r) => r.key === selectedKey);
+  at = at < 0 ? (delta > 0 ? 0 : rows.length - 1) : Math.max(0, Math.min(rows.length - 1, at + delta));
+  select(rows[at].key);
+  rowElement(rows[at].key)?.scrollIntoView({ block: "nearest" });
+}
+
+// actionsFor is every action a row offers, enabled or not, with the reason it
+// cannot be done when it cannot. Showing the disabled ones is the point: "this
+// is in your config file" is something to learn before pressing the key, not
+// after.
+function actionsFor(row) {
+  const out = [];
+  const readOnly = row.origin === "global";
+  const ro = "it is in your config.yaml, which applies to every host — edit that file; devtun does not rewrite it";
+  if (row.isGrant) {
+    if (row.action === "deny") {
+      out.push({ id: "revoke", label: "remove refusal", key: "r", inline: true, enabled: true, loosens: true,
+        title: "stop refusing — the next request is asked about again" });
+    } else {
+      out.push({ id: "revoke", label: "revoke", key: "r", inline: true, enabled: true, danger: true,
+        title: "take this back now rather than waiting for it to lapse" });
+    }
+  } else {
+    const deny = row.action === "deny";
+    out.push({ id: "remove", label: deny ? "remove refusal" : "remove", key: "r", inline: true,
+      enabled: !readOnly, reason: ro, loosens: deny, danger: !deny,
+      title: deny ? "delete this deny — what it refused falls through to the other rules"
+        : "delete this rule — the next request falls through to the other rules" });
+    out.push({ id: "deny", label: "make it a deny", key: "D", inline: !deny, enabled: !readOnly && !deny,
+      reason: readOnly ? ro : "it already denies", danger: true,
+      title: "rewrite this into a refusal — what it matches is refused, without asking" });
+    out.push({ id: "allow", label: "make it an allow", key: "A", inline: deny, enabled: !readOnly && deny,
+      reason: readOnly ? ro : "it already allows", loosens: true,
+      title: "rewrite this refusal into an allow — what it matches is allowed, without asking" });
+    out.push({ id: "edit", label: "edit…", key: "e", inline: true, enabled: !readOnly, reason: ro,
+      title: "change what it matches, where it applies, or its note" });
+  }
+  out.push({ id: "test", label: "test a request like this", key: "t", enabled: true,
+    title: "put this pattern in the test box" });
+  out.push({ id: "copy", label: "copy pattern", key: "y", enabled: true, title: "copy the pattern to the clipboard" });
+  out.push({ id: "detail", label: "details", key: "⏎", enabled: true, title: "what it means, and what beats it" });
+  return out;
+}
+
+function runAction(row, a) {
+  if (!a.enabled) {
+    toast("can't " + a.label.replace("…", "") + ": " + a.reason);
+    return;
+  }
+  closeMenu();
+  const q = "source=" + encodeURIComponent(row.source) + "&id=" + encodeURIComponent(row.id);
+  switch (a.id) {
+    case "revoke":
+      if (row.action === "deny") {
+        confirmLoosen({
+          title: "Remove a refusal?",
+          row,
+          consequence: fallThrough(row, "You said “No, and stop asking” to this."),
+          yes: "remove it", no: "keep refusing",
+          run: () => act("/api/grants/revoke?" + q + "&confirm=1", "refusal removed"),
+        });
+      } else {
+        act("/api/grants/revoke?" + q, "grant revoked");
+      }
+      break;
+    case "remove":
+      if (row.action === "deny") {
+        confirmLoosen({
+          title: "Remove a refusal?",
+          row,
+          consequence: fallThrough(row, ""),
+          yes: "remove it", no: "keep refusing",
+          run: () => act("/api/rules/remove?" + q + "&confirm=1", "rule removed"),
+        });
+      } else {
+        act("/api/rules/remove?" + q, "rule removed — the next request falls through to the other rules");
+      }
+      break;
+    case "deny":
+      act("/api/rules/action?" + q + "&action=deny", "now a deny — what it matches is refused");
+      break;
+    case "allow":
+      confirmLoosen({
+        title: "Turn this refusal into an allow?",
+        row,
+        consequence: "Every request it matches will be allowed without asking — for " +
+          (row.host ? row.host : "every host") + ".",
+        yes: "make it an allow", no: "keep refusing",
+        run: () => act("/api/rules/action?" + q + "&action=allow&confirm=1", "now an allow"),
+      });
+      break;
+    case "edit":
+      openForm({ edit: row });
+      break;
+    case "test":
+      openTest(row.source, row.subject, row.host);
+      break;
+    case "copy":
+      copy(row.subject);
+      break;
+    case "detail":
+      openDrawer(row.key);
+      break;
+  }
+}
+
+// fallThrough says what happens once a refusal is gone — the honest answer,
+// which depends on whether anything else matches and on the service's policy
+// for when nothing does.
+function fallThrough(row, lead) {
+  const p = policyOf(row.source);
+  const unmatched = p?.unmatched?.action || "ask";
+  const tail = unmatched === "deny"
+    ? "if nothing does, " + p.short + " refuses anyway (when nothing matches: deny)."
+    : "if nothing does, " + hostLabel(row) + " will be asked again, and a Yes will hand it over.";
+  return (lead ? lead + " " : "") + "Requests it refused fall through to the other rules: an allow that matches lets them through; " + tail;
+}
+
+function hostLabel(row) {
+  return row.host && row.host !== "**" ? row.host : "the box";
+}
+
+async function copy(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("copied " + text, false);
+  } catch {
+    toast("the browser would not let this page use the clipboard");
+  }
+}
+
+// --- the action menu -------------------------------------------------------
+
+let menuRow = null;
+
+function openMenu(row, x, y) {
+  menuRow = row;
+  const menu = $("menu");
+  menu.replaceChildren();
+  for (const a of actionsFor(row)) {
+    if (a.id === "test") menu.append(el("hr"));
+    const b = el("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitem");
+    const lbl = el("span", "lbl", a.label);
+    if (!a.enabled) lbl.append(el("span", "why", a.reason));
+    b.append(lbl, el("kbd", "", a.key));
+    b.disabled = !a.enabled;
+    if (a.loosens && a.enabled) b.classList.add("deny");
+    b.title = a.enabled ? a.title : a.reason;
+    b.onclick = () => runAction(row, a);
+    menu.append(b);
+  }
+  menu.hidden = false;
+  // Kept on screen: a right-click near the bottom edge opens upward.
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  menu.style.left = Math.max(4, Math.min(x, innerWidth - w - 4)) + "px";
+  menu.style.top = Math.max(4, Math.min(y, innerHeight - h - 4)) + "px";
+  menu.querySelector("button:not(:disabled)")?.focus();
+}
+
+function closeMenu() {
+  $("menu").hidden = true;
+  menuRow = null;
+}
+
+document.addEventListener("click", (event) => {
+  if (!$("menu").hidden && !event.target.closest?.("#menu") && !event.target.closest?.(".more")) closeMenu();
+});
+
+// --- the detail drawer -------------------------------------------------------
+
+let drawerKey = null;
+let drawerExplain = null;
+
+async function openDrawer(key) {
+  closeMenu();
+  drawerKey = key;
+  select(key);
+  drawerExplain = null;
+  drawDrawer();
+  $("drawer").hidden = false;
+  const row = selectedRow();
+  if (!row) return;
+  try {
+    drawerExplain = await api("/api/explain?source=" + encodeURIComponent(row.source) +
+      (row.isGrant ? "&grant=" : "&rule=") + encodeURIComponent(row.id));
+  } catch (err) {
+    drawerExplain = { error: err.message };
+  }
+  if (drawerKey === key) drawDrawer();
+}
+
+function closeDrawer() {
+  $("drawer").hidden = true;
+  drawerKey = null;
+}
+
+// refreshDrawer keeps an open drawer honest across polls: if its row went
+// away — revoked at the terminal, lapsed — it says so rather than showing a
+// ghost.
+function refreshDrawer() {
+  if (drawerKey && !$("drawer").hidden) drawDrawer();
+}
+
+function drawDrawer() {
+  const drawer = $("drawer");
+  const row = accessRows.find((r) => r.key === drawerKey);
+  const head = el("header");
+  const title = el("h2");
+  head.append(title, button("close", closeDrawer, "", "close (esc)"));
+  const body = el("div", "body");
+  drawer.replaceChildren(head, body);
+  if (!row) {
+    title.textContent = "gone";
+    body.append(el("p", "muted", "This is no longer there — it was revoked, lapsed, or changed somewhere else."));
+    return;
+  }
+  const p = policyOf(row.source);
+  title.textContent = (row.isGrant ? kindText(row) : "rule") + " · " + who(row.source) + " · " + originText(row);
+
+  const deny = row.action === "deny";
+  const line = el("div", "subject-big");
+  line.append(el("span", deny ? "deny" : "allow", (deny ? "✕ " : "✓ ") + (row.isGrant ? kindText(row) : row.action) + "  "));
+  line.append(document.createTextNode(row.isGrant && row.hostWide ? hostWideText(row) : row.subject));
+  body.append(line);
+
+  const kv = el("dl", "kv");
+  const add = (k, v) => { if (v) kv.append(el("dt", "", k), el("dd", "", v)); };
+  const fields = p?.schema?.fields ?? [];
+  if (!(row.isGrant && row.hostWide)) {
+    fields.forEach((f, i) => add(f.label, (row.parts ?? [row.subject])[i]));
+  }
+  add("host", row.host || "** (every host)");
+  add("lives in", originText(row));
+  if (row.isGrant) {
+    add("lasts", row.expires ? left(row.expires) : "this session");
+    add("granted", row.created ? ago(row.created) : "");
+  } else {
+    add("written", row.added ? new Date(row.added).toLocaleString() + " (" + ago(row.added) + ")" : "by hand");
+  }
+  add("note", row.note);
+  add("id", row.id);
+  body.append(kv);
+
+  if (drawerExplain?.error) {
+    body.append(el("p", "warn", drawerExplain.error));
+  } else if (drawerExplain) {
+    const beatenBy = drawerExplain.beatenBy ?? [];
+    const beats = drawerExplain.beats ?? [];
+    if (beatenBy.length) {
+      const box = el("div", "callout");
+      box.append(el("b", "warn", "⚠ This never wins for a request like this. "));
+      box.append(document.createTextNode("A deny also matches it, and a deny always beats an allow:"));
+      for (const m of beatenBy) box.append(matchLine(m));
+      if ((p?.unmatched?.action || "ask") !== "deny" && !deny) {
+        box.append(el("p", "hint", "To allow only what you list, set " + p.short +
+          " “when nothing matches” to deny (Config ▸ Policy) and remove the catch-all deny."));
+      }
+      body.append(box);
+    }
+    if (beats.length) {
+      const box = el("div", "callout info");
+      box.append(el("div", "muted", "It wins over these, which also match:"));
+      for (const m of beats) box.append(matchLine(m));
+      body.append(box);
+    }
+    if (!beatenBy.length && !beats.length) {
+      body.append(el("p", "hint", "Nothing else matches a request like this — this decides it alone."));
+    }
+  }
+
+  const acts = el("div", "acts");
+  for (const a of actionsFor(row)) {
+    if (a.id === "detail") continue;
+    const r = el("div", "actrow");
+    const b = button(a.label, () => runAction(row, a), a.loosens ? "loosen" : a.danger ? "danger" : "", a.title);
+    b.append(el("kbd", "btn-key", a.key));
+    b.disabled = !a.enabled;
+    r.append(b, el("span", "reason", a.enabled ? a.title : a.reason));
+    acts.append(r);
+  }
+  drawer.append(acts);
+}
+
+// matchLine is one rule or grant inside an explanation, and a way to go to it.
+function matchLine(m) {
+  const div = el("div", "match" + (m.decided ? " decided" : ""));
+  const deny = m.action === "deny";
+  div.append(el("span", deny ? "deny" : "allow", deny ? "✕ " + m.action : "✓ " + m.action));
+  div.append(el("span", "", m.hostWide ? "any request from " + m.host : m.subject));
+  div.append(el("span", "where", whereText(m)));
+  const key = (m.kind === "grant" ? "g:" : "r:") + m.source + ":" + m.id;
+  if (accessRows.some((r) => r.key === key)) {
+    div.append(button("show", () => { closeModal(); selectTab("Access"); openDrawer(key); }, "linkish"));
+  }
+  return div;
+}
+
+function whereText(m) {
+  if (m.kind === "grant") return m.action === "deny" ? "stop-ask · this session" : "grant · this session";
+  return originText(m) + (m.host ? " · " + m.host : " · every host");
+}
+
+// --- the test box -------------------------------------------------------------
+
+let testSource = null;
+let testTimer = null;
+
+function openTest(source, subject, host) {
+  const box = $("test");
+  box.hidden = false;
+  const policies = lastState?.policies ?? [];
+  if (!policies.length) return;
+  testSource = source || testSource || policies[0].source;
+  drawTestFields(subject, host);
+  box.querySelector("input")?.focus();
+  runTest();
+}
+
+function drawTestFields(subject, host) {
+  const box = $("test-fields");
+  const policies = lastState?.policies ?? [];
+  const p = policyOf(testSource) ?? policies[0];
+  box.replaceChildren();
+  box.append(el("span", "muted", "would this be allowed?"));
+  const svc = el("select");
+  svc.setAttribute("aria-label", "service");
+  for (const q of policies) {
+    const o = el("option", "", q.short + " · " + q.title);
+    o.value = q.source;
+    svc.append(o);
+  }
+  svc.value = p.source;
+  svc.onchange = () => { testSource = svc.value; drawTestFields("", hostIn.value); runTest(); };
+  box.append(svc);
+  const hostIn = el("input");
+  hostIn.type = "text";
+  hostIn.id = "test-host";
+  hostIn.value = host && host !== "**" ? host : (lastState?.host || "");
+  hostIn.placeholder = "host";
+  hostIn.title = "the host the request comes from";
+  hostIn.style.flex = "0 1 8rem";
+  hostIn.oninput = scheduleTest;
+  box.append(hostIn);
+  const parts = subject ? splitSubject(p, subject) : [];
+  (p.schema?.fields ?? []).forEach((f, i) => {
+    if (i > 0) box.append(el("span", "muted", (p.schema.separator || " → ").trim()));
+    const input = el("input");
+    input.type = "text";
+    input.className = "test-part";
+    input.placeholder = f.label;
+    input.title = f.help;
+    input.value = parts[i] ?? "";
+    input.oninput = scheduleTest;
+    input.setAttribute("aria-label", f.label);
+    box.append(input);
+  });
+  box.append(button("close", () => { $("test").hidden = true; }, "", "close the test box (esc)"));
+}
+
+// splitSubject is display only — the server is handed the joined subject and
+// does its own matching. It mirrors the schema's rule that a pattern with too
+// few parts puts the remainder in the last field.
+function splitSubject(p, subject) {
+  const fields = p.schema?.fields ?? [];
+  const sep = p.schema?.separator;
+  if (fields.length <= 1 || !sep) return [subject];
+  const parts = subject.split(sep);
+  const head = parts.slice(0, fields.length - 1);
+  const tail = parts.slice(fields.length - 1).join(sep);
+  return tail === "" && parts.length < fields.length ? head : [...head, tail];
+}
+
+function joinSubject(p, values) {
+  const sep = p.schema?.separator;
+  if ((p.schema?.fields ?? []).length <= 1 || !sep) return values[0] ?? "";
+  return values.map((v) => v || "**").join(sep);
+}
+
+function scheduleTest() {
+  clearTimeout(testTimer);
+  testTimer = setTimeout(runTest, 180);
+}
+
+async function runTest() {
+  const p = policyOf(testSource);
+  const out = $("test-result");
+  if (!p) return;
+  const values = [...$("test-fields").querySelectorAll(".test-part")].map((input) => input.value.trim());
+  if (!values.some(Boolean)) {
+    out.replaceChildren(el("span", "muted", "type a " + p.noun + " to see what would decide it — nothing is read and nothing is signed"));
+    return;
+  }
+  const subject = joinSubject(p, values);
+  const host = $("test-host")?.value.trim() || lastState?.host || "";
+  try {
+    const x = await api("/api/explain?source=" + encodeURIComponent(p.source) +
+      "&host=" + encodeURIComponent(host) + "&subject=" + encodeURIComponent(subject));
+    out.replaceChildren(...explanationNodes(x, p));
+  } catch (err) {
+    out.replaceChildren(el("span", "warn", err.message));
+  }
+}
+
+// explanationNodes turns devtun's answer into the sentence the test box and the
+// "why?" dialog both show.
+function explanationNodes(x, p) {
+  const nodes = [];
+  const v = x.verdict ?? {};
+  const line = el("div");
+  const decided = (x.matches ?? []).find((m) => m.decided);
+  if (v.action === "allow") line.append(el("span", "verdict allow", "✓ ALLOW "));
+  else if (v.action === "deny") line.append(el("span", "verdict deny", "✕ DENY "));
+  else line.append(el("span", "verdict ask-c", "? would ASK "));
+  if (decided) {
+    line.append(document.createTextNode(" by  "), el("b", "", decided.hostWide ? "any request from " + decided.host : decided.subject),
+      el("span", "muted", "  (" + whereText(decided) + ")"));
+    const key = (decided.kind === "grant" ? "g:" : "r:") + decided.source + ":" + decided.id;
+    if (accessRows.some((r) => r.key === key)) {
+      line.append(document.createTextNode(" "), button("show", () => { closeModal(); selectTab("Access"); openDrawer(key); }, "linkish"));
+    }
+  } else if (v.by?.kind === "unreadable") {
+    line.append(document.createTextNode(" — a policy file could not be read, so everything is refused until it is fixed"));
+  } else {
+    const u = x.unmatched?.action || v.by?.unmatched || "ask";
+    line.append(document.createTextNode(" — nothing matches, and " + (p?.short || "this service") +
+      " is set to " + u + " when nothing matches" + (x.unmatched?.level ? " (" + x.unmatched.level + ")" : "")));
+  }
+  nodes.push(line);
+  const lost = (x.matches ?? []).filter((m) => m.outranked);
+  if (lost.length) {
+    const div = el("div", "lost");
+    div.append(document.createTextNode("also matched, and lost (a deny always wins):"));
+    for (const m of lost) div.append(matchLine(m));
+    nodes.push(div);
+  }
+  return nodes;
+}
+
+// --- dialogs: confirm, form, why, help ---------------------------------------
+
+let modalKeys = null;
+
+function openModal(box, keys) {
+  const modal = $("modal");
+  modal.replaceChildren(box);
+  modal.hidden = false;
+  modalKeys = keys || null;
+  closeMenu();
+  (box.querySelector("[autofocus]") || box.querySelector("input, select, button"))?.focus();
+}
+
+function closeModal() {
+  $("modal").hidden = true;
+  $("modal").replaceChildren();
+  modalKeys = null;
+}
+
+$("modal").addEventListener("click", (event) => { if (event.target === $("modal")) closeModal(); });
+
+// confirmLoosen is the one dialog in front of every change that can let more
+// through. It names exactly what changes — the row, and what happens after —
+// and its safe answer is the one already under your finger.
+function confirmLoosen(c) {
+  const box = el("div", "dialog");
+  const head = el("header", "loosen", c.title);
+  const body = el("div", "body");
+  if (c.row) {
+    const row = c.row;
+    const line = el("div", "subject-big");
+    const deny = row.action === "deny";
+    line.append(el("span", deny ? "deny" : "allow", deny ? "✕ " : "✓ "), el("span", "muted", shortOf(row.source) + "  "),
+      document.createTextNode(row.isGrant && row.hostWide ? hostWideText(row) : row.subject));
+    body.append(line);
+    body.append(el("p", "muted", kindText(row) + " · " + originText(row) + (row.added ? " · " + ago(row.added) : "")));
+  }
+  if (c.detail) body.append(c.detail);
+  body.append(el("p", "", c.consequence));
+  const buttons = el("div", "buttons");
+  const no = button(c.no, closeModal, "", "esc");
+  no.append(el("kbd", "", "n"));
+  no.setAttribute("autofocus", "");
+  const yes = button(c.yes, () => { closeModal(); c.run(); }, "loosen");
+  yes.append(el("kbd", "", "y"));
+  buttons.append(no, yes);
+  body.append(buttons);
+  box.append(head, body);
+  openModal(box, (event) => {
+    if (event.key === "y") { event.preventDefault(); yes.click(); return true; }
+    if (event.key === "n") { event.preventDefault(); no.click(); return true; }
+    return false;
+  });
+}
+
+// The rule form: new, and edit. A rule, or — if "lasts" is a time — a live
+// grant. Each service draws its own fields, from devtun's description of what
+// its subjects are made of, so nobody has to get a glob exactly right in one
+// string.
+function openForm(opts = {}) {
+  const editing = opts.edit;
+  const policies = lastState?.policies ?? [];
+  if (!policies.length) return;
+  const st = {
+    source: editing?.source || opts.source || policies[0].source,
+    action: editing?.action || opts.action || "allow",
+    host: editing ? (editing.host || "") : (lastState?.host || ""),
+    lasts: "always",
+    note: editing?.note || "",
+    values: editing ? (editing.parts ?? [editing.subject]) : (opts.subject ? splitSubject(policyOf(opts.source || policies[0].source), opts.subject) : []),
+  };
+  const box = el("div", "dialog");
+  const head = el("header", "", editing ? "edit rule" : "new rule");
+  const body = el("div", "body");
+  const form = el("div", "form");
+  const preview = el("div", "preview");
+  body.append(form);
+  box.append(head, body);
+
+  const seg = (options, current, onpick, disabledWhy) => {
+    const wrap = el("div", "seg");
+    for (const [value, label] of options) {
+      const b = button(label, () => { onpick(value); draw(); });
+      b.setAttribute("aria-pressed", String(current === value));
+      if (disabledWhy) { b.disabled = true; b.title = disabledWhy; }
+      wrap.append(b);
+    }
+    return wrap;
+  };
+
+  function draw() {
+    const p = policyOf(st.source);
+    form.replaceChildren();
+    const row = (label, control, help) => {
+      form.append(el("label", "k", label), control);
+      if (help) form.append(el("div", "help", help));
+    };
+    row("service", seg(policies.map((q) => [q.source, q.short + " · " + q.title]), st.source,
+      (v) => { st.source = v; st.values = []; }, editing ? "a rule stays with the service it belongs to" : ""));
+    row("effect", seg([["allow", "✓ allow"], ["deny", "✕ deny"]], st.action, (v) => { st.action = v; },
+      editing ? "use “make it an allow / a deny” for that" : ""));
+    (p.schema?.fields ?? []).forEach((f, i) => {
+      const input = el("input");
+      input.type = "text";
+      input.value = st.values[i] ?? "";
+      input.placeholder = i === 0 ? f.label : f.label + "  (blank = any)";
+      input.oninput = () => { st.values[i] = input.value; schedulePreview(); };
+      if (i === 0) input.setAttribute("autofocus", "");
+      row(f.label, input, f.help + " · * matches one part, ** matches everything below");
+    });
+    const host = lastState?.host || "";
+    // A grant is for one host — it is what a prompt would have answered for
+    // that host — so "all hosts" is a rule or nothing.
+    const grant = st.lasts !== "always";
+    row("applies", seg([[host, host || "this host"], ["", "all hosts"]], st.host, (v) => { st.host = v; },
+      ""), grant ? "a grant is for this host only — write a rule to cover every host"
+        : st.host ? "only requests from " + st.host : "every host — still written to this host's file, under devtun's own rules");
+    if (grant) form.querySelectorAll(".seg")[2]?.lastChild?.setAttribute("disabled", "");
+    if (!editing) {
+      row("lasts", seg([["always", "always (a rule)"], ["300", "5m"], ["3600", "1h"], ["0", "this session"]], st.lasts,
+        (v) => { st.lasts = v; if (v !== "always") st.host = lastState?.host || ""; }),
+        st.lasts === "always" ? "written to hosts/" + (host || "host") + ".yaml, under remembered:" : "a live grant — gone when it lapses or devtun quits");
+    }
+    if (st.lasts === "always") {
+      const note = el("input");
+      note.type = "text";
+      note.value = st.note;
+      note.placeholder = "why — for whoever reads the file next";
+      note.oninput = () => { st.note = note.value; };
+      row("note", note);
+    }
+    form.append(preview);
+    const buttons = el("div", "buttons");
+    buttons.append(button("cancel", closeModal, "", "esc"));
+    const save = button(editing ? "save" : (st.lasts === "always" ? "write rule" : "grant"), submit,
+      st.action === "allow" ? "loosen" : "primary");
+    buttons.append(save);
+    form.append(el("span"), buttons);
+    schedulePreview();
+  }
+
+  let previewTimer = null;
+  function schedulePreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(runPreview, 200);
+  }
+
+  // The preview asks devtun what the new pattern would decide for itself — the
+  // pattern taken as a request — which is the honest version of "is anything
+  // already in the way?" without the page knowing any matching rules.
+  async function runPreview() {
+    const p = policyOf(st.source);
+    const subject = currentSubject();
+    if (!subject) {
+      preview.replaceChildren(el("span", "muted", "fill in what it matches"));
+      return;
+    }
+    try {
+      const x = await api("/api/explain?source=" + encodeURIComponent(st.source) +
+        "&host=" + encodeURIComponent(st.host || lastState?.host || "") + "&subject=" + encodeURIComponent(subject));
+      const nodes = [el("div", "muted", "today, a request for exactly " + subject + " would be decided:")];
+      nodes.push(...explanationNodes(x, p));
+      if (st.action === "allow" && (x.matches ?? []).some((m) => m.action === "deny")) {
+        nodes.push(el("div", "warn", "⚠ a deny matches this too, and a deny always wins — this allow would not take effect for it"));
+      }
+      if (st.action === "allow") nodes.push(el("div", "muted", "requests nobody has made yet can match this pattern too"));
+      preview.replaceChildren(...nodes);
+    } catch (err) {
+      preview.replaceChildren(el("span", "warn", err.message));
+    }
+  }
+
+  function currentSubject() {
+    const p = policyOf(st.source);
+    const values = (p.schema?.fields ?? []).map((_, i) => (st.values[i] ?? "").trim());
+    if (!values[0]) return "";
+    return joinSubject(p, values);
+  }
+
+  function submit() {
+    const subject = currentSubject();
+    if (!subject) { toast("say what it matches first"); return; }
+    const p = policyOf(st.source);
+    const q = "source=" + encodeURIComponent(st.source) + "&host=" + encodeURIComponent(st.host) +
+      "&subject=" + encodeURIComponent(subject);
+    const where = st.host ? "for " + st.host : "for every host";
+    if (editing) {
+      const changed = subject !== editing.subject || st.host !== (editing.host || "");
+      const path = "/api/rules/update?source=" + encodeURIComponent(editing.source) + "&id=" + encodeURIComponent(editing.id) +
+        "&host=" + encodeURIComponent(st.host) + "&subject=" + encodeURIComponent(subject) + "&note=" + encodeURIComponent(st.note);
+      const run = async () => {
+        const result = await act(path + (changed ? "&confirm=1" : ""), "rule saved");
+        // An edit gives the rule a new id; the selection follows it.
+        if (result?.id) selectedKey = "r:" + editing.source + ":" + result.id;
+      };
+      closeModal();
+      if (!changed) { run(); return; }
+      confirmLoosen({
+        title: editing.action === "allow" ? "Change what this allow covers?" : "Change what this refusal covers?",
+        row: editing,
+        detail: el("p", "", "from  " + editing.subject + "  (" + (editing.host || "every host") + ")\nto    " + subject + "  (" + (st.host || "every host") + ")"),
+        consequence: editing.action === "allow"
+          ? "Anything the new pattern matches will be allowed without asking, " + where + "."
+          : "Requests the old pattern refused and the new one does not will no longer be refused.",
+        yes: "save it", no: "keep it as it was",
+        run,
+      });
+      return;
+    }
+    const isGrant = st.lasts !== "always";
+    const path = isGrant
+      ? "/api/grants/add?" + q + "&action=" + st.action + "&ttl=" + st.lasts
+      : "/api/rules/add?" + q + "&action=" + st.action + "&note=" + encodeURIComponent(st.note);
+    const label = isGrant ? (st.lasts === "0" ? "this session" : st.lasts === "300" ? "5 minutes" : "1 hour") : "always";
+    closeModal();
+    if (st.action === "deny") {
+      act(path, isGrant ? "refusal added" : "deny written");
+      return;
+    }
+    confirmLoosen({
+      title: isGrant ? "Grant this without asking?" : "Allow this without asking?",
+      row: { source: st.source, action: "allow", subject, host: st.host, isGrant, origin: isGrant ? "live" : "remembered" },
+      consequence: "Every " + p.noun + " this matches will be handed over without a prompt, " + where + ", " + label + ".",
+      yes: isGrant ? "grant it" : "write the rule", no: "cancel",
+      run: () => act(path + "&confirm=1", isGrant ? "granted" : "rule written"),
+    });
+  }
+
+  draw();
+  openModal(box);
+}
+
+function forgetRefusals() {
+  const refusals = accessRows.filter((r) => r.isGrant && r.action === "deny");
+  if (!refusals.length) return;
+  const list = el("div");
+  for (const r of refusals) {
+    list.append(el("div", "match", "✕ " + shortOf(r.source) + "  " + (r.hostWide ? hostWideText(r) : r.subject)));
+  }
+  confirmLoosen({
+    title: "Forget " + refusals.length + " refusal" + (refusals.length === 1 ? "" : "s") + "?",
+    detail: list,
+    consequence: "You said “No, and stop asking” to these. Each will be asked about again — and a rule that allows it will simply let it through.",
+    yes: "forget them", no: "keep refusing",
+    run: async () => {
+      try {
+        const gone = await api("/api/grants/forget-refusals?confirm=1", "POST");
+        toast(gone.refusals ? "forgot " + gone.refusals + " refusal" + (gone.refusals === 1 ? "" : "s") : "nothing to forget", false);
+      } catch (err) {
+        toast(err.message);
+      }
+      refresh();
+    },
+  });
+}
+
+// forgetGrants drops every live allow grant and every cached secret value, in
+// every service. Refusals stay: dropping "No, and stop asking" would let an
+// allow underneath win again, which is the opposite of what somebody pressing
+// this wants. It says what went rather than going quiet.
+async function forgetGrants() {
+  try {
+    const gone = await api("/api/grants/forget", "POST");
+    const parts = [];
+    if (gone.grants) parts.push(gone.grants + " grant" + (gone.grants === 1 ? "" : "s"));
+    if (gone.cached) parts.push(gone.cached + " cached value" + (gone.cached === 1 ? "" : "s"));
+    toast(parts.length ? "forgot " + parts.join(" and ") + " — refusals stay" : "nothing to forget", false);
+  } catch (err) {
+    toast(err.message);
+  }
+  refresh();
+}
+
+// "why?" from Activity: start from the decision that surprised you.
+async function openWhy(e) {
+  const f = e.fields ?? {};
+  const source = e.service;
+  const p = policyOf(source);
+  const box = el("div", "dialog");
+  const refused = /denied|refused|timeout/.test(e.kind) || f.by === "timeout";
+  box.append(el("header", "", refused ? "why was this refused?" : "why was this allowed?"));
+  const body = el("div", "body");
+  box.append(body);
+  const line = el("div", "muted", new Date(e.time).toLocaleTimeString() + "  " + who(source));
+  body.append(line, el("p", "", e.text));
+
+  const then = el("div");
+  body.append(el("div", "muted", "then:"), then);
+  switch (f.by) {
+    case "rule": {
+      then.append(el("span", "", "decided by a rule — " + (f.source === "global" ? "your config.yaml" : "hosts/" + hostName() + ".yaml") + " "));
+      try {
+        const x = await api("/api/explain?source=" + encodeURIComponent(source) + "&rule=" + encodeURIComponent(f.rule));
+        then.append(matchLine(x.self));
+      } catch {
+        then.append(el("div", "warn", "that rule has since been changed or removed"));
+      }
+      break;
+    }
+    case "grant": {
+      const key = "g:" + source + ":" + f.grant;
+      const row = accessRows.find((r) => r.key === key);
+      if (row) then.append(matchLine({ ...row, kind: "grant" }));
+      else then.append(el("div", "", "decided by a live grant (" + f.grant + ") that has since lapsed or been revoked"));
+      break;
+    }
+    case "unmatched":
+      then.append(el("div", "", "nothing matched, and " + (p?.short || source) + " was set to " + (f.unmatched || "ask") + " when nothing matches"));
+      break;
+    case "prompt":
+      then.append(el("div", "", "answered at the prompt"));
+      break;
+    case "timeout":
+      then.append(el("div", "", "nobody answered in time, which counts as No — Config ▸ prompt says where questions appear"));
+      break;
+    case "unreadable":
+      then.append(el("div", "warn", "a policy file could not be read, so every request was refused until it is fixed"));
+      break;
+    default:
+      then.append(el("div", "muted", "this event does not say what decided it"));
+  }
+
+  // Now, if the event says what was asked for: policy may have changed since.
+  // The browser's events carry the URL, which is not its subject (the site
+  // is), so only an event that names its subject gets the "now" line.
+  const subject = f.subject;
+  const host = f.host || lastState?.host || "";
+  if (subject && p) {
+    try {
+      const x = await api("/api/explain?source=" + encodeURIComponent(source) + "&host=" + encodeURIComponent(host) +
+        "&subject=" + encodeURIComponent(subject));
+      body.append(el("div", "muted", "now, the same request would be:"), ...explanationNodes(x, p));
+    } catch {}
+  }
+  const buttons = el("div", "buttons");
+  if (subject && p) {
+    buttons.append(button("new rule from this request", () => { closeModal(); selectTab("Access"); openForm({ source, subject }); }));
+  }
+  buttons.append(button("close", closeModal));
+  body.append(buttons);
+  openModal(box);
+}
+
+function openHelp() {
+  const box = el("div", "dialog");
+  box.id = "help";
+  box.append(el("header", "", "keyboard"));
+  const body = el("div", "body");
+  const table = el("table");
+  const rows = [
+    ["1 – 5  [ ]", "switch tab"],
+    ["?", "this help"],
+    ["esc", "close whatever is open"],
+    ["Access", ""],
+    ["↑ ↓  j k", "move"],
+    ["enter", "details of the selected row"],
+    ["space  ⋯  right-click", "every action for the row, with why the others can't be done"],
+    ["r", "revoke a grant / remove a rule (asks first if it would let more through)"],
+    ["D  A", "make it a deny / make it an allow (asks first)"],
+    ["e", "edit the rule"],
+    ["n", "new rule or grant"],
+    ["t", "test: would this be allowed?"],
+    ["y", "copy the pattern"],
+    ["F", "forget live allow grants (refusals stay)"],
+    ["/", "filter"],
+    ["approvals", ""],
+    ["1 – 9", "answer"],
+    ["esc", "refuse"],
+  ];
+  for (const [k, v] of rows) {
+    const tr = el("tr");
+    if (!v) tr.className = "heading";
+    tr.append(el("td", "", k), el("td", "", v));
+    table.append(tr);
+  }
+  body.append(table, el("div", "buttons"));
+  body.lastChild.append(button("close", closeModal));
+  box.append(body);
+  openModal(box);
+}
+
+// --- approvals -------------------------------------------------------------
 
 // renderAsk draws the dialog, or takes it away.
 //
@@ -734,61 +1890,33 @@ function renderAsk(waitingList) {
   if (askShown === ask.id) return;
   askShown = ask.id;
 
-  const box = document.createElement("div");
-  box.className = "ask";
-
-  const bar = document.createElement("header");
-  bar.textContent = "devtun is waiting for you";
-  box.append(bar);
-
-  const body = document.createElement("div");
-  body.className = "body";
-
-  const head = document.createElement("h2");
-  head.textContent = `${ask.host} wants this ${ask.noun}${ask.scope ? " for " + ask.scope : ""}`;
-  const subject = document.createElement("div");
-  subject.className = "subject";
-  subject.textContent = ask.subject;
-  body.append(head, subject);
+  const box = el("div", "ask");
+  box.append(el("header", "", "devtun is waiting for you"));
+  const body = el("div", "body");
+  body.append(el("h2", "", `${ask.host} wants this ${ask.noun}${ask.scope ? " for " + ask.scope : ""}`));
+  body.append(el("div", "subject", ask.subject));
 
   if ((ask.rows ?? []).length) {
-    const dl = document.createElement("dl");
-    for (const row of ask.rows) {
-      const dt = document.createElement("dt");
-      dt.textContent = row.label;
-      const dd = document.createElement("dd");
-      dd.textContent = row.value;
-      dl.append(dt, dd);
-    }
+    const dl = el("dl", "kv");
+    for (const row of ask.rows) dl.append(el("dt", "", row.label), el("dd", "", row.value));
     body.append(dl);
     // The same caveat the terminal shows, for the same reason: these details
     // are self-reported by a process on a box devtun treats as semi-trusted,
     // and a detail read as fact is worse than no detail.
-    const caveat = document.createElement("p");
-    caveat.className = "caveat";
-    caveat.textContent = "these details come from the remote box and are not verified";
-    body.append(caveat);
+    body.append(el("p", "caveat", "these details come from the remote box and are not verified"));
   }
 
-  const answers = document.createElement("div");
-  answers.className = "answers";
+  const answers = el("div", "answers");
   (ask.options ?? []).forEach((option, i) => {
-    const button = document.createElement("button");
-    const n = document.createElement("span");
-    n.className = "n";
-    n.textContent = i + 1;
-    button.append(n, document.createTextNode(option.label));
-    if (!option.allows) button.className = "no";
-    button.onclick = () => answer(ask.id, option.choice);
-    answers.append(button);
+    const b = el("button");
+    b.type = "button";
+    b.append(el("span", "n", String(i + 1)), document.createTextNode(option.label));
+    if (!option.allows) b.className = "no";
+    b.onclick = () => answer(ask.id, option.choice);
+    answers.append(b);
   });
   body.append(answers);
-
-  const how = document.createElement("p");
-  how.className = "how";
-  how.textContent = "press 1–9, or esc to refuse · answering here answers it in the terminal too";
-  body.append(how);
-
+  body.append(el("p", "how", "press 1–9, or esc to refuse · answering here answers it in the terminal too"));
   box.append(body);
   scrim.replaceChildren(box);
   scrim.hidden = false;
@@ -802,50 +1930,9 @@ function renderAsk(waitingList) {
 // out from under a click.
 let askShown = null;
 
-// The keyboard, matching the terminal's: a number answers, esc refuses.
-document.addEventListener("keydown", (event) => {
-  if ($("ask").hidden) {
-    // The same numbers answer an approval when one is up, so tabs only get
-    // them when nothing is waiting — a question on screen is the thing you are
-    // being asked to deal with, and it keeps the keys.
-    if (event.target?.tagName === "INPUT" || event.target?.tagName === "SELECT") return;
-    const n = Number(event.key);
-    if (Number.isInteger(n) && n >= 1 && n <= TABS.length) {
-      event.preventDefault();
-      selectTab(TABS[n - 1]);
-      return;
-    }
-    if (event.key === "[" || event.key === "]") {
-      event.preventDefault();
-      const at = TABS.indexOf(currentTab);
-      selectTab(TABS[(at + (event.key === "]" ? 1 : TABS.length - 1)) % TABS.length]);
-    }
-    return;
-  }
-  const buttons = [...$("ask").querySelectorAll(".answers button")];
-  if (!buttons.length) return;
-
-  if (event.key === "Escape") {
-    // The last option is always the most refusing one the menu offered.
-    event.preventDefault();
-    buttons[buttons.length - 1].click();
-    return;
-  }
-  const n = Number(event.key);
-  if (Number.isInteger(n) && n >= 1 && n <= buttons.length) {
-    event.preventDefault();
-    buttons[n - 1].click();
-  }
-});
-
 // alertSound is a short two-note ping, synthesised rather than fetched: the
-// page is served from a socket on your own machine and has to work with the
-// network unplugged, and an audio file would be the one thing on it that did
-// not.
-//
-// Browsers refuse to make noise before the page has been interacted with, which
-// is why this is best-effort and silent about failing. The dialog is the alert;
-// the sound is the part that reaches you in another tab.
+// page has to work with the network unplugged. Browsers refuse to make noise
+// before the page has been interacted with, which is why this is best-effort.
 function alertSound() {
   try {
     const audio = new (window.AudioContext || window.webkitAudioContext)();
@@ -868,23 +1955,107 @@ function alertSound() {
   }
 }
 
-// answer sends one decision and gets out of the way.
-//
-// Every button is disabled the moment one is pressed: the id is good for a
-// single use, so a second click is refused by the server anyway, and a row of
-// live buttons after a decision invites somebody to try.
+// answer sends one decision and gets out of the way. Every button is disabled
+// the moment one is pressed: the id is good for a single use.
 async function answer(id, choice) {
-  for (const button of $("ask").querySelectorAll("button")) button.disabled = true;
+  for (const b of $("ask").querySelectorAll("button")) b.disabled = true;
   try {
     await api(`/api/approve?id=${encodeURIComponent(id)}&choice=${choice}`, "POST");
   } catch (err) {
-    // Answered elsewhere, or timed out. Either way the question is gone and
-    // the next poll clears the dialog; saying so beats a silent no-op.
-    notice(String(err.message || err));
+    toast(String(err.message || err));
   }
   askShown = null;
   refresh();
 }
+
+// --- the keyboard -------------------------------------------------------------
+
+// Layered, most urgent first: a question waiting keeps every key; then an open
+// dialog; then the menu; then the drawer; then the page. A key never reaches a
+// layer underneath one that is open.
+document.addEventListener("keydown", (event) => {
+  if (!$("ask").hidden) {
+    const buttons = [...$("ask").querySelectorAll(".answers button")];
+    if (!buttons.length) return;
+    if (event.key === "Escape") {
+      // The last option is always the most refusing one the menu offered.
+      event.preventDefault();
+      buttons[buttons.length - 1].click();
+      return;
+    }
+    const n = Number(event.key);
+    if (Number.isInteger(n) && n >= 1 && n <= buttons.length) {
+      event.preventDefault();
+      buttons[n - 1].click();
+    }
+    return;
+  }
+  if (!$("modal").hidden) {
+    if (event.key === "Escape") { event.preventDefault(); closeModal(); return; }
+    const typing = event.target?.tagName === "INPUT" || event.target?.tagName === "SELECT";
+    if (!typing && modalKeys) modalKeys(event);
+    return;
+  }
+  if (!$("menu").hidden) {
+    if (event.key === "Escape") { event.preventDefault(); closeMenu(); return; }
+    const items = [...$("menu").querySelectorAll("button:not(:disabled)")];
+    const at = items.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "j") { event.preventDefault(); items[(at + 1) % items.length]?.focus(); return; }
+    if (event.key === "ArrowUp" || event.key === "k") { event.preventDefault(); items[(at - 1 + items.length) % items.length]?.focus(); return; }
+    const row = menuRow;
+    const a = row && actionsFor(row).find((x) => x.key === event.key);
+    if (a) { event.preventDefault(); runAction(row, a); }
+    return;
+  }
+  const typing = event.target?.tagName === "INPUT" || event.target?.tagName === "SELECT";
+  if (event.key === "Escape") {
+    if (typing) { event.target.blur(); return; }
+    if (!$("drawer").hidden) { closeDrawer(); return; }
+    if (!$("test").hidden) { $("test").hidden = true; return; }
+    return;
+  }
+  if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
+
+  if (event.key === "?") { event.preventDefault(); openHelp(); return; }
+  const n = Number(event.key);
+  if (Number.isInteger(n) && n >= 1 && n <= TABS.length) {
+    event.preventDefault();
+    selectTab(TABS[n - 1]);
+    return;
+  }
+  if (event.key === "[" || event.key === "]") {
+    event.preventDefault();
+    const at = TABS.indexOf(currentTab);
+    selectTab(TABS[(at + (event.key === "]" ? 1 : TABS.length - 1)) % TABS.length]);
+    return;
+  }
+  if (currentTab !== "Access") return;
+
+  const row = selectedRow();
+  switch (event.key) {
+    case "ArrowDown": case "j": event.preventDefault(); moveSelection(1); return;
+    case "ArrowUp": case "k": event.preventDefault(); moveSelection(-1); return;
+    case "/": event.preventDefault(); $("filter").focus(); return;
+    case "n": event.preventDefault(); openForm(); return;
+    case "t": event.preventDefault(); if (row) openTest(row.source, row.subject, row.host); else openTest(); return;
+    case "F": event.preventDefault(); forgetGrants(); return;
+    case "Enter": if (row) { event.preventDefault(); openDrawer(row.key); } return;
+    case " ":
+      if (row) {
+        event.preventDefault();
+        const tr = rowElement(row.key);
+        const r = tr?.getBoundingClientRect();
+        openMenu(row, r ? r.right - 280 : 100, r ? r.bottom : 100);
+      }
+      return;
+  }
+  if (row) {
+    const a = actionsFor(row).find((x) => x.key === event.key && x.id !== "detail");
+    if (a) { event.preventDefault(); runAction(row, a); }
+  }
+});
+
+// --- header -------------------------------------------------------------------
 
 function renderHeader(state) {
   const connection = state.connection ?? {};
@@ -892,10 +2063,13 @@ function renderHeader(state) {
   $("state").textContent = connection.detail
     ? connection.state + " — " + connection.detail
     : (connection.state ?? "");
-  $("host").textContent = state.host ?? "";
+  // The header names what is being brokered as well as where: under --web
+  // this is the only screen, and "is the vault even on?" is a question it
+  // should answer without a click.
+  const brokering = (state.services ?? []).filter((s) => s.running).map((s) => s.title.toLowerCase());
+  $("host").textContent = (state.host ?? "") + (brokering.length ? "  ·  " + brokering.join(", ") : "");
   // Pausing is `p` at the table: what is already forwarded stays up, and the
-  // next port the box opens waits instead of appearing. The button carries the
-  // state as well as the action, because there is nowhere else to read it.
+  // next port the box opens waits instead of appearing.
   const pause = $("pause");
   pause.textContent = state.paused ? "resume" : "pause";
   pause.className = state.paused ? "on" : "";
@@ -911,53 +2085,71 @@ function renderHeader(state) {
   $("counts").textContent = parts.join(" · ");
   $("version").textContent = "devtun " + (state.version ?? "");
   document.title = state.host ? `devtun · ${state.host}` : "devtun";
+
+  // An unreadable policy file denies everything until it is fixed, which is
+  // the one Access state loud enough to sit above every tab.
+  const broken = (state.policies ?? []).filter((p) => p.policyErr);
+  const banner = $("policy-err");
+  banner.hidden = !broken.length;
+  banner.textContent = broken.map((p) => p.title + ": every request is refused — " + p.policyErr).join("  ·  ");
 }
 
+const THEMES = ["system", "light", "dark"];
+function currentTheme() {
+  return document.documentElement.dataset.theme || "system";
+}
+function drawTheme() {
+  $("theme").textContent = { system: "◐ system", light: "☀ light", dark: "☾ dark" }[currentTheme()];
+}
+$("theme").onclick = () => {
+  const next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
+  if (next === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("devtun.theme", next); } catch {}
+  drawTheme();
+};
 
 // --- tabs -------------------------------------------------------------------
 
-// The same five the interface has, in the same order. Two views of one session
-// should not have to be learned twice — and the board had grown to six panels
-// down one scroll, which is a list, not an interface.
+// The same five the interface has, in the same order.
 const TABS = ["Tunnels", "Activity", "Access", "Services", "Config"];
 
 // The chosen tab survives a reload, because the board is a page you leave open
 // on a second monitor and come back to. Per-browser and unimportant, so
 // localStorage — and wrapped, because a private window throws on the way in.
-let currentTab = "Tunnels";
+let currentTab = "Activity";
 try {
   const saved = localStorage.getItem("devtun.tab");
   if (TABS.includes(saved)) currentTab = saved;
 } catch {}
+// A link can name a tab, which is also how the screenshots are taken.
+if (TABS.includes(location.hash.slice(1))) currentTab = location.hash.slice(1);
 
 function buildTabs() {
   const nav = $("tabs");
   nav.replaceChildren();
-  for (const name of TABS) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.setAttribute("role", "tab");
-    button.dataset.tab = name;
-    const label = document.createElement("span");
-    label.textContent = name;
-    const count = document.createElement("span");
-    count.className = "count";
-    button.append(label, count);
-    button.onclick = () => selectTab(name);
-    nav.append(button);
-  }
+  TABS.forEach((name, i) => {
+    const b = el("button");
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.dataset.tab = name;
+    b.append(el("span", "key", String(i + 1)), el("span", "", name), el("span", "count"));
+    b.onclick = () => selectTab(name);
+    nav.append(b);
+  });
   selectTab(currentTab);
 }
 
 function selectTab(name) {
   currentTab = name;
   try { localStorage.setItem("devtun.tab", name); } catch {}
-  for (const button of $("tabs").children) {
-    button.setAttribute("aria-selected", String(button.dataset.tab === name));
+  for (const b of $("tabs").children) {
+    b.setAttribute("aria-selected", String(b.dataset.tab === name));
   }
   for (const section of document.querySelectorAll("main section")) {
     section.hidden = section.dataset.tab !== name;
   }
+  if (name !== "Access") closeDrawer();
 }
 
 // What each tab has on it, so a panel behind a tab is not a panel out of mind.
@@ -967,25 +2159,21 @@ function renderTabCounts(state) {
     Tunnels: (state.ports ?? []).length,
     Access: (state.grants ?? []).length + (state.rules ?? []).length,
     Services: (state.services ?? []).length,
-    // A question waiting is not a quantity, it is an interruption — and it is
-    // answered in the modal, not on a tab. It rides on Activity because that
-    // is where the request is logged.
+    // A question waiting is not a quantity, it is an interruption. It rides
+    // on Activity because that is where the request is logged.
     Activity: waiting,
   };
-  for (const button of $("tabs").children) {
-    const el = button.children[1];
-    const n = counts[button.dataset.tab];
-    el.textContent = n ? String(n) : "";
-    el.classList.toggle("urgent", button.dataset.tab === "Activity" && waiting > 0);
+  for (const b of $("tabs").children) {
+    const count = b.children[2];
+    const n = counts[b.dataset.tab];
+    count.textContent = n ? String(n) : "";
+    count.classList.toggle("urgent", b.dataset.tab === "Activity" && waiting > 0);
   }
 }
 
 // --- services ---------------------------------------------------------------
 
-// Enabled and running are two different facts and the row shows both. A
-// service switched on that this box cannot support is the case people actually
-// hit — no `op` installed on the remote, no gpg-agent — and it is the one where
-// "off" on its own tells you nothing you can act on.
+// Enabled and running are two different facts and the row shows both.
 function renderServices(state) {
   const list = state.services ?? [];
   $("services-count").textContent = list.length ? String(list.length) : "";
@@ -993,44 +2181,28 @@ function renderServices(state) {
   body.replaceChildren();
 
   for (const svc of list) {
-    const tr = document.createElement("tr");
+    const tr = el("tr");
     if (!svc.enabled) tr.className = "off";
+    tr.append(cell((svc.glyph ? svc.glyph + " " : "") + svc.title));
 
-    const name = document.createElement("td");
-    name.textContent = (svc.glyph ? svc.glyph + " " : "") + svc.title;
-    tr.append(name);
+    const stateCell = el("td");
+    if (!svc.enabled) stateCell.append(tag("off", "switched off for this host"));
+    else if (svc.running) stateCell.append(el("span", "allow", "running"));
+    else stateCell.append(tag("not running", svc.detail || "waiting for a connection"));
+    tr.append(stateCell);
 
-    const state_ = document.createElement("td");
-    if (!svc.enabled) state_.append(tag("off", "switched off for this host"));
-    else if (svc.running) {
-      const ok = document.createElement("span");
-      ok.className = "allow";
-      ok.textContent = "running";
-      state_.append(ok);
-    } else state_.append(tag("not running", svc.detail || "waiting for a connection"));
-    tr.append(state_);
-
-    const why = document.createElement("td");
-    why.className = "wide muted";
-    // The reason it cannot run displaces the description: one is a sentence
-    // about what the service is for, the other is the thing to go and fix.
-    why.textContent = svc.detail || svc.short || "";
+    const why = cell(svc.detail || svc.short || "", "wide muted");
     if (svc.detail) why.classList.add("warn");
     tr.append(why);
 
-    const act_ = document.createElement("td");
-    act_.style.textAlign = "right";
-    const toggle = document.createElement("button");
-    toggle.textContent = svc.enabled ? "switch off" : "switch on";
-    toggle.title = "for " + (state.host || "this host") + " · from the next connection";
+    const actCell = el("td");
+    actCell.style.textAlign = "right";
     // Through the settings endpoint rather than one of its own: a service
-    // toggle IS a setting, and two ways to write the same value is how the two
-    // surfaces started disagreeing in the first place.
-    toggle.onclick = () =>
-      act(`/api/config/${encodeURIComponent(svc.id)}?level=host&value=${svc.enabled ? "off" : "on"}`);
-    act_.append(toggle);
-    tr.append(act_);
-
+    // toggle IS a setting.
+    actCell.append(button(svc.enabled ? "switch off" : "switch on",
+      () => act(`/api/config/${encodeURIComponent(svc.id)}?level=host&value=${svc.enabled ? "off" : "on"}`), "",
+      "for " + (state.host || "this host") + " · from the next connection"));
+    tr.append(actCell);
     body.append(tr);
   }
 }
@@ -1038,15 +2210,14 @@ function renderServices(state) {
 // --- settings ---------------------------------------------------------------
 
 // Which file the next change is written to. The terminal arms this with `g`;
-// here it is a button, and for the same reason it exists there at all: changing
-// something for the box in front of you and changing it for every box you ever
-// connect to are different decisions, and a screen that picks for you will
-// eventually pick wrong.
+// here it is a button, and for the same reason it exists there at all:
+// changing something for the box in front of you and changing it for every box
+// you ever connect to are different decisions.
 let configLevel = "host";
 
 function renderConfig(config) {
   const host = config.host || "this host";
-  $("config-level").textContent = configLevel === "host" ? "for " + host : "for every host";
+  $("config-level").textContent = configLevel === "host" ? "writing to: " + host : "writing to: every host";
   $("config-what").textContent = config.editable
     ? "every value says which file decided it — this host, your global file, or devtun's own default"
     : "started with --no-config: these are the values in force, and nothing here can be saved";
@@ -1055,25 +2226,29 @@ function renderConfig(config) {
   body.replaceChildren();
 
   for (const section of config.sections ?? []) {
-    const head = document.createElement("tr");
-    head.className = "heading";
-    const cell = document.createElement("td");
-    cell.colSpan = 4;
-    cell.textContent = section.title;
-    head.append(cell);
+    const head = el("tr", "heading");
+    const td = el("td", "", section.title);
+    td.colSpan = 4;
+    head.append(td);
     body.append(head);
-
+    // The Policy section is where "when nothing matches" lives, and the
+    // Access tab is what it acts on — so the link goes both ways.
+    if (section.title === "Policy") {
+      const tr = el("tr", "setting");
+      const link = el("td");
+      link.colSpan = 4;
+      link.append(el("span", "muted", "ask = prompt when no rule or grant matches · deny = only what a rule allows  "),
+        button("rules → Access", () => selectTab("Access"), "linkish"));
+      tr.append(link);
+      body.append(tr);
+    }
     for (const setting of section.settings ?? []) body.append(settingRow(setting, config));
   }
 }
 
 function settingRow(setting, config) {
-  const tr = document.createElement("tr");
-  tr.className = "setting";
-
-  const name = document.createElement("td");
-  name.textContent = setting.title;
-  tr.append(name);
+  const tr = el("tr", "setting");
+  tr.append(cell(setting.title));
 
   // Where an edit to THIS setting would land: what is armed, or the only level
   // it has. A setting written at a level it does not accept is a write that
@@ -1081,50 +2256,43 @@ function settingRow(setting, config) {
   const level = setting.levels.includes(configLevel) ? configLevel : setting.levels[0];
   const editable = config.editable;
 
-  const control = document.createElement("td");
+  const control = el("td");
   if (setting.options?.length) {
-    const select = document.createElement("select");
+    const sel = el("select");
     for (const option of setting.options) {
-      const el = document.createElement("option");
-      el.value = option;
-      el.textContent = option;
-      select.append(el);
+      const o = el("option", "", option);
+      o.value = option;
+      sel.append(o);
     }
     // The control shows what the armed level says ON ITS OWN, not the value in
-    // force: an empty level means `inherit`, and one step off it is a decision
-    // for this level rather than a no-op that agrees with the level below.
-    select.value = setting.raw?.[level] || "inherit";
-    select.disabled = !editable;
-    select.onchange = () => {
-      const value = select.value === "inherit" ? "" : select.value;
+    // force: an empty level means `inherit`.
+    sel.value = setting.raw?.[level] || "inherit";
+    sel.disabled = !editable;
+    sel.onchange = () => {
+      const value = sel.value === "inherit" ? "" : sel.value;
       act(`/api/config/${encodeURIComponent(setting.key)}?level=${level}&value=${encodeURIComponent(value)}`);
     };
-    control.append(select);
+    control.append(sel);
   } else {
-    const input = document.createElement("input");
+    const input = el("input");
     input.value = setting.raw?.[level] ?? "";
     input.placeholder = "not set for " + level;
     input.disabled = !editable;
     // On blur and on enter, not on every keystroke: this writes to a file.
-    const commit = () =>
+    input.onchange = () =>
       act(`/api/config/${encodeURIComponent(setting.key)}?level=${level}&value=${encodeURIComponent(input.value.trim())}`);
-    input.onchange = commit;
     input.onkeydown = (event) => { if (event.key === "Enter") input.blur(); };
     control.append(input);
   }
   tr.append(control);
 
-  const from = document.createElement("td");
-  from.className = "from " + setting.level;
-  from.textContent = setting.level;
+  const from = cell(setting.level, "from " + setting.level);
   from.title = "the value in force is " + (setting.value || "unset") + ", decided by: " + setting.level;
+  if (setting.level !== "default") from.textContent = setting.value + " · " + setting.level;
   tr.append(from);
 
-  const why = document.createElement("td");
-  why.className = "why";
+  const why = el("td", "why");
   let help = setting.help ?? "";
-  // A setting with one level ignores what is armed, so it says so rather than
-  // appearing to have taken an edit somewhere it did not.
   if (setting.levels.length === 1 && setting.levels[0] !== configLevel) {
     help = setting.levels[0] + " only · " + help;
   }
@@ -1134,7 +2302,6 @@ function settingRow(setting, config) {
   }
   why.textContent = help;
   tr.append(why);
-
   return tr;
 }
 
@@ -1150,10 +2317,13 @@ async function refreshConfig() {
   try {
     renderConfig(await api("/api/config"));
   } catch {
-    // The board says it is out of touch already; a second banner for the same
-    // outage would be noise.
+    // The board says it is out of touch already.
   }
 }
+
+// --- the loop -----------------------------------------------------------------
+
+let lastRevision = null;
 
 async function refresh() {
   // A snapshot that is slow to come back must not stack the next poll behind
@@ -1163,15 +2333,22 @@ async function refresh() {
   inFlight = true;
   try {
     const state = await api("/api/state");
+    lastState = state;
     services = new Map((state.services ?? []).map((svc) => [svc.id, svc]));
     renderHeader(state);
     renderPorts(state);
     renderServices(state);
-    renderGrants(state);
-    renderRules(state);
+    renderAccess(state);
     renderAsk(state.waiting ?? []);
     renderTabCounts(state);
-    if (Date.now() > noticeUntil) $("offline").hidden = true;
+    // A rule changed — here, at the terminal, or by hand in the file — so the
+    // settings that describe the policy, and an open test, are re-asked.
+    if (lastRevision !== null && state.revision !== lastRevision) {
+      refreshConfig();
+      if (!$("test").hidden) runTest();
+    }
+    lastRevision = state.revision;
+    $("offline").hidden = true;
   } catch (err) {
     // The board on screen is now a photograph of the past, and saying so is
     // the difference between a stale page and a lying one.
@@ -1184,17 +2361,14 @@ async function refresh() {
 }
 
 function line(e) {
-  const div = document.createElement("div");
-  div.className = [e.class, e.level].filter(Boolean).join(" ");
-  const time = document.createElement("time");
-  time.textContent = new Date(e.time).toLocaleTimeString();
-  const svc = document.createElement("span");
-  svc.className = "svc";
-  svc.textContent = e.service ?? "";
-  const text = document.createElement("span");
-  text.className = "txt";
-  text.textContent = e.text ?? "";
-  div.append(time, svc, text);
+  const div = el("div", [e.class, e.level].filter(Boolean).join(" "));
+  div.append(el("time", "", new Date(e.time).toLocaleTimeString()));
+  div.append(el("span", "svc", e.service ?? ""));
+  div.append(el("span", "txt", e.text ?? ""));
+  // Every decision says what made it, so every decision can be asked why.
+  if (e.fields?.by) {
+    div.append(button("why?", () => openWhy(e), "why-btn", "the rule, grant or policy that decided this"));
+  }
   return div;
 }
 
@@ -1250,9 +2424,15 @@ function received(log, e) {
 }
 
 $("reconnect").onclick = () => act("/api/reconnect");
-$("forget").onclick = forgetEverything;
+$("forget").onclick = forgetGrants;
+$("forget-refusals").onclick = forgetRefusals;
+$("new-rule").onclick = () => openForm();
+$("test-open").onclick = () => { if ($("test").hidden) openTest(); else $("test").hidden = true; };
+$("help-open").onclick = openHelp;
+$("filter").oninput = (event) => { filterText = event.target.value.trim(); if (lastState) renderAccess(lastState); };
 $("verbose").onchange = (event) => document.body.classList.toggle("verbose", event.target.checked);
 
+drawTheme();
 buildTabs();
 signIn().then(() => {
   // No credential means nothing below can succeed, and the poll's "not
@@ -1268,9 +2448,6 @@ signIn().then(() => {
 });
 // A hidden tab is nobody looking. It catches up the moment it is looked at.
 setInterval(() => { if (!document.hidden) refresh(); }, 2000);
-// Settings change when a person changes them, at either surface — so they are
-// re-read far less often than the counters, and immediately after any change
-// this page makes.
 setInterval(() => { if (!document.hidden) refreshConfig(); }, 15000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>

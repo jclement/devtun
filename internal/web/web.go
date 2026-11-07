@@ -347,10 +347,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/ports/{port}/label", s.guard(s.handlePortLabel))
 	s.mux.HandleFunc("POST /api/ports/{port}/local", s.guard(s.handlePortLocal))
 	s.mux.HandleFunc("POST /api/pause", s.guard(s.handlePause))
-	s.mux.HandleFunc("POST /api/rules/revoke", s.guard(s.handleRevokeRule))
-	s.mux.HandleFunc("POST /api/rules/deny", s.guard(s.handleDenyRule))
+	// Access. Every one of these goes through guard like everything else; the
+	// loosening ones also want confirm=1 (see access.go).
+	s.mux.HandleFunc("GET /api/explain", s.guard(s.handleExplain))
+	s.mux.HandleFunc("POST /api/rules/add", s.guard(s.handleAddRule))
+	s.mux.HandleFunc("POST /api/rules/remove", s.guard(s.handleRemoveRule))
+	s.mux.HandleFunc("POST /api/rules/action", s.guard(s.handleRuleAction))
+	s.mux.HandleFunc("POST /api/rules/update", s.guard(s.handleUpdateRule))
+	s.mux.HandleFunc("POST /api/grants/add", s.guard(s.handleAddGrant))
 	s.mux.HandleFunc("POST /api/grants/revoke", s.guard(s.handleRevokeGrant))
 	s.mux.HandleFunc("POST /api/grants/forget", s.guard(s.handleForget))
+	s.mux.HandleFunc("POST /api/grants/forget-refusals", s.guard(s.handleForgetRefusals))
 	s.mux.HandleFunc("POST /api/reconnect", s.guard(s.handleReconnect))
 	s.mux.HandleFunc("POST /api/hidden", s.guard(s.handleShowHidden))
 	s.mux.HandleFunc("POST /api/approve", s.guard(s.handleApprove))
@@ -513,6 +520,13 @@ type statePayload struct {
 	// the page's reading order for the same reason it is loud on screen: a
 	// secret being asked for outranks anything else the board has to say.
 	Waiting []approvalView `json:"waiting"`
+	// Policies is one row per gated service: its subject fields, what
+	// happens when nothing matches, and whether its policy file is readable.
+	Policies []policyView `json:"policies"`
+	// Revision changes whenever any service's rules do — here, at the
+	// terminal, or by a hand edit picked up from disk — so the page knows to
+	// re-ask anything it derived from them.
+	Revision string `json:"revision"`
 }
 
 type connection struct {
@@ -573,19 +587,30 @@ type ruleView struct {
 	Origin  string `json:"origin"`
 	Host    string `json:"host"`
 	Subject string `json:"subject"`
-	Action  string `json:"action"`
-	Note    string `json:"note,omitempty"`
-	Global  bool   `json:"global"`
+	// Parts is the subject split into the broker's fields — key and
+	// destination for the agent — so the page never parses a subject itself.
+	Parts    []string `json:"parts"`
+	Action   string   `json:"action"`
+	Note     string   `json:"note,omitempty"`
+	Added    string   `json:"added,omitempty"`
+	Global   bool     `json:"global"`
+	Editable bool     `json:"editable"`
+	// Outranked is an allow that a deny beats for the very request its own
+	// pattern describes: a rule that never wins.
+	Outranked bool `json:"outranked,omitempty"`
 }
 
 type grantView struct {
-	Source   string `json:"source"`
-	ID       string `json:"id"`
-	Host     string `json:"host"`
-	Subject  string `json:"subject"`
-	Action   string `json:"action"`
-	Expires  string `json:"expires,omitempty"`
-	HostWide bool   `json:"hostWide"`
+	Source    string   `json:"source"`
+	ID        string   `json:"id"`
+	Host      string   `json:"host"`
+	Subject   string   `json:"subject"`
+	Parts     []string `json:"parts"`
+	Action    string   `json:"action"`
+	Expires   string   `json:"expires,omitempty"`
+	Created   string   `json:"created,omitempty"`
+	HostWide  bool     `json:"hostWide"`
+	Outranked bool     `json:"outranked,omitempty"`
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -624,27 +649,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	brokers := s.brokers()
-	payload.Gated = len(brokers) > 0
-	for _, gated := range brokers {
-		id, broker := gated.id, gated.broker
-		for _, rule := range broker.Rules() {
-			payload.Rules = append(payload.Rules, ruleView{
-				Source: id, ID: rule.ID, Origin: string(rule.Source), Host: rule.Host, Subject: rule.Subject,
-				Action: string(rule.Action), Note: rule.Note, Global: rule.Source == authz.SourceGlobal,
-			})
-		}
-		for _, grant := range broker.Grants() {
-			view := grantView{
-				Source: id, ID: grant.ID, Host: grant.Host, Subject: grant.Subject,
-				Action: string(grant.Action), HostWide: grant.HostWide,
-			}
-			if !grant.Expires.IsZero() {
-				view.Expires = grant.Expires.Format(time.RFC3339)
-			}
-			payload.Grants = append(payload.Grants, view)
-		}
-	}
+	payload.Gated = len(s.brokers()) > 0
+	s.accessState(&payload)
 
 	payload.Waiting = s.waiting()
 	writeJSON(w, payload)
@@ -769,6 +775,10 @@ type eventView struct {
 	Level   string `json:"level"`
 	Kind    string `json:"kind"`
 	Text    string `json:"text"`
+	// Fields are the event's key/value pairs. A decision carries by, rule,
+	// source and grant, which is what "why?" on the page follows back to the
+	// rule that made it.
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 func writeEvent(w http.ResponseWriter, e event.Event) error {
@@ -779,12 +789,28 @@ func writeEvent(w http.ResponseWriter, e event.Event) error {
 		Level:   e.Level.String(),
 		Kind:    e.Kind,
 		Text:    e.Text,
+		Fields:  fieldMap(e.Fields),
 	})
 	if err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(w, "data: %s\n\n", payload)
 	return err
+}
+
+// fieldMap flattens an event's alternating keys and values. A key that is not
+// a string is skipped rather than guessed at.
+func fieldMap(fields []any) map[string]string {
+	if len(fields) < 2 {
+		return nil
+	}
+	out := make(map[string]string, len(fields)/2)
+	for i := 0; i+1 < len(fields); i += 2 {
+		if key, ok := fields[i].(string); ok {
+			out[key] = fmt.Sprint(fields[i+1])
+		}
+	}
+	return out
 }
 
 func (s *Server) handlePortMode(w http.ResponseWriter, r *http.Request) {
@@ -913,98 +939,6 @@ func (s *Server) handleShowHidden(w http.ResponseWriter, r *http.Request) {
 	prefs.ShowHidden = r.URL.Query().Get("show") == "true"
 	s.opts.Tunnels.SetViewPrefs(prefs)
 	writeJSON(w, map[string]bool{"showHidden": prefs.ShowHidden})
-}
-
-// handleRevokeRule removes a host or remembered rule.
-//
-// Not a global one: that came out of a file the user keeps for every host, and
-// a web page quietly editing it would be a worse surprise than saying no. The
-// rule is named by its ID, which means the same rule however the list has
-// moved since the page rendered it.
-func (s *Server) handleRevokeRule(w http.ResponseWriter, r *http.Request) {
-	broker, ok := s.brokerParam(w, r)
-	if !ok {
-		return
-	}
-	if err := broker.RemoveRule(r.URL.Query().Get("id")); err != nil {
-		ruleError(w, err)
-		return
-	}
-	writeJSON(w, map[string]bool{"ok": true})
-}
-
-// handleDenyRule rewrites a rule into a refusal.
-//
-// It only tightens, which is what makes it safe to offer from a page. "I
-// clicked always and I should not have, and I do not want to be asked again
-// either" is the change people make in a hurry; the opposite one — a deny
-// becoming an allow on whichever row a click lands on — is the accident that
-// deny-beats-allow exists to prevent, and this route does not offer it.
-//
-// A global rule is refused (ErrReadOnly), and a rule that already denies is
-// left as it is and reported as done, because it is.
-func (s *Server) handleDenyRule(w http.ResponseWriter, r *http.Request) {
-	broker, ok := s.brokerParam(w, r)
-	if !ok {
-		return
-	}
-	if _, err := broker.SetRuleAction(r.URL.Query().Get("id"), authz.ActionDeny); err != nil {
-		ruleError(w, err)
-		return
-	}
-	writeJSON(w, map[string]bool{"ok": true})
-}
-
-// ruleError maps the store's typed errors onto statuses a page can act on.
-func ruleError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, authz.ErrReadOnly):
-		http.Error(w, "that rule is in your config file — edit it there", http.StatusForbidden)
-	case errors.Is(err, authz.ErrNotFound):
-		http.Error(w, "that rule has changed since this page loaded — reload", http.StatusConflict)
-	default:
-		http.Error(w, err.Error(), http.StatusConflict)
-	}
-}
-
-func (s *Server) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
-	broker, ok := s.brokerParam(w, r)
-	if !ok {
-		return
-	}
-	if !broker.RevokeGrant(r.URL.Query().Get("id")) {
-		http.Error(w, "that grant has already lapsed", http.StatusConflict)
-		return
-	}
-	writeJSON(w, map[string]bool{"ok": true})
-}
-
-// handleForget drops every live grant and every cached secret value, across
-// every broker.
-//
-// It is the panic button rather than the only way back — single grants have
-// their own revoke — so it sweeps all of them: one broker left holding an open
-// door after you pressed this would be worse than not offering it. The two
-// counts come back so the page can say what actually went, "nothing" included,
-// which is a real answer and not a button that looks broken.
-func (s *Server) handleForget(w http.ResponseWriter, _ *http.Request) {
-	grants, cached := s.forgetAll()
-	writeJSON(w, map[string]int{"grants": grants, "cached": cached})
-}
-
-// forgetAll sweeps the brokers and reports what it took, in the same two
-// numbers the interface shows.
-func (s *Server) forgetAll() (grants, cached int) {
-	for _, gated := range s.brokers() {
-		switch b := gated.broker.(type) {
-		case Forgetter:
-			g, c := b.Forget()
-			grants, cached = grants+g, cached+c
-		case cachelessForgetter:
-			grants += b.Forget()
-		}
-	}
-	return grants, cached
 }
 
 // approvalView is one question waiting on a human, as the page sees it.
