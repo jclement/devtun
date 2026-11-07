@@ -1,11 +1,14 @@
 package hostcfg
 
 import (
-	"gopkg.in/yaml.v3"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type portEntry struct {
@@ -100,8 +103,9 @@ func TestEnabledPrefersHostThenGlobalThenFallback(t *testing.T) {
 		t.Error("with nothing configured, the fallback should win")
 	}
 
-	no := false
-	store.global.Services = map[string]ServiceState{"tunnels": {Enabled: &no}}
+	if err := store.SetSetting("", SectionServices, "tunnels", "false"); err != nil {
+		t.Fatal(err)
+	}
 	if store.Enabled("bedev", "tunnels", true) {
 		t.Error("a global default should beat the fallback")
 	}
@@ -493,5 +497,194 @@ func TestAServiceToggleIsOnDiskImmediately(t *testing.T) {
 
 	if !Open(dir).Enabled("bedev", "gpg-agent", false) {
 		t.Error("a service switched on was not written before the process could die")
+	}
+}
+
+// writeFile stands in for a person with an editor.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// The bug this package was rewritten for. The store held the host file it read
+// at startup and wrote that copy back, whole, on the next change — so a deny
+// rule typed in while devtun ran was erased by naming a port, comments and all,
+// in a file whose header said it was safe to edit by hand.
+func TestAHandEditMadeWhileRunningSurvivesTheNextWrite(t *testing.T) {
+	dir := t.TempDir()
+	store := Open(dir)
+	if err := store.For("bedev", "tunnels").Set("ports", map[int]portEntry{3000: {Label: "web"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	path := store.HostPath("bedev")
+	edited := readFile(t, path) + `1password:
+    # never the root keys, whatever I click
+    rules:
+        - subject: op://Private/Root Keys/**
+          action: deny
+`
+	writeFile(t, path, edited)
+
+	if err := store.For("bedev", "tunnels").Set("ports", map[int]portEntry{3000: {Label: "frontend"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	after := readFile(t, path)
+	for _, want := range []string{"op://Private/Root Keys/**", "# never the root keys, whatever I click", "frontend"} {
+		if !strings.Contains(after, want) {
+			t.Errorf("after devtun's write the file lost %q:\n%s", want, after)
+		}
+	}
+}
+
+// An edit that survives but is not noticed until a restart is half a fix.
+func TestAHandEditIsReadWithoutReopening(t *testing.T) {
+	dir := t.TempDir()
+	store := Open(dir)
+	store.LoadHost("bedev")
+
+	writeFile(t, store.HostPath("bedev"), "1password:\n  unmatched: deny\n")
+	before := store.Revision()
+
+	var got string
+	if ok, err := store.For("bedev", "1password").GetLocal("unmatched", &got); !ok || err != nil || got != "deny" {
+		t.Fatalf("the edit was not picked up: ok=%v err=%v got=%q", ok, err, got)
+	}
+	writeFile(t, store.HostPath("bedev"), "1password:\n  unmatched: ask # changed my mind\n")
+	if store.Revision() == before {
+		t.Error("an edit on disk did not move the revision, so nothing showing it can know to reload")
+	}
+}
+
+// Two sessions for different hosts share the global file. Each used to write
+// back its own startup copy, so one session's restriction was deleted by the
+// other's unrelated preference.
+func TestTwoProcessesWritingOneFileKeepBothChanges(t *testing.T) {
+	dir := t.TempDir()
+	a, b := Open(dir), Open(dir) // both loaded before either writes
+
+	if err := a.GlobalFor("1password").Set("rules", []map[string]string{
+		{"subject": "op://Private/**", "action": "deny"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetSetting("", "", KeyPrompt, "tui"); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := Open(dir)
+	var rules []map[string]string
+	if ok, _ := fresh.GlobalFor("1password").Get("rules", &rules); !ok || len(rules) != 1 {
+		t.Errorf("the deny written by one process was lost to the other's write: %+v", rules)
+	}
+	if got := fresh.Setting("", "", KeyPrompt); got != "tui" {
+		t.Errorf("prompt = %q, want tui", got)
+	}
+}
+
+// A file that exists but cannot be read is not an empty file. Treating it as
+// one is how a deny rule silently stops applying.
+func TestAnUnreadableFileIsAnErrorNotAnEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	// A directory where the host file belongs: unreadable on every platform,
+	// and for the root user too, which a chmod would not be.
+	if err := os.MkdirAll(filepath.Join(dir, "hosts", "bedev.yaml"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store := Open(dir)
+	store.LoadHost("bedev")
+	if store.Err() == nil {
+		t.Fatal("an unreadable host file was reported as fine")
+	}
+	if store.HostErr("bedev") == nil {
+		t.Fatal("HostErr missed the unreadable host file")
+	}
+	if err := store.For("bedev", "1password").Set("rules", []string{}); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("a write over an unreadable file should be refused with ErrUnreadable, got %v", err)
+	}
+}
+
+// A file broken by a hand edit mid-session is reported, keeps its last good
+// contents for presentation, and is never overwritten with them.
+func TestAFileBrokenWhileRunningIsReportedAndNotOverwritten(t *testing.T) {
+	dir := t.TempDir()
+	store := Open(dir)
+	if err := store.For("bedev", "tunnels").Set("ports", map[int]portEntry{3000: {Label: "web"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Err(); err != nil {
+		t.Fatalf("clean file reported %v", err)
+	}
+
+	broken := "tunnels: [unclosed\n# half-typed deny rule\n"
+	writeFile(t, store.HostPath("bedev"), broken)
+
+	if store.For("bedev", "tunnels").Err() == nil {
+		t.Error("the section did not report its broken file")
+	}
+	if store.Err() == nil {
+		t.Error("the store did not report its broken file")
+	}
+	var ports map[int]portEntry
+	if ok, _ := store.For("bedev", "tunnels").Get("ports", &ports); !ok || ports[3000].Label != "web" {
+		t.Errorf("presentation should keep the last good contents, got %+v", ports)
+	}
+	if err := store.For("bedev", "tunnels").Set("ports", map[int]portEntry{}); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("want ErrUnreadable, got %v", err)
+	}
+	if got := readFile(t, store.HostPath("bedev")); got != broken {
+		t.Errorf("the broken file was overwritten:\n%s", got)
+	}
+
+	writeFile(t, store.HostPath("bedev"), "tunnels: {}\n")
+	if err := store.Err(); err != nil {
+		t.Errorf("a fixed file is still reported: %v", err)
+	}
+}
+
+// A devtun killed mid-write leaves its lock file behind; the next one must not
+// wait on it forever.
+func TestAnAbandonedLockIsBroken(t *testing.T) {
+	dir := t.TempDir()
+	lock := filepath.Join(dir, ".devtun.lock")
+	writeFile(t, lock, "12345\n")
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(lock, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := Open(dir).SetSetting("", "", KeyPrompt, "tui"); err != nil {
+		t.Fatalf("a stale lock blocked the write: %v", err)
+	}
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Error("the lock was not released after the write")
+	}
+}
+
+func TestGetGlobalIgnoresTheHostFile(t *testing.T) {
+	store := Open(t.TempDir())
+	if err := store.GlobalFor("1password").Set("unmatched", "deny"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.For("bedev", "1password").Set("unmatched", "ask"); err != nil {
+		t.Fatal(err)
+	}
+	var global string
+	if ok, err := store.For("bedev", "1password").GetGlobal("unmatched", &global); !ok || err != nil || global != "deny" {
+		t.Errorf("GetGlobal = %q ok=%v err=%v", global, ok, err)
 	}
 }

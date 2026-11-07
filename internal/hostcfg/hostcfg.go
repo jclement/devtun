@@ -18,6 +18,7 @@ package hostcfg
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -139,46 +141,85 @@ type Host struct {
 	Data   map[string]map[string]yaml.Node `yaml:",inline"`
 }
 
-// Store holds the global file and every host file that has been opened, and
-// writes back the ones that changed.
+// Store holds the global file and every host file that has been opened.
 //
 // A malformed or missing file degrades to an empty configuration rather than an
 // error. Refusing to start because a settings file has a stray tab in it would
 // be the wrong trade for a tool whose job is to get you connected.
+//
+// Two promises shape everything below, and both used to be broken.
+//
+// The first is that a file you edit by hand while devtun runs keeps your edit.
+// The store used to hold the copy it read at startup and write *that* back,
+// whole, the next time anything changed — so naming a port or answering a
+// prompt "always" quietly erased a deny rule typed in five minutes earlier,
+// comments and all, in the file whose header said it was safe to edit. Now
+// every write is a transaction against the file as it is on disk: read it,
+// change the one key being written, write it back. Everything else in the file,
+// comments included, comes through untouched, and a second devtun writing the
+// same file is serialised behind a lock file rather than racing it.
+//
+// The second is that an edit is noticed. Reads check the file's size and
+// modification time and re-read it when either moved, so a rule added by hand
+// takes effect on the next request rather than the next restart.
 type Store struct {
 	dir string
 
-	// loadErrs records files that would not parse. A malformed file reads as
-	// empty so devtun still starts — but "empty" is a dangerous answer for a
-	// file that may have contained deny rules, so the error is kept and Err()
-	// lets a caller that is about to make a security decision refuse instead.
-	loadErrs []error
-
 	mu     sync.Mutex
-	global Global
-	hosts  map[string]*Host
-	dirty  map[string]bool
+	global *file
+	hosts  map[string]*file
+	// revision counts changes to anything loaded, whether devtun wrote them or
+	// noticed somebody else had. It is how a screen learns that what it is
+	// showing is stale without diffing the whole configuration twice a second.
+	revision uint64
 	// memoryOnly is set when the config directory could not be located, so
 	// everything still works for this run and nothing is written.
 	memoryOnly bool
+}
+
+// file is one YAML file as last read or written.
+type file struct {
+	path string
+	// doc is the parsed document. It is kept as a node tree, not a struct,
+	// because a node tree remembers comments and layout and a struct does not —
+	// and writing back a struct is precisely how hand edits were lost.
+	doc *yaml.Node
+	// stamp is the size and modification time doc was read at, so a read can
+	// tell cheaply whether somebody else has changed the file since.
+	stamp stamp
+	// err is why the file on disk could not be used, nil when it could.
+	//
+	// A malformed file reads as its last good contents (empty, if there never
+	// were any) so devtun still starts — but "empty" is a dangerous answer for
+	// a file that may have contained deny rules, so the error is kept and Err()
+	// lets a caller that is about to make a security decision refuse instead.
+	err error
+}
+
+// stamp identifies one version of a file on disk well enough to notice an
+// edit. It is not a content hash: an editor that rewrote identical bytes
+// within the same second would go unnoticed, and nothing is lost if it does.
+type stamp struct {
+	exists bool
+	size   int64
+	mod    int64
+}
+
+func stampOf(info os.FileInfo) stamp {
+	return stamp{exists: true, size: info.Size(), mod: info.ModTime().UnixNano()}
 }
 
 // Open loads the global file from dir. Host files are loaded lazily.
 func Open(dir string) *Store {
 	s := &Store{
 		dir:        dir,
-		hosts:      make(map[string]*Host),
-		dirty:      make(map[string]bool),
+		hosts:      make(map[string]*file),
 		memoryOnly: dir == "",
 	}
-	if dir == "" {
-		return s
-	}
-	path := filepath.Join(dir, "config.yaml")
-	if data, err := os.ReadFile(path); err == nil {
-		if err := yaml.Unmarshal(data, &s.global); err != nil {
-			s.loadErrs = append(s.loadErrs, fmt.Errorf("%s: %w", path, err))
-		}
+	s.global = &file{doc: emptyDoc()}
+	if dir != "" {
+		s.global.path = filepath.Join(dir, "config.yaml")
+		s.refresh(s.global)
 	}
 	return s
 }
@@ -193,14 +234,6 @@ func OpenDefault() *Store {
 	return Open(dir)
 }
 
-// Err reports any configuration file that would not parse.
-//
-// Reading a broken file as empty is the right default for presentation
-// settings: refusing to start because a sort order has a stray tab in it would
-// be absurd. It is the wrong default for policy. A file that was meant to say
-// "never this vault from this box" and instead says nothing has failed open,
-// and silence is exactly how nobody notices. Callers about to act on rules ask
-// here first and refuse rather than proceed on a partial policy.
 // LoadHost reads a host's file now rather than on first use.
 //
 // Host files load lazily, and Err() can only report what has been read — so a
@@ -217,17 +250,59 @@ func (s *Store) LoadHost(label string) {
 	_ = s.host(label)
 }
 
+// Err reports any loaded configuration file that cannot be used as it stands
+// on disk: one that will not parse, and one that cannot be read at all.
+//
+// Reading a broken file as empty is the right default for presentation
+// settings: refusing to start because a sort order has a stray tab in it would
+// be absurd. It is the wrong default for policy. A file that was meant to say
+// "never this vault from this box" and instead says nothing has failed open,
+// and silence is exactly how nobody notices. Callers about to act on rules ask
+// here first and refuse rather than proceed on a partial policy.
+//
+// It reflects the files as they are now, not as they were at startup: a file
+// broken by a hand edit while devtun runs is reported, and one that has been
+// fixed stops being.
 func (s *Store) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return errors.Join(s.loadErrs...)
+	errs := []error{s.refresh(s.global)}
+	labels := make([]string, 0, len(s.hosts))
+	for label := range s.hosts {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	for _, label := range labels {
+		errs = append(errs, s.refresh(s.hosts[label]))
+	}
+	return errors.Join(errs...)
+}
+
+// HostErr is Err for one host: its own file and the global one, which is
+// everything a decision about that host reads.
+func (s *Store) HostErr(label string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return errors.Join(s.refresh(s.global), s.refresh(s.host(label)))
+}
+
+// Revision changes whenever anything this store has loaded changes, whether
+// devtun wrote it or somebody edited the file. It only ever increases.
+func (s *Store) Revision() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = s.refresh(s.global)
+	for _, f := range s.hosts {
+		_ = s.refresh(f)
+	}
+	return s.revision
 }
 
 // Global returns a copy of the global configuration.
 func (s *Store) Global() Global {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.global
+	return s.globalDoc()
 }
 
 // Path returns the directory being used, empty for a memory-only store.
@@ -238,23 +313,111 @@ func (s *Store) Path() string {
 	return s.dir
 }
 
-// host returns the loaded host document, reading it from disk on first use.
-// The caller must hold s.mu.
-func (s *Store) host(label string) *Host {
-	if h, ok := s.hosts[label]; ok {
-		return h
-	}
-	h := &Host{}
-	if !s.memoryOnly {
-		path := s.hostPath(label)
-		if data, err := os.ReadFile(path); err == nil {
-			if err := yaml.Unmarshal(data, h); err != nil {
-				s.loadErrs = append(s.loadErrs, fmt.Errorf("%s: %w", path, err))
-			}
+// host returns the loaded host file, reading it from disk on first use and
+// again whenever it has changed. The caller must hold s.mu.
+func (s *Store) host(label string) *file {
+	f, ok := s.hosts[label]
+	if !ok {
+		f = &file{doc: emptyDoc()}
+		if !s.memoryOnly {
+			f.path = s.hostPath(label)
 		}
+		s.hosts[label] = f
 	}
-	s.hosts[label] = h
+	_ = s.refresh(f)
+	return f
+}
+
+// globalDoc decodes the global file. The caller must hold s.mu.
+func (s *Store) globalDoc() Global {
+	_ = s.refresh(s.global)
+	var g Global
+	// The document parsed once already, so the only way this fails is a value
+	// of the wrong shape — a `hide:` that is a map, say. That reads as unset
+	// rather than taking the whole file down with it.
+	_ = s.global.doc.Decode(&g)
+	return g
+}
+
+// hostDoc decodes one host's file. The caller must hold s.mu.
+func (s *Store) hostDoc(label string) Host {
+	var h Host
+	_ = s.host(label).doc.Decode(&h)
 	return h
+}
+
+// refresh re-reads f if the file on disk is not the version it holds, and
+// reports why the file on disk cannot be used, if it cannot. The caller must
+// hold s.mu.
+//
+// Only a file that does not exist is an empty file. Anything else that stops
+// it being read — a permission, an I/O error, a directory where the file
+// should be — is an error, because "could not read the deny rules" and "there
+// are no deny rules" are opposite answers and only one of them is safe to act
+// on as if it were the other.
+func (s *Store) refresh(f *file) error {
+	if f.path == "" {
+		return nil
+	}
+	info, err := os.Stat(f.path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		if f.stamp.exists || f.err != nil {
+			f.doc, f.stamp, f.err = emptyDoc(), stamp{}, nil
+			s.revision++
+		}
+		return nil
+	case err != nil:
+		return s.fail(f, stamp{}, fmt.Errorf("%s: %w", f.path, err))
+	case info.IsDir():
+		return s.fail(f, stampOf(info), fmt.Errorf("%s: is a directory, not a file", f.path))
+	}
+	now := stampOf(info)
+	if now == f.stamp && f.err == nil {
+		return nil
+	}
+	if now == f.stamp {
+		return f.err
+	}
+	doc, err := readDoc(f.path)
+	if err != nil {
+		return s.fail(f, now, err)
+	}
+	f.doc, f.stamp, f.err = doc, now, nil
+	s.revision++
+	return nil
+}
+
+// fail records a file as unusable, keeping its last good contents for the
+// readers that would rather have something than nothing. The caller holds s.mu.
+func (s *Store) fail(f *file, at stamp, err error) error {
+	if f.err == nil || f.err.Error() != err.Error() {
+		s.revision++
+	}
+	f.stamp, f.err = at, err
+	return err
+}
+
+// readDoc reads and parses one file. A missing file is an empty document.
+func readDoc(path string) (*yaml.Node, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return emptyDoc(), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if doc.Kind == 0 {
+		return emptyDoc(), nil // an empty file, or one that is only comments
+	}
+	if root := docRoot(&doc); root.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s: expected a map of settings at the top level", path)
+	}
+	return &doc, nil
 }
 
 // hostPath is where a host's file lives. The label is an ssh_config alias and
@@ -280,10 +443,10 @@ func (s *Store) Enabled(label, serviceID string, fallback bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if state, ok := s.host(label).Services[serviceID]; ok && state.Enabled != nil {
+	if state, ok := s.hostDoc(label).Services[serviceID]; ok && state.Enabled != nil {
 		return *state.Enabled
 	}
-	if state, ok := s.global.Services[serviceID]; ok && state.Enabled != nil {
+	if state, ok := s.globalDoc().Services[serviceID]; ok && state.Enabled != nil {
 		return *state.Enabled
 	}
 	return fallback
@@ -299,32 +462,21 @@ func (s *Store) Prompt(label, fallback string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if v := strings.TrimSpace(s.host(label).Prompt); v != "" {
+	if v := strings.TrimSpace(s.hostDoc(label).Prompt); v != "" {
 		return v
 	}
-	if v := strings.TrimSpace(s.global.Prompt); v != "" {
+	if v := strings.TrimSpace(s.globalDoc().Prompt); v != "" {
 		return v
 	}
 	return fallback
 }
 
 // SetEnabled records whether a service runs on a host.
+//
+// Durable now, for the same reason Section.Set is: a decision the interface
+// says is remembered has to be remembered across a kill.
 func (s *Store) SetEnabled(label, serviceID string, enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	h := s.host(label)
-	if h.Services == nil {
-		h.Services = make(map[string]ServiceState)
-	}
-	h.Services[serviceID] = ServiceState{Enabled: &enabled}
-	s.dirty[label] = true
-	s.mu.Unlock()
-
-	// Durable now, for the same reason Section.Set is: a decision the
-	// interface says is remembered has to be remembered across a kill.
-	_ = s.Save()
-	s.mu.Lock()
+	_ = s.SetSetting(label, SectionServices, serviceID, strconv.FormatBool(enabled))
 }
 
 // Where the Config tab addresses a setting: a section and a key, read and
@@ -358,9 +510,9 @@ func (s *Store) Setting(label, section, key string) string {
 	case "":
 		return s.topSetting(label, key)
 	case SectionServices:
-		states := s.global.Services
+		states := s.globalDoc().Services
 		if label != "" {
-			states = s.host(label).Services
+			states = s.hostDoc(label).Services
 		}
 		if state, ok := states[key]; ok && state.Enabled != nil {
 			return strconv.FormatBool(*state.Enabled)
@@ -368,18 +520,14 @@ func (s *Store) Setting(label, section, key string) string {
 		return ""
 	}
 
-	data := s.global.Data
-	if label != "" {
-		data = s.host(label).Data
-	}
-	node, ok := lookup(data, section, key)
-	if !ok {
+	node := s.lookup(label, section, key)
+	if node == nil {
 		return ""
 	}
-	return scalarOf(node)
+	return scalarOf(*node)
 }
 
-// SetSetting records a value at one level.
+// SetSetting records a value at one level, on disk, before it returns.
 //
 // An empty value removes the setting rather than writing a blank one: clearing
 // a host's answer has to fall back to the global file, not pin whatever it
@@ -387,27 +535,59 @@ func (s *Store) Setting(label, section, key string) string {
 func (s *Store) SetSetting(label, section, key, value string) error {
 	value = strings.TrimSpace(value)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var err error
+	var path []string
+	var node *yaml.Node
 	switch section {
 	case "":
-		err = s.setTopSetting(label, key, value)
+		if label != "" && key != KeyPrompt {
+			return fmt.Errorf("%s is a global setting, not a per-host one", key)
+		}
+		switch key {
+		case KeyPrompt, KeySetup:
+			node = scalarNode(value)
+		case KeyHide:
+			if value != "" {
+				n, err := toNode(PortSpec{value})
+				if err != nil {
+					return err
+				}
+				node = &n
+			}
+		default:
+			return fmt.Errorf("unknown setting %q", key)
+		}
+		path = []string{key}
 	case SectionServices:
-		err = s.setServiceState(label, key, value)
+		if value != "" {
+			enabled, err := strconv.ParseBool(value)
+			if err != nil {
+				return fmt.Errorf("%s: %q is not on or off", key, value)
+			}
+			node = mapNode("enabled", &yaml.Node{
+				Kind: yaml.ScalarNode, Tag: "!!bool", Value: strconv.FormatBool(enabled),
+			})
+		}
+		path = []string{SectionServices, key}
 	default:
-		err = s.setSectionValue(label, section, key, value)
+		if value != "" {
+			n, err := toNode(value)
+			if err != nil {
+				return fmt.Errorf("encoding %s.%s: %w", section, key, err)
+			}
+			node = &n
+		}
+		path = []string{section, key}
 	}
-	if err != nil {
-		return err
+	if value == "" {
+		node = nil
 	}
-	if label == "" {
-		s.dirty[globalKey] = true
-	} else {
-		s.dirty[label] = true
-	}
-	return nil
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transact(s.fileFor(label), func(root *yaml.Node) error {
+		setPath(root, path, node)
+		return nil
+	})
 }
 
 // topSetting reads a named field of one of the two documents. The host file has
@@ -417,82 +597,36 @@ func (s *Store) SetSetting(label, section, key, value string) error {
 func (s *Store) topSetting(label, key string) string {
 	if label != "" {
 		if key == KeyPrompt {
-			return strings.TrimSpace(s.host(label).Prompt)
+			return strings.TrimSpace(s.hostDoc(label).Prompt)
 		}
 		return ""
 	}
+	g := s.globalDoc()
 	switch key {
 	case KeyPrompt:
-		return strings.TrimSpace(s.global.Prompt)
+		return strings.TrimSpace(g.Prompt)
 	case KeySetup:
-		return strings.TrimSpace(s.global.Setup)
+		return strings.TrimSpace(g.Setup)
 	case KeyHide:
-		return s.global.Hide.Spec()
+		return g.Hide.Spec()
 	}
 	return ""
 }
 
-func (s *Store) setTopSetting(label, key, value string) error {
-	if label != "" {
-		if key != KeyPrompt {
-			return fmt.Errorf("%s is a global setting, not a per-host one", key)
-		}
-		s.host(label).Prompt = value
-		return nil
+// fileFor is the host's file, or the global one for an empty label. The caller
+// holds s.mu.
+func (s *Store) fileFor(label string) *file {
+	if label == "" {
+		_ = s.refresh(s.global)
+		return s.global
 	}
-	switch key {
-	case KeyPrompt:
-		s.global.Prompt = value
-	case KeySetup:
-		s.global.Setup = value
-	case KeyHide:
-		s.global.Hide = nil
-		if value != "" {
-			s.global.Hide = PortSpec{value}
-		}
-	default:
-		return fmt.Errorf("unknown setting %q", key)
-	}
-	return nil
+	return s.host(label)
 }
 
-func (s *Store) setServiceState(label, serviceID, value string) error {
-	states := &s.global.Services
-	if label != "" {
-		states = &s.host(label).Services
-	}
-	if value == "" {
-		delete(*states, serviceID)
-		return nil
-	}
-	enabled, err := strconv.ParseBool(value)
-	if err != nil {
-		return fmt.Errorf("%s: %q is not on or off", serviceID, value)
-	}
-	if *states == nil {
-		*states = make(map[string]ServiceState)
-	}
-	(*states)[serviceID] = ServiceState{Enabled: &enabled}
-	return nil
-}
-
-func (s *Store) setSectionValue(label, section, key, value string) error {
-	data := &s.global.Data
-	if label != "" {
-		data = &s.host(label).Data
-	}
-	if value == "" {
-		if keys, ok := (*data)[section]; ok {
-			delete(keys, key)
-		}
-		return nil
-	}
-	node, err := toNode(value)
-	if err != nil {
-		return fmt.Errorf("encoding %s.%s: %w", section, key, err)
-	}
-	store(data, section, key, node)
-	return nil
+// lookup finds section.key in one file, nil when it is not there. The caller
+// holds s.mu.
+func (s *Store) lookup(label, section, key string) *yaml.Node {
+	return getPath(docRoot(s.fileFor(label).doc), section, key)
 }
 
 // scalarOf renders a stored document as the single line a settings screen can
@@ -557,14 +691,17 @@ func (c *Section) GetLocal(key string, v any) (bool, error) {
 	if c.label == "" {
 		return false, nil
 	}
-	node, ok := lookup(c.store.host(c.label).Data, c.service, key)
-	if !ok {
-		return false, nil
-	}
-	if err := node.Decode(v); err != nil {
-		return false, fmt.Errorf("reading %s.%s for %s: %w", c.service, key, c.label, err)
-	}
-	return true, nil
+	return c.decode(c.store.lookup(c.label, c.service, key), key, "for "+c.label, v)
+}
+
+// GetGlobal reads only the global file's section, whichever view this is. It is
+// the other half of GetLocal: a caller that keeps the two levels apart — the
+// policy store, which labels every rule with where it came from — reads each
+// with its own method rather than inferring the level from a fall-through.
+func (c *Section) GetGlobal(key string, v any) (bool, error) {
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	return c.decode(c.store.lookup("", c.service, key), key, "from the global config", v)
 }
 
 // Get decodes the document stored under key into v, reporting whether one was
@@ -574,77 +711,288 @@ func (c *Section) Get(key string, v any) (bool, error) {
 	defer c.store.mu.Unlock()
 
 	if c.label != "" {
-		if node, ok := lookup(c.store.host(c.label).Data, c.service, key); ok {
-			if err := node.Decode(v); err != nil {
-				return false, fmt.Errorf("reading %s.%s for %s: %w", c.service, key, c.label, err)
-			}
-			return true, nil
+		if node := c.store.lookup(c.label, c.service, key); node != nil {
+			return c.decode(node, key, "for "+c.label, v)
 		}
 	}
-	if node, ok := lookup(c.store.global.Data, c.service, key); ok {
-		if err := node.Decode(v); err != nil {
-			return false, fmt.Errorf("reading %s.%s from the global config: %w", c.service, key, err)
-		}
-		return true, nil
-	}
-	return false, nil
+	return c.decode(c.store.lookup("", c.service, key), key, "from the global config", v)
 }
 
-// Set stores v under key. It marks the file dirty but does not write; the
-// session saves once, on exit, so a busy tunnel table is not rewriting a YAML
-// file every two seconds.
+func (c *Section) decode(node *yaml.Node, key, where string, v any) (bool, error) {
+	if node == nil {
+		return false, nil
+	}
+	if err := node.Decode(v); err != nil {
+		return false, fmt.Errorf("reading %s.%s %s: %w", c.service, key, where, err)
+	}
+	return true, nil
+}
+
+// Err reports why either file this section reads — the host's, and the global
+// one — cannot be used as it stands on disk. A caller deciding something on the
+// strength of what it read checks this, because a broken file reads as its last
+// good contents and those may be missing what the person just wrote.
+func (c *Section) Err() error {
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	if c.label == "" {
+		return c.store.refresh(c.store.global)
+	}
+	return errors.Join(c.store.refresh(c.store.global), c.store.refresh(c.store.host(c.label)))
+}
+
+// Revision is the store's: it changes whenever anything loaded changes.
+func (c *Section) Revision() uint64 { return c.store.Revision() }
+
+// Set stores v under key, on disk, before it returns.
+//
+// This used to mark the file dirty and leave it, on the theory that a busy
+// tunnel table would otherwise rewrite YAML every couple of seconds. That does
+// not happen — every caller is a human action: hiding a port, naming one,
+// answering a prompt, toggling a service. What did happen is that a `Never`
+// written at 10am was still only in memory at 6pm, and a session killed rather
+// than quit lost it. A deny rule the user believes is protecting them has to
+// survive `kill -9`, a flat battery, and a laptop that never wakes up; "we
+// would have written it on the way out" is not a promise worth making about a
+// refusal.
 func (c *Section) Set(key string, v any) error {
 	node, err := toNode(v)
 	if err != nil {
 		return fmt.Errorf("encoding %s.%s: %w", c.service, key, err)
 	}
+	return c.EditNode(key, func(*yaml.Node) (*yaml.Node, error) { return &node, nil })
+}
 
+// EditNode changes one key as a transaction against the file on disk.
+//
+// edit is handed the key's current value as it is in the file right now — not
+// as it was when devtun started, and not as this process last wrote it — or nil
+// when the key is absent. It returns the replacement, or nil to remove the key.
+// Nothing else in the file is touched, so a rule somebody typed into the same
+// list a moment ago is still there for edit to see, and a comment beside it
+// survives the write.
+//
+// If the file cannot be read or will not parse, nothing is written: a
+// transaction against a file we cannot read would replace it with whatever we
+// last understood, which is the clobbering this exists to prevent.
+func (c *Section) EditNode(key string, edit func(current *yaml.Node) (*yaml.Node, error)) error {
 	c.store.mu.Lock()
-	if c.label == "" {
-		store(&c.store.global.Data, c.service, key, node)
-		c.store.dirty[globalKey] = true
-	} else {
-		h := c.store.host(c.label)
-		store(&h.Data, c.service, key, node)
-		c.store.dirty[c.label] = true
-	}
-	c.store.mu.Unlock()
-
-	// Written now, not on exit.
-	//
-	// This used to mark the file dirty and leave it, on the theory that a busy
-	// tunnel table would otherwise rewrite YAML every couple of seconds. That
-	// does not happen — every caller is a human action: hiding a port, naming
-	// one, answering a prompt, toggling a service. What did happen is that a
-	// `Never` written at 10am was still only in memory at 6pm, and a session
-	// killed rather than quit lost it. A deny rule the user believes is
-	// protecting them has to survive `kill -9`, a flat battery, and a laptop
-	// that never wakes up; "we would have written it on the way out" is not a
-	// promise worth making about a refusal.
-	return c.store.Save()
+	defer c.store.mu.Unlock()
+	return c.store.transact(c.store.fileFor(c.label), func(root *yaml.Node) error {
+		current := getPath(root, c.service, key)
+		if current != nil {
+			copied := *current
+			current = &copied
+		}
+		next, err := edit(current)
+		if err != nil {
+			return err
+		}
+		setPath(root, []string{c.service, key}, next)
+		return nil
+	})
 }
 
-// globalKey is the dirty-map entry standing for the global file. A host may
-// not use it, and cannot: sanitize never produces a leading slash.
-const globalKey = "/global"
+// ErrUnreadable is what a write says when the file it would change cannot be
+// read or parsed: nothing was written.
+var ErrUnreadable = errors.New("the file cannot be read, so it was not changed")
 
-func lookup(data map[string]map[string]yaml.Node, service, key string) (yaml.Node, bool) {
-	section, ok := data[service]
-	if !ok {
-		return yaml.Node{}, false
+// transact applies change to f's file as it is on disk and writes the result,
+// all under the lock file. The caller holds s.mu.
+func (s *Store) transact(f *file, change func(root *yaml.Node) error) error {
+	if s.memoryOnly || f.path == "" {
+		if err := change(docRoot(f.doc)); err != nil {
+			return err
+		}
+		s.revision++
+		return nil
 	}
-	node, ok := section[key]
-	return node, ok
+
+	unlock, err := lockDir(s.dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	// The file as it is now, not as we last saw it. That is the whole fix.
+	doc, err := readDoc(f.path)
+	if err != nil {
+		_ = s.fail(f, stamp{}, err)
+		return fmt.Errorf("%w: %w", ErrUnreadable, err)
+	}
+	if err := change(docRoot(doc)); err != nil {
+		return err
+	}
+	if doc.HeadComment == "" && len(doc.Content) == 1 && doc.Content[0].HeadComment == "" {
+		doc.HeadComment = s.header(f)
+	}
+	if err := writeDoc(f.path, doc); err != nil {
+		return err
+	}
+	f.doc, f.err = doc, nil
+	if info, err := os.Stat(f.path); err == nil {
+		f.stamp = stampOf(info)
+	}
+	s.revision++
+	return nil
 }
 
-func store(data *map[string]map[string]yaml.Node, service, key string, node yaml.Node) {
-	if *data == nil {
-		*data = make(map[string]map[string]yaml.Node)
+// header is the comment a file devtun creates starts with.
+func (s *Store) header(f *file) string {
+	if f == s.global {
+		return "# devtun global settings. Safe to edit by hand, even while devtun runs."
 	}
-	if (*data)[service] == nil {
-		(*data)[service] = make(map[string]yaml.Node)
+	label := strings.TrimSuffix(filepath.Base(f.path), ".yaml")
+	return "# devtun settings for " + label + ". Safe to edit by hand, even while devtun runs."
+}
+
+// Save is kept for callers written when writes were deferred. Every write now
+// reaches disk before it returns, so there is never anything left to save.
+func (s *Store) Save() error { return nil }
+
+// lockDir takes the directory's lock file, so two devtun processes — two
+// sessions for different hosts share the global file — apply their
+// transactions one after the other rather than each writing back a file that
+// is missing the other's change.
+//
+// It is a lock file created exclusively rather than flock, because devtun runs
+// on Windows too and an exclusive create means the same thing everywhere. A
+// process killed while holding it leaves the file behind, so one older than
+// lockStale is taken to be abandoned: every holder keeps it for the length of
+// one small write, and a write that has taken ten seconds is not still going.
+func lockDir(dir string) (func(), error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("creating %s: %w", dir, err)
 	}
-	(*data)[service][key] = node
+	path := filepath.Join(dir, ".devtun.lock")
+	deadline := time.Now().Add(lockWait)
+	for {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+			_ = f.Close()
+			return func() { _ = os.Remove(path) }, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("locking %s: %w", dir, err)
+		}
+		if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) > lockStale {
+			_ = os.Remove(path)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("another devtun has held %s for %s; not writing over it", path, lockWait)
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+}
+
+const (
+	lockWait  = 5 * time.Second
+	lockStale = 10 * time.Second
+)
+
+// emptyDoc is a document holding an empty map: what a missing file reads as.
+func emptyDoc() *yaml.Node {
+	return &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}}
+}
+
+// docRoot is the top-level map of a document, made if it is not there.
+func docRoot(doc *yaml.Node) *yaml.Node {
+	if doc.Kind != yaml.DocumentNode {
+		return doc
+	}
+	if len(doc.Content) == 0 {
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
+	}
+	return doc.Content[0]
+}
+
+// getPath walks maps by key, nil when any step is missing.
+func getPath(node *yaml.Node, keys ...string) *yaml.Node {
+	for _, key := range keys {
+		if node == nil || node.Kind != yaml.MappingNode {
+			return nil
+		}
+		var next *yaml.Node
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == key {
+				next = node.Content[i+1]
+			}
+		}
+		node = next
+	}
+	return node
+}
+
+// setPath puts value at the end of a chain of map keys, making the maps on the
+// way, or removes the last key when value is nil — and then any map that
+// removing it left empty, so clearing a setting does not leave `services: {}`
+// behind for somebody to wonder about. A key that already exists keeps its
+// place in the file and the comments around it.
+func setPath(node *yaml.Node, keys []string, value *yaml.Node) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+	key := keys[0]
+	at := -1
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			at = i
+		}
+	}
+
+	if len(keys) == 1 {
+		switch {
+		case value == nil && at >= 0:
+			node.Content = append(node.Content[:at], node.Content[at+2:]...)
+		case value != nil && at >= 0:
+			value.HeadComment = firstNonEmpty(value.HeadComment, node.Content[at+1].HeadComment)
+			value.LineComment = firstNonEmpty(value.LineComment, node.Content[at+1].LineComment)
+			node.Content[at+1] = value
+		case value != nil:
+			node.Content = append(node.Content, scalarNode(key), value)
+		}
+		return
+	}
+
+	if at < 0 {
+		if value == nil {
+			return
+		}
+		node.Content = append(node.Content, scalarNode(key), &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"})
+		at = len(node.Content) - 2
+	}
+	child := node.Content[at+1]
+	if child.Kind != yaml.MappingNode {
+		if value == nil {
+			return
+		}
+		// A scalar where a section belongs — `1password: off` — is replaced
+		// rather than written through, which would be impossible.
+		child = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		node.Content[at+1] = child
+	}
+	setPath(child, keys[1:], value)
+	if value == nil && len(child.Content) == 0 {
+		node.Content = append(node.Content[:at], node.Content[at+2:]...)
+	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+func scalarNode(value string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+}
+
+// mapNode builds a one-key map.
+func mapNode(key string, value *yaml.Node) *yaml.Node {
+	return &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{scalarNode(key), value}}
 }
 
 // toNode round-trips a value through YAML to get a Node, which is the only way
@@ -665,52 +1013,17 @@ func toNode(v any) (yaml.Node, error) {
 	return doc, nil
 }
 
-// Save writes every file that changed. It is safe to call when nothing has.
-func (s *Store) Save() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.memoryOnly || len(s.dirty) == 0 {
-		return nil
-	}
-
-	var errs []error
-	labels := make([]string, 0, len(s.dirty))
-	for label := range s.dirty {
-		labels = append(labels, label)
-	}
-	sort.Strings(labels)
-
-	for _, label := range labels {
-		var err error
-		if label == globalKey {
-			err = writeYAML(filepath.Join(s.dir, "config.yaml"),
-				"# devtun global settings. Safe to edit by hand.", s.global)
-		} else {
-			err = writeYAML(s.hostPath(label),
-				"# devtun settings for "+label+". Safe to edit by hand.", s.hosts[label])
-		}
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		delete(s.dirty, label)
-	}
-	return errors.Join(errs...)
-}
-
-// writeYAML writes atomically: a temporary file in the same directory, then a
+// writeDoc writes atomically: a temporary file in the same directory, then a
 // rename. A settings file half-written because a laptop lid closed is worse
 // than one that is out of date.
-func writeYAML(path, header string, v any) error {
+func writeDoc(path string, doc *yaml.Node) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
 	}
-	body, err := yaml.Marshal(v)
+	content, err := yaml.Marshal(doc)
 	if err != nil {
 		return fmt.Errorf("encoding %s: %w", path, err)
 	}
-	content := append([]byte(header+"\n"), body...)
 
 	temp, err := os.CreateTemp(filepath.Dir(path), ".devtun-*")
 	if err != nil {
