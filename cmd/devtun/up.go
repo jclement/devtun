@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,6 +260,7 @@ func runUp(ctx context.Context, f upFlags) error {
 	if err != nil {
 		return err
 	}
+	defer closeServices(services)
 
 	sess := session.New(session.Options{
 		Connector:   session.NewSSHConnector(dest, connectOpts),
@@ -981,6 +983,16 @@ func globalAccounts(store *hostcfg.Store, account string) (onepassword.Accounts,
 // it, so every signature was refused in the same instant it was requested. A
 // service built with no prompter refuses by construction, which is the right
 // default and exactly why forgetting to install one is silent.
+// closeServices stops whatever a service keeps running for the life of devtun
+// rather than of one connection: today, the 1Password CLI's session helper.
+func closeServices(services []service.Service) {
+	for _, svc := range services {
+		if closer, ok := svc.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	}
+}
+
 func installPrompter(prompter prompt.Prompter, services []service.Service) {
 	if prompter == nil {
 		// Under the interface the modal does not exist until its program does,
