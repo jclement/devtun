@@ -3,7 +3,7 @@
 Notable changes, newest first. Versions are [semver](https://semver.org); while
 this is 0.x, a minor bump may break something.
 
-## Unreleased
+## v0.2.0
 
 ### Security
 
@@ -42,6 +42,9 @@ this is 0.x, a minor bump may break something.
 
 ### Fixed
 
+- **Homebrew installs without a deprecation warning.** The cask stripped the
+  quarantine flag in a `postflight do` hook, which Homebrew has deprecated; it
+  now uses the declarative `postflight_steps`.
 - **The board removed a deny in one click.** Every change that loosens access
   now asks first, and the server refuses it unconfirmed — on Config too, for
   *unmatched*, *prompt* and the browser's *gate*, however the value is set.
