@@ -12,6 +12,7 @@ require (
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.9
 	golang.org/x/crypto v0.56.0
 	golang.org/x/mod v0.40.0
 	golang.org/x/term v0.45.0
@@ -48,7 +49,6 @@ require (
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	gitlab.com/gitlab-org/api/client-go v1.46.0 // indirect

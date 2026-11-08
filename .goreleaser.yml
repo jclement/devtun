@@ -75,16 +75,17 @@ homebrew_casks:
     commit_author:
       name: goreleaser
       email: noreply@github.com
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            # Strip the quarantine flag so a downloaded binary runs without a
-            # Gatekeeper prompt.
-            system_command "/usr/bin/xattr",
-                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/devtun"],
-                           must_succeed: false
-          end
+    # Strip the quarantine flag so a downloaded binary runs without a
+    # Gatekeeper prompt. This lives in custom_block rather than hooks.post.install
+    # because GoReleaser renders hooks as a `postflight do` block, which Homebrew
+    # has deprecated in favour of declarative `postflight_steps`. Step paths
+    # resolve against the staged path, hence the bare "devtun" and `chdir: "."`.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-d", "com.apple.quarantine", "devtun"], chdir: ".", must_succeed: false
+        end
+      end
 
 changelog:
   sort: asc
