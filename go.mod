@@ -15,6 +15,7 @@ require (
 	github.com/spf13/pflag v1.0.9
 	golang.org/x/crypto v0.56.0
 	golang.org/x/mod v0.40.0
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -54,6 +55,5 @@ require (
 	gitlab.com/gitlab-org/api/client-go v1.46.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )
