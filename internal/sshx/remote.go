@@ -52,7 +52,7 @@ func (c *Client) Run(ctx context.Context, script string, w io.Writer) error {
 	case <-ctx.Done():
 		_ = session.Signal(ssh.SIGTERM)
 		_ = session.Close()
-		<-done
+		<-done //nolint:errcheck // the session was killed; ctx.Err() is the error that matters
 		return ctx.Err()
 	case err := <-done:
 		if err != nil {
